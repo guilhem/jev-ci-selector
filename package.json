@@ -2,11 +2,13 @@
   "name": "jev-ci-selector",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
   "description": "Conservative, independently testable CI task selection with Jev",
   "engines": { "node": ">=24" },
   "scripts": {
     "build": "node scripts/build.mjs",
     "check:dist": "node scripts/build.mjs --check",
+    "analyze:shadow": "node dist/analyze-shadow.mjs",
     "typecheck": "tsc --noEmit",
     "test": "tsx --test tests/unit/*.test.ts tests/integration/*.test.ts",
     "eval:replay": "./node_modules/.bin/tsx tests/evaluation/runner.ts replay",

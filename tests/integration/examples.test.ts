@@ -17,6 +17,27 @@ const readWorkflow = (name: string): Record<string, any> => parseYaml(
   readFileSync(resolve(root, 'examples', name, '.github/workflows/ci.yml'), 'utf8'),
 );
 
+function assertReportUpload(workflow: Record<string, any>, job: Record<string, any>): void {
+  const uploads = job.steps.filter((step: Record<string, any>) => String(step.uses).startsWith('actions/upload-artifact@'));
+  assert.equal(uploads.length, 1);
+  const upload = uploads[0];
+  assert.equal(upload.uses, 'actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a');
+  assert.equal(upload.if, "${{ always() && steps.select.outcome == 'success' }}");
+  assert.equal(upload['continue-on-error'], true);
+  assert.deepEqual(upload.with, {
+    name: 'jev-plan-report-${{ github.run_id }}-${{ github.run_attempt }}',
+    path: '${{ steps.select.outputs.report-path }}',
+    'retention-days': 14,
+    'if-no-files-found': 'error',
+  });
+  for (const candidate of Object.values(workflow.jobs) as Array<Record<string, any>>) {
+    assert.equal(candidate['continue-on-error'], undefined);
+    for (const step of candidate.steps) {
+      if (step !== upload) assert.equal(step['continue-on-error'], undefined);
+    }
+  }
+}
+
 function gateScript(workflow: Record<string, any>): string {
   const steps = workflow.jobs['ci-required'].steps as Array<Record<string, unknown>>;
   const step = steps.find((candidate) => typeof candidate.run === 'string' && candidate.run.includes('node <<'));
@@ -106,8 +127,8 @@ test('example catalogs and workflow job IDs have one stable contract', () => {
     assert.ok(jobs.plan.outputs['has-tasks'] && jobs.plan.outputs['tested-sha']);
     assert.ok(jobs.plan.steps.every((step: Record<string, unknown>) => !('uses' in step && String(step.uses).startsWith('actions/checkout@'))), 'planning must not checkout PR code');
     const selector = jobs.plan.steps.find((step: Record<string, unknown>) => step.id === 'select') as Record<string, any>;
-    assert.equal(selector.if, "${{ github.event_name == 'pull_request' }}");
-    assert.equal(selector.uses, 'guilhem/jev-ci-selector@main');
+    assert.equal(selector.if, undefined);
+    assert.equal(selector.uses, 'guilhem/jev-ci-selector@v0.1.0');
     assert.deepEqual(selector.with, {
       config: '.github/task-routing.yaml',
       mode: 'shadow',
@@ -116,7 +137,12 @@ test('example catalogs and workflow job IDs have one stable contract', () => {
       'allow-external-context': 'true',
       'force-all': 'false',
     });
-    assert.match(String(jobs.plan.steps.find((step: Record<string, unknown>) => step.id === 'full')?.if), /!= 'pull_request'/);
+    assert.ok(!jobs.plan.steps.some((step: Record<string, unknown>) => step.id === 'full'));
+    for (const [output, value] of Object.entries(jobs.plan.outputs)) {
+      assert.equal(value, `\${{ steps.select.outputs.${output} }}`);
+    }
+    assert.deepEqual(Object.keys(workflow.on).sort(), ['merge_group', 'pull_request', 'push', 'schedule']);
+    assertReportUpload(workflow, jobs.plan);
     assert.match(readFileSync(resolve(root, 'examples', name, '.github/workflows/ci.yml'), 'utf8'), /tested-sha/);
     assert.match(readFileSync(resolve(root, 'examples', name, '.github/workflows/ci.yml'), 'utf8'), /11bd71901bbe5b1630ceea73d27597364c9af683/);
 
@@ -126,7 +152,7 @@ test('example catalogs and workflow job IDs have one stable contract', () => {
       for (const task of tasks) {
         const needs = Array.isArray(jobs[task].needs) ? jobs[task].needs : [jobs[task].needs];
         assert.ok(needs.includes('plan'), `${task} must depend on plan`);
-        assert.equal(jobs.plan.outputs[task], `\${{ github.event_name == 'pull_request' && steps.select.outputs.${task} || steps.full.outputs.${task} }}`);
+        assert.equal(jobs.plan.outputs[task], `\${{ steps.select.outputs.${task} }}`);
         assert.match(String(jobs[task].if), new RegExp(`needs\\.plan\\.outputs\\.${task} == ['"]true['"]`));
         assert.doesNotMatch(String(jobs[task].if), /fromJSON\(needs\.plan\.outputs\.run\)/);
       }
@@ -142,7 +168,6 @@ test('example catalogs and workflow job IDs have one stable contract', () => {
       assert.match(jobs.tasks.steps[1].run, /unsupported task/);
       const launcher = String(jobs.tasks.steps[1].run);
       for (const task of tasks) assert.match(launcher, new RegExp(`\\b${task}\\)`), `${task} must have a fixed launcher case`);
-      assert.doesNotMatch(readFileSync(resolve(root, 'examples', name, '.github/workflows/ci.yml'), 'utf8'), /continue-on-error/);
     }
     for (const task of tasks) assert.match(readFileSync(resolve(root, 'examples', name, '.github/workflows/ci.yml'), 'utf8'), new RegExp(`['"]?${task}['"]?`));
   }
@@ -244,6 +269,17 @@ test('standalone consumer validator catches unknown jobs, incomplete final needs
       return spawnSync(process.execPath, [validatorPath, directory], { encoding: 'utf8' });
     };
     for (const name of examples) assert.equal(check(name).status, 0, 'validator works at any consumer path');
+    for (const name of examples) {
+      assert.notEqual(check(name, workflow => {
+        workflow.jobs.plan.steps = workflow.jobs.plan.steps.filter((step: Record<string, any>) => step.id !== 'select');
+      }).status, 0, 'missing selector must fail validation');
+      assert.notEqual(check(name, workflow => {
+        workflow.jobs.plan.steps.push({ ...workflow.jobs.plan.steps[0] });
+      }).status, 0, 'duplicate selector must fail validation');
+      assert.notEqual(check(name, workflow => {
+        delete workflow.jobs.plan.steps[0].uses;
+      }).status, 0, 'selector without an action must fail validation');
+    }
     assert.notEqual(check('static-jobs', workflow => { workflow.jobs.unknown = { needs: 'plan' }; }).status, 0);
     assert.notEqual(check('matrix', workflow => { workflow.jobs.unknown = { needs: 'plan' }; }).status, 0);
     assert.notEqual(check('static-jobs', workflow => { workflow.jobs.plan.outputs.helm = workflow.jobs.plan.outputs.unit; }).status, 0);
@@ -260,26 +296,47 @@ test('standalone consumer validator catches unknown jobs, incomplete final needs
   } finally { rmSync(directory, { recursive: true, force: true }); }
 });
 
-test('static non-PR full-plan step emits every named output consistently with its aggregate plan', () => {
-  const workflow = readWorkflow('static-jobs');
-  const tasks = taskIds(readCatalog('static-jobs'));
-  const step = workflow.jobs.plan.steps.find((candidate: Record<string, unknown>) => candidate.id === 'full');
-  const script = String(step.run).split("node <<'NODE'\n")[1]!.split('\nNODE')[0]!;
-  let output = '';
-  vm.runInNewContext(script, {
-    process: { env: { GITHUB_OUTPUT: 'output', TESTED_SHA: 'a'.repeat(40) } },
-    require: (name: string) => {
-      assert.equal(name, 'node:fs');
-      return { appendFileSync: (path: string, data: string) => { assert.equal(path, 'output'); output += data; } };
-    },
-  });
-  const outputs = Object.fromEntries(output.trim().split('\n').map(line => {
-    const separator = line.indexOf('='); return [line.slice(0, separator), line.slice(separator + 1)];
-  }));
-  for (const task of tasks) assert.equal(outputs[task], 'true');
-  assert.deepEqual(JSON.parse(outputs.run!), Object.fromEntries(tasks.map(task => [task, true])));
-  assert.deepEqual(JSON.parse(outputs.selected!), tasks);
-  assert.deepEqual(JSON.parse(outputs.matrix!), { include: tasks.map(task => ({ task })) });
-  assert.equal(outputs.status, 'bypassed'); assert.equal(outputs['has-tasks'], 'true');
-  assert.equal(outputs['tested-sha'], 'a'.repeat(40));
+test('shadow observer is isolated from consumer CI jobs', () => {
+  const workflow = parseYaml(readFileSync(resolve(root, 'examples/shadow/.github/workflows/observe.yml'), 'utf8'));
+  assert.deepEqual(workflow.on, { pull_request: null });
+  assert.deepEqual(workflow.permissions, { contents: 'read' });
+  assert.deepEqual(Object.keys(workflow.jobs), ['observe']);
+  const job = workflow.jobs.observe;
+  assert.equal(job.needs, undefined);
+  assert.equal(job.outputs, undefined);
+  assert.equal(job.if, undefined);
+  assert.equal(job.steps.length, 2);
+  const selector = job.steps[0];
+  assert.equal(selector.id, 'select');
+  assert.equal(selector.uses, 'guilhem/jev-ci-selector@v0.1.0');
+  assert.equal(selector.if, undefined);
+  assert.deepEqual(selector.with, readWorkflow('static-jobs').jobs.plan.steps[0].with);
+  assertReportUpload(workflow, job);
+  assert.ok(job.steps.every((step: Record<string, any>) => !step.run && !String(step.uses).startsWith('actions/checkout@')));
+  const catalog = readCatalog('shadow');
+  assert.deepEqual(taskIds(catalog), ['build', 'unit']);
+  for (const task of taskIds(catalog)) {
+    assert.deepEqual(catalog.tasks[task]!.jobs, [{ workflow: '.github/workflows/ci.yml', job: task }]);
+  }
+});
+
+test('both gates preserve the event SHA contract and full bypass plans', () => {
+  for (const name of examples) {
+    const workflow = readWorkflow(name);
+    const tasks = taskIds(readCatalog(name));
+    const env = name === 'static-jobs' ? planEnv(tasks, tasks) : matrixEnv(tasks, tasks);
+    env.PLAN_STATUS = 'bypassed';
+    assert.equal(runGate(workflow, env).status, 0);
+    for (const sha of ['', 'b'.repeat(40)]) {
+      assert.notEqual(runGate(workflow, { ...env, PLAN_TESTED_SHA: sha }).status, 0);
+    }
+    assert.equal(workflow.jobs['ci-required'].env.EXPECTED_TESTED_SHA, '${{ github.sha }}');
+    for (const job of Object.values(workflow.jobs) as Array<Record<string, any>>) {
+      for (const step of job.steps) {
+        if (String(step.uses).startsWith('actions/checkout@')) {
+          assert.equal(step.with.ref, '${{ needs.plan.outputs.tested-sha }}');
+        }
+      }
+    }
+  }
 });

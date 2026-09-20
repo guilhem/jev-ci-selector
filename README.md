@@ -13,6 +13,7 @@
 
 <p>
   <a href="#quick-start">Quick start</a> ·
+  <a href="examples/shadow/README.md">Independent observer</a> ·
   <a href="examples/static-jobs/README.md">Static jobs</a> ·
   <a href="examples/matrix/README.md">Matrix example</a> ·
   <a href="docs/paths-filter.md">Migrate from paths-filter</a> ·
@@ -33,7 +34,7 @@ You define the tasks and the checks that must always run. The action returns a s
 - **Try it while keeping every check.** Shadow mode records what would be skipped while all tasks still run.
 - **Keep the final say.** Mandatory tasks and path rules take precedence over model decisions; workflows own execution dependencies.
 - **Fit it into your workflow.** Use a JSON map for existing jobs or a matrix for independent tasks.
-- **Inspect every proposal.** Reports include the tested commit, probabilities, deterministic reason codes, timings, and API usage.
+- **Inspect every proposal.** Version 4 reports include the catalog/configuration SHA, tested commit, probabilities, deterministic reason codes, timings, and API usage.
 - **Test without an API key.** The pure selection engine and the normal test suite work offline.
 
 ```mermaid
@@ -49,18 +50,28 @@ flowchart LR
 
 ## Quick start
 
-### 1. Choose an integration
+### 1. Start with an independent observer
 
-Start from a complete workflow, including its final `ci-required` check:
+Use the [independent observer example](examples/shadow/README.md) first. Copy its new `observe.yml` workflow and catalog, then adapt the catalog's `unit` and `build` job references and descriptions to your existing `.github/workflows/ci.yml`. Merge the catalog to the base branch before the pull request you want to observe.
+
+The observer listens to `pull_request`, requests only `contents: read`, never checks out or executes project code, and does not wire outputs into CI jobs. It is an optional evidence workflow, not a required check. Its report artifact is enough to compare the proposal with the separate CI run that actually executed the tasks.
+
+The observer uses `tested-ref: merge` by default, matching the integrated examples and the merge commit that CI tests. Use `tested-ref: head` only when the consumer CI intentionally tests the pull request head and you have checked that the comparison is still meaningful. Fork pull requests, a missing `JEV_API_KEY`, or missing external-context permission bypass the API call and keep the complete plan.
+
+### 2. Choose an integrated workflow
+
+After the observer has produced useful evidence, choose the integration that matches your jobs:
 
 | Your CI looks like… | Start here |
 | --- | --- |
 | Separate jobs with their own setup and dependencies | **[Static jobs](examples/static-jobs/README.md)** — recommended |
 | Independent tasks that share one launch mechanism | [Task matrix](examples/matrix/README.md) |
 
-Both examples target Go and Helm projects. Adapt the commands and tool setup to your repository. Copy the catalog, workflow, and bundled validator as described in each guide. Keep their task IDs and dependencies in sync.
+Both supplied templates call one `select` action step on every event. On a pull request it may observe the diff when authorized. On a push, schedule, or merge group event it reads the catalog at `github.sha`, does not call Jev, and returns the full effective plan. An invalid catalog fails the action; the templates do not silently invent a hardcoded full plan.
 
-### 2. Reference your existing jobs
+Both templates keep `ci-required`, real `needs` dependencies, `tested-sha` checkouts, and their final plan/result checks on every event. They upload the selector's `report-path` as `jev-plan-report-${{ github.run_id }}-${{ github.run_attempt }}` with 14-day retention; that upload is soft-failing so a missing report does not hide a CI result. Their bundled validator remains template-specific and mandatory within those supplied integrated templates. It is not required for the initial observer or for an arbitrary custom workflow.
+
+### 3. Define the catalog and outputs
 
 The catalog lives at `.github/task-routing.yaml`. A small catalog could look like this:
 
@@ -90,7 +101,7 @@ tasks:
 
 `unit` and `build` always run. A change to a chart values schema also forces `helm`; other changes leave it eligible for Jev's assessment. The workflow declares `build` as a prerequisite for `helm`; it stays mandatory here. Describe what each task verifies. A task may reference several jobs; omitting `job` includes all jobs in that workflow.
 
-Every catalog task also has a direct action output with the same ID. It is the exact string `true` or `false`, so a static job can use its own output without parsing the aggregate map. This job excerpt keeps the build dependency declared above:
+The action publishes `run`, `selected`, `matrix`, `has-tasks`, `status`, `tested-sha`, and `report-path`. Every catalog task also has a direct output with the same ID, containing the exact string `true` or `false`. Use that direct output when a static job needs one task:
 
 ```yaml
 jobs:
@@ -99,31 +110,28 @@ jobs:
     if: ${{ always() && needs.plan.result == 'success' && needs.build.result == 'success' && needs.plan.outputs.helm == 'true' }}
 ```
 
-The planning job should publish that named output from both the pull request selector and the full non-PR plan. Keep the aggregate `run`, `selected`, `matrix`, `has-tasks`, `status`, and `tested-sha` outputs for gates and matrix consumers; `report-path` stays local to the planning runner. See [Migrate from paths-filter](docs/paths-filter.md) for the output and semantics change.
+The selector step is the only source for the plan job outputs on all events. Keep the aggregate `run` output for final gates and custom consumers; `report-path` is local to the planning runner. For a large custom catalog, use `fromJSON(needs.plan.outputs.run)` and validate the object directly in your gate. Named task outputs and the supplied template validator are conveniences of the fixed examples, not requirements of the action contract. See [the action reference](docs/reference.md#custom-workflow-gates) for the custom pattern.
 
-This small catalog illustrates the format; the complete templates include more tasks. Match your catalog to your workflow, and merge it into the base branch before the first PR you want to analyze. The selector reads that trusted base version.
-
-### 3. Enable shadow mode
-
-This is an unpublished prototype. The excerpt uses `@main` temporarily; pin the delivered routing-schema commit before adoption:
+Pin the action as follows in the release-ready examples:
 
 ```yaml
-- name: Plan this pull request
-  id: select
-  if: ${{ github.event_name == 'pull_request' }}
-  uses: guilhem/jev-ci-selector@main
-  with:
-    mode: shadow
-    api-key: ${{ secrets.JEV_API_KEY }}
-    allow-external-context: 'true'
+uses: guilhem/jev-ci-selector@v0.1.0
 ```
 
-Add `JEV_API_KEY` as a repository secret and opt in to sending the diff, changed paths, commit SHAs, and task context and questions to TypeSafe. Shadow mode still makes that external call when authorized. Without a key or permission, every task is kept and no Jev call is made.
+`v0.1.0` is the documented release reference; do not treat it as published until the release exists. A repository that requires immutable references can replace it with the full commit SHA for that release and keep the version in a comment.
 
-The default provider is TypeSafe at `https://api.typesafe.ai`; the SDK calls its
-System One endpoint under `/v1/systemone` and uses the catalog's `model`. A
-custom provider must expose the Jev System One contract, not a chat-completions
-API. For example, this uses OpenCode Zen's temporary free endpoint:
+### 4. Authorize shadow calls
+
+Add `JEV_API_KEY` as a repository secret only after approving the transfer of the diff, changed paths, commit SHAs, task metadata, and questions to TypeSafe. The explicit opt-in is required:
+
+```yaml
+with:
+  mode: shadow
+  api-key: ${{ secrets.JEV_API_KEY }}
+  allow-external-context: 'true'
+```
+
+Without a key or permission, every task is kept and no Jev call is made. Fork pull requests are also no-call paths. The default provider is TypeSafe at `https://api.typesafe.ai`; the SDK uses `/v1/systemone` and the catalog's canonical `model`. A custom provider must expose the Jev System One contract, not a chat-completions API:
 
 ```yaml
 with:
@@ -134,18 +142,9 @@ with:
   allow-external-context: 'true'
 ```
 
-The catalog still declares a pinned version such as `model: jev-1.13.0`; the provider must
-return that pinned canonical version in its response. The endpoint must use
-HTTPS and contain no URL credentials, query, or fragment. Trailing slashes are
-normalized. OpenCode Free is temporary; see [its endpoint documentation](https://opencode.ai/docs/zen/#endpoints).
-A provider response that identifies itself only by an alias, such as
-`jev-1.13-free`, produces a full-CI fallback when it does not match the pinned
-canonical version. See the [evaluation guide](docs/evaluation.md) for reproducible
-contract and relevance checks.
+The catalog still declares a canonical version such as `model: jev-1.13.0`; the provider response must identify that version. Custom endpoints must use HTTPS and contain no URL credentials, query, or fragment. Invalid API configuration fails before network access, and a model-version mismatch falls back to full CI. See the [evaluation guide](docs/evaluation.md) for contract checks.
 
-This is a **step excerpt**, not a complete workflow. Use the linked templates for job outputs, checkouts at `tested-sha`, dependency wiring, and the final gate. The planning job needs only `contents: read` and must not check out or run PR code.
-
-Make **`ci-required` a required status check** in your branch protection rule or ruleset. It rejects failed planning, invalid plans, and selected tasks that did not succeed. The example workflows run full CI on `push`, `schedule`, and `merge_group` without semantic selection.
+Make **`ci-required` a required status check** in your branch protection rule or ruleset when using an integrated template. The check rejects failed planning, invalid plans, and selected tasks that did not succeed.
 
 ## See what would change
 
@@ -162,9 +161,7 @@ Imagine every evaluated group returns `0.02` for `helm`, below the `0.05` thresh
 }
 ```
 
-The proposal says “skip Helm.” **The actual CI still runs Helm.** Compare that proposal with the task's result and duration at the same commit to learn whether the selection would have helped.
-
-The job summary gives you a quick view. The `report-path` output points to the detailed JSON file on the planning runner; save it as an artifact if you want to analyze it later. [Measure shadow runs →](docs/shadow-mode.md)
+The proposal says “skip Helm.” **The actual CI still runs Helm.** Compare that proposal with the task's result and duration at the same tested SHA to learn whether the selection would have helped. The `report-path` output points to the detailed v4 JSON report on the planning runner; the templates save it as an artifact. [Measure shadow runs →](docs/shadow-mode.md)
 
 ## Start with shadow
 
@@ -173,9 +170,9 @@ The job summary gives you a quick view. The `report-path` output points to the d
 | **`shadow`** · default | Every task | The proposed selection, while observing the full run |
 | `enforce` · explicit opt-in | Selected and mandatory tasks; workflow `needs` still applies | The effect of applying a measured selection policy |
 
-Keep essential checks under `always: true`. A timeout, API problem, invalid response, or unsupported diff keeps all tasks. Fork PRs never call Jev. Catalog/workflow changes and forced paths keep every task too, but both modes still record model answers for configured tasks. A policy marked `bypassed` can therefore have a completed model observation. An invalid or unavailable catalog fails the planner because it cannot identify a complete task set.
+Keep essential checks under `always: true`. A timeout, API problem, invalid response, or unsupported diff keeps all tasks. Fork PRs never call Jev. Catalog/workflow changes and forced paths keep every task too, but authorized shadow observations can still record model answers for configured tasks. An invalid or unavailable catalog fails the planner because it cannot identify a complete task set.
 
-Both modes group the complete diff by files and directories and retain the answers for each group. The code composes relevance decisions without calculating a global model probability. The complete diff must still fit `max-diff-bytes`; request count, concurrency and total evaluation time are bounded. See the [shadow guide](docs/shadow-mode.md) for limits and manual PR observation using `workflow_dispatch`.
+Both modes group the complete diff by files and directories and retain the answers for each group. The complete diff must still fit `max-diff-bytes`; request count, concurrency and total evaluation time are bounded. See the [shadow guide](docs/shadow-mode.md) for v4 reports, matched-run analysis, and manual observation.
 
 Need an immediate return to full CI? Set `force-all: 'true'` in the selector's inputs.
 
@@ -186,6 +183,7 @@ The initial `0.05` threshold is an experiment, not an error-rate guarantee. Revi
 | Looking for… | Read this |
 | --- | --- |
 | Every input, output, catalog rule, and fallback | [Action reference](docs/reference.md) |
+| An independent observer | [Shadow example](examples/shadow/README.md) |
 | A workflow with separate jobs and real dependencies | [Static jobs example](examples/static-jobs/README.md) |
 | An independent task matrix with an empty-selection gate | [Matrix example](examples/matrix/README.md) |
 | Comparing proposals with actual CI outcomes | [Shadow mode guide](docs/shadow-mode.md) |
@@ -203,17 +201,17 @@ npm ci --ignore-scripts
 npm run check
 ```
 
-The suite covers deterministic selection, real temporary Git repositories, mocked HTTP, the distributed bundle, and the example workflow gates. No TypeSafe key is needed.
+The suite covers deterministic selection, real temporary Git repositories, mocked HTTP, the distributed bundle, and the example workflow gates. No TypeSafe key is needed. The shadow analyzer is also available as a standalone Node 24 bundle:
 
-After changing bundled code, run `npm run build` and commit `dist/` with its sources. `npm run check:dist` verifies that the shipped bundles match. See the [module map](docs/reference.md#development) to find your way around.
+```sh
+node dist/analyze-shadow.mjs report.json results.json
+npm run analyze:shadow -- report.json results.json
+```
+
+After changing bundled code, run `npm run build` and commit `dist/` with its sources and license file. `npm run check:dist` verifies that the shipped bundles match. See the [module map](docs/reference.md#development) to find your way around.
 
 Have a use case or an integration snag? [Open an issue](https://github.com/guilhem/jev-ci-selector/issues). Please keep secrets and private source code out of reports.
 
 ## Reproducible Jev qualification
 
-The [committed corpus and runner](tests/evaluation/README.md) use generic synthetic
-examples with independent relevance annotations. Each case includes its own diff,
-configuration and source files; no external project checkout is needed.
-Run `npm run eval:replay` without a key or network. Use `npm run eval:live`
-explicitly to create a campaign for those same inputs. Read the
-[evaluation guide](docs/evaluation.md) for how to interpret results.
+The [committed corpus and runner](tests/evaluation/README.md) use generic synthetic examples with independent relevance annotations. Each case includes its own diff, configuration and source files; no external project checkout is needed. Run `npm run eval:replay` without a key or network. Use `npm run eval:live` explicitly to create a campaign for those same inputs. Read the [evaluation guide](docs/evaluation.md) for how to interpret results.

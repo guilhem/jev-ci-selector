@@ -1,3 +1,4 @@
+import { InputError } from './input-error.js';
 import { APITimeoutError, noul, TypeSafeClient, type EntryType } from '@typesafe-ai/sdk';
 import type { Catalog } from './config.js';
 
@@ -9,13 +10,14 @@ export interface JevApiOptions { apiBaseUrl?: string; apiModel?: string }
 export function resolveJevApi(options: JevApiOptions) {
   const baseURL = options.apiBaseUrl || 'https://api.typesafe.ai';
   const model = options.apiModel || undefined;
+  let url: URL;
   try {
-    const url = new URL(baseURL);
+    url = new URL(baseURL);
     if (!/^https:\/\//i.test(baseURL) || /[\s\u0000-\u001f\u007f\\?#]/u.test(baseURL) ||
-      url.protocol !== 'https:' || url.username || url.password ||
-      (model !== undefined && !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}(?![\s\S])/.test(model))) throw new Error();
-    return { baseURL: url.href.replace(/\/+$/, ''), model };
-  } catch { throw new Error('invalid-input'); }
+      url.protocol !== 'https:' || url.username || url.password) throw new Error();
+  } catch { throw new InputError('api-base-url'); }
+  if (model !== undefined && !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}(?![\s\S])/.test(model)) throw new InputError('api-model');
+  return { baseURL: url.href.replace(/\/+$/, ''), model };
 }
 
 export class JevError extends Error {

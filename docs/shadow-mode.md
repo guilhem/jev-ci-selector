@@ -1,23 +1,43 @@
 # Learn from shadow mode
 
-[← Back to the README](../README.md) · [Action reference](reference.md) · [paths-filter migration](paths-filter.md)
+[← Back to the README](../README.md) · [Action reference](reference.md) · [paths-filter migration](paths-filter.md) · [Independent observer](../examples/shadow/README.md)
 
-Shadow mode answers a practical question: **what would this policy have skipped, and what happened when those tasks actually ran?** All effective outputs remain complete, so you can collect evidence before changing execution. A v4 report separates the policy decision from Jev's observation: the task table describes the policy, while the observation records each actual model response.
+Shadow mode answers a practical question: **what would this policy have skipped, and what happened when those tasks actually ran?** All effective outputs remain complete, so you can collect evidence before changing execution. A v4 report separates policy from observation: the task table describes the policy, while the observation records each actual model response.
 
-The direct output for every task is the exact string `"true"` in shadow mode; the aggregate `run` map contains boolean `true` values. Only the report records the hypothetical proposal. Unless an `always` or `force_paths` rule or a required dependency fixes the decision, the task remains eligible for Jev regardless of which paths changed. Bypassed and fallback plans also keep every task.
+The direct output for every task is the exact string `"true"` in shadow mode; the aggregate `run` map contains boolean `true` values. Only the report records the hypothetical proposal. Bypassed and fallback plans also keep every task. A non-pull-request invocation makes no Jev call and returns the full effective plan after reading the catalog at `github.sha`.
 
 ## Collect a matched pair
 
-For each run, keep:
+For each observation, keep all of the following:
 
-1. The JSON file from `report-path`, saved as an artifact from the planning job.
-2. Actual results and durations for every catalog task, from the same workflow run and `tested_sha`.
+1. The JSON file from `report-path`, saved as the artifact named `jev-plan-report-${{ github.run_id }}-${{ github.run_attempt }}` with 14-day retention.
+2. The report run ID and attempt.
+3. Actual results and durations for every catalog task from the CI run that executed those tasks.
+4. The exact `tested_sha`, catalog task IDs, workflow scope, and CI attempt used for that result set.
 
-The report path alone does not move the file between jobs. Do not join an old report with the latest PR state or combine separate attempts just because they share a SHA. The analyzer verifies SHA and task IDs; matching the workflow run or attempt is your responsibility.
+The integrated examples upload the report with `continue-on-error: true`, so a missing report does not hide a CI result. The report path is local to the planning runner; it does not move between jobs by itself. Do not join an old report with the latest PR state or combine separate attempts just because they share a SHA. The analyzer checks the SHA and task IDs; matching the workflow run, attempt, and task scope is a manual responsibility.
 
-When Jev is authorized, shadow mode observes every question-bearing task even when deterministic policy rules keep that task in CI. A protected or configured global path can therefore leave the policy status `bypassed` while the v4 observation is complete and contains real per-task scores. Explicit `force-all`, a disabled opt-in, a fork pull request, a missing key, and non-pull-request events remain no-call cases; their observation is `null`.
+The independent observer is deliberately a different workflow run from the CI run that executes the tasks. Compare the observer report with the CI attempt that tested the same merge commit and catalog scope; do not assume their run IDs or attempts match.
 
-For a catalog containing `unit` and `helm`, a `results.json` file could look like this. Replace the SHA placeholder with the report's full `tested_sha`:
+When Jev is authorized, shadow mode observes every question-bearing task even when deterministic policy rules keep that task in CI. A protected or configured global path can therefore leave policy status `bypassed` while the v4 observation is complete and contains real per-task scores. Explicit `force-all`, a disabled opt-in, a fork pull request, a missing key, and non-pull-request events remain no-call cases; their observation is `null`.
+
+## Download an observer report
+
+Use the observer workflow run ID and attempt when downloading its artifact:
+
+```sh
+RUN_ID=123456789
+RUN_ATTEMPT=1
+gh run download "$RUN_ID" \
+  --name "jev-plan-report-${RUN_ID}-${RUN_ATTEMPT}" \
+  --dir shadow-report
+```
+
+The `RUN_ID` here belongs to the standalone observer. The actual task results normally come from another CI run and must be assembled manually.
+
+## Prepare results manually
+
+For a catalog containing `unit` and `helm`, a `results.json` file could look like this. Replace the SHA with the report's full `tested_sha`, and include exactly the task IDs present in that report:
 
 ```json
 {
@@ -30,14 +50,15 @@ For a catalog containing `unit` and `helm`, a `results.json` file could look lik
 }
 ```
 
-Include **exactly** the task IDs in that run's catalog. Results are `success`, `failure`, `skipped`, or `cancelled`; durations are nonnegative milliseconds. Failure classifications are `regression`, `flaky`, `infrastructure`, or `unknown` (the default). The optional `relevant_tasks` array records suites you manually identified as relevant.
+Results are `success`, `failure`, `skipped`, or `cancelled`; durations are nonnegative milliseconds. Failure classifications are `regression`, `flaky`, `infrastructure`, or `unknown` (the default). The optional `relevant_tasks` array records suites you manually identified as relevant. Verify the actual CI attempt and task scope before writing this file. A result from a different catalog, workflow scope, or tested SHA is not a valid pair.
 
 ## Compare the proposal with reality
 
-From a checkout of this project, with dependencies installed:
+The release bundle is a standalone Node.js 24 program. Copy `dist/analyze-shadow.mjs` and `dist/licenses.txt` from the same action version when using it outside this repository. The source remains available at `scripts/analyze-shadow.mjs`.
 
 ```sh
-node scripts/analyze-shadow.mjs report.json results.json
+node dist/analyze-shadow.mjs shadow-report/report.json results.json
+npm run analyze:shadow -- shadow-report/report.json results.json
 ```
 
 The analyzer rejects mismatched SHAs, task IDs, or invalid inputs. It returns:
@@ -59,17 +80,17 @@ The whole diff is evaluated in one group when it fits; its independent questions
 
 Chunking uses conservative byte guards: at most 64 KiB for the shared state plus the longest question, and at most 128 KiB for each request. These are byte limits, not tokenizer guarantees. The explicit `max-diff-bytes` input is a separate whole-collection cap and remains 64 KiB by default; exceeding it falls back before observation.
 
-Each group reports its paths, byte range, hashes, status, model metadata, usage, and task probabilities. Source text, questions, credentials, and provider error bodies are never written to the report. Cross-chunk interactions are not evaluated globally. A complete observation is required before a hypothetical skip can be considered. For a chunked proposal, the documented heuristic is that a task is proposed to run when any chunk's score is at or above `skip_below`; this is a policy heuristic over per-chunk scores, not a global model probability. The report keeps the task probability `null` in both whole and partitioned cases and the summary does not invent a maximum or aggregate score.
+Each group reports its paths, byte range, hashes, status, model metadata, usage, and task probabilities. Source text, questions, credentials, and provider error bodies are never written to the report. Cross-chunk interactions are not evaluated globally. A complete observation is required before a hypothetical skip can be considered. For a chunked proposal, the documented heuristic is that a task is proposed to run when any chunk's score is at or above `skip_below`; this is a policy heuristic over per-chunk scores, not a global model probability. The report keeps the task probability `null` in whole and partitioned cases and the summary does not invent a maximum or aggregate score.
 
 Shadow still keeps every task in the effective plan. `enforce` uses the same grouped judgments and boolean decision rules; it applies the resulting plan.
 
 ## Observe a pull request manually
 
-For a workflow dispatch, an operator can request an evaluation for a selected pull request. The action reads pull request metadata with the read-only token, resolves the current immutable base, head, and merge commits, and still validates the merge parents before collecting the diff. The catalog is the trusted file from the workflow's selected `GITHUB_SHA`, so a manual report can intentionally have a `config_sha` different from `base_sha`; record that relationship with the artifact. Manual evaluation supports either mode and publishes its plan without executing CI jobs. Keep the observer workflow in shadow during evaluation.
+For `workflow_dispatch`, an authorized operator can request an evaluation for a selected open pull request. The action reads pull request metadata with the read-only token, resolves the current immutable base, head, and merge commits, and validates merge parents before collecting the diff. The catalog is the trusted file from the selected workflow revision, so a manual report can intentionally have a `config_sha` different from `base_sha`; keep that relationship with the artifact. Manual evaluation supports either mode and publishes its plan without executing CI jobs. Keep the observer in shadow during evaluation.
 
 ## From observation to enforce
 
-Compare results by catalog hash, model version, and suite. For v4 reports, inspect policy status and observation status separately, then review every chunk's raw task scores and error code. Look at proposed savings alongside missed regressions and fallback frequency. Classify flaky tests and infrastructure failures separately, and include changes with manually identified relevant suites.
+Compare results by `config_sha`, `catalog_hash`, model version, `tested_sha`, workflow scope, attempt, and suite. For v4 reports, inspect policy status and observation status separately, then review every chunk's raw task scores and error code. Look at proposed savings alongside missed regressions and fallback frequency. Classify flaky tests and infrastructure failures separately, and include changes with manually identified relevant suites.
 
 Enable `enforce` only after an explicit review of that evidence. Keep suites that still need observation under `always: true`, and retain full control runs, especially on non-PR events. There is no universal success threshold or guaranteed error rate for the initial `skip_below: 0.05` setting.
 

@@ -7339,6 +7339,14 @@ var actualNeeds = needs.filter(Boolean).sort();
 var set = (values) => [...values].sort();
 import_strict.default.deepEqual(set(gate.env.EXPECTED_TASKS.split(",").filter(Boolean)), tasks, "catalog and gate task IDs diverge");
 import_strict.default.deepEqual(actualNeeds, expectedNeeds, "gate needs and source declaration diverge");
+for (const [output, value] of Object.entries(jobs.plan.outputs)) {
+  import_strict.default.equal(value, `\${{ steps.select.outputs.${output} }}`, `${output} must come directly from the selector`);
+}
+var selectors = jobs.plan.steps.filter((step) => step.id === "select");
+import_strict.default.equal(selectors.length, 1, "plan must contain exactly one select step");
+import_strict.default.ok(typeof selectors[0].uses === "string" && selectors[0].uses.trim(), "selector must use an action");
+import_strict.default.equal(selectors[0].if, void 0, "selector must run on every event");
+import_strict.default.ok(!jobs.plan.steps.some((step) => step.id === "full"), "duplicate full planner must be removed");
 import_strict.default.ok(jobs.plan.outputs.run && jobs.plan.outputs.selected && jobs.plan.outputs.matrix, "plan outputs are incomplete");
 if (!Object.hasOwn(jobs, "tasks")) {
   import_strict.default.deepEqual(set(Object.keys(jobs).filter((id) => !["plan", "ci-required"].includes(id))), tasks, "static job IDs diverge");
@@ -7349,8 +7357,8 @@ if (!Object.hasOwn(jobs, "tasks")) {
     import_strict.default.ok(taskNeeds.includes("plan"), `${task} must need plan`);
     import_strict.default.equal(
       jobs.plan.outputs[task],
-      `\${{ github.event_name == 'pull_request' && steps.select.outputs.${task} || steps.full.outputs.${task} }}`,
-      `${task} must be published from the selector or full plan`
+      `\${{ steps.select.outputs.${task} }}`,
+      `${task} must be published directly from the selector`
     );
   }
 } else {

@@ -2,7 +2,7 @@
 
 [← Back to the README](../README.md) · [Shadow mode guide](shadow-mode.md) · [paths-filter migration](paths-filter.md) · [Security](../SECURITY.md)
 
-`jev-ci-selector` produces a CI task selection plan. It does not execute tasks, generate commands, discover tests, or create a dynamic GitHub Actions job graph. Consumers own runners, secrets, commands, and execution order.
+`jev-ci-selector` produces a CI task selection plan. It does not execute tasks, generate commands, discover tests, or create a dynamic GitHub Actions job graph. Consumers own runners, secrets, commands, and execution order. The release-ready examples use `guilhem/jev-ci-selector@v0.1.0` as a target reference; the tag is not assumed to be published until the release. Replace it with the release commit SHA when immutable pinning is required.
 
 ## Inputs
 
@@ -24,6 +24,8 @@
 Boolean inputs accept only `true` and `false`. Quote them as strings in workflow YAML. Budgets must be positive integers; the timeout cannot exceed Node's timer limit of `2147483647` ms. `config` must be a relative path within the repository.
 
 An empty `api-base-url` uses the default, and an empty `api-model` uses the catalog model. A custom model identifier is limited to 128 ASCII letters, digits, `.`, `_`, `:`, `/`, and `-`, starting with a letter or digit. Invalid API configuration fails the planner before any network access. These explicit inputs take precedence over SDK environment variables.
+
+Diagnostics name the invalid input and the fixed expected constraint, never the supplied value. This applies to `mode`, `tested-ref`, boolean inputs, integer budgets, `api-base-url`, and `api-model`; raw exceptions and provider error bodies are not exposed.
 
 ## Outputs
 
@@ -107,13 +109,44 @@ Job references do not turn workflow `needs` into selector dependencies. Declare 
 | Selection calculated, including an entirely deterministic plan | `planned` | Apply the chosen mode |
 | `force-all`, fork PR, missing key, or no external-context permission | `bypassed` | All tasks; no Jev call |
 | Protected catalog/workflow path or configured force-all path | `bypassed` | All tasks; both modes still observe configured tasks |
-| Non-PR event | `bypassed` | All tasks; examples bypass the action itself |
+| Non-PR event | `bypassed` | The action reads the catalog at `github.sha`, makes no Jev call, and returns all tasks |
 | Timeout, API/network error, rate limit, or invalid/partial response | `fallback` | All tasks |
 | Incomplete, oversized, incoherent, or unsupported diff | `fallback` | All tasks |
 | Missing or invalid catalog | No valid plan | Planner fails |
 | Internal error preventing a coherent plan | No valid plan | Planner fails |
 
 A fallback is a valid full plan. The final `ci-required` gate must reject a failed planner or invalid plan, and must verify that every selected task actually succeeded.
+
+### Custom workflow gates
+
+The supplied static and matrix templates include `dist/validate.cjs` copied as `.github/ci-selector-validate.cjs`. That validator is mandatory inside those fixed templates because it checks their known catalog, launcher, prerequisite, and gate contract. It is not required for the independent observer or for an arbitrary custom workflow.
+
+For a larger or differently shaped catalog, publish the aggregate `run` output and validate it in the final gate. The following is a wiring excerpt only: it omits `runs-on`, the selector step, checkout/setup, and the implementation of the trusted validator script.
+
+```yaml
+jobs:
+  plan:
+    outputs:
+      run: ${{ steps.select.outputs.run }}
+      tested-sha: ${{ steps.select.outputs.tested-sha }}
+
+  ci-required:
+    needs: [plan, unit, build]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate the plan directly
+        env:
+          PLAN_RUN: ${{ needs.plan.outputs.run }}
+          NEEDS_JSON: ${{ toJSON(needs) }}
+        run: node .github/validate-plan.mjs
+
+  unit:
+    needs: plan
+    if: ${{ always() && needs.plan.result == 'success' && fromJSON(needs.plan.outputs.run).unit == true }}
+```
+
+Use `fromJSON(...)` only in GitHub Actions expressions, such as the `unit` condition above. The Node validator should use `JSON.parse(process.env.PLAN_RUN)` and `JSON.parse(process.env.NEEDS_JSON)`, then check that the keys and boolean values match the trusted catalog, check the required prerequisites, and require success for every task whose value is `true`. There is no named-output requirement: named task outputs are a convenience of the static template. Do not use the supplied template validator to imply coverage for a custom catalog or launcher.
 
 ## Commit and diff collection
 
@@ -168,13 +201,29 @@ maximum, average or product is published or used as a global probability. Partia
 evidence retains its scores; incomplete evidence cannot justify an omission.
 Policy reasons and observation errors remain separate.
 
-Version 4 reports retain historical v1–v3 readability and add `tested_ref`,
-`diff_base_sha`, `job_metadata` and `observation_error`. They record metadata
-provenance and hashes, group paths/ranges/hashes, raw scores, model, token usage,
-timings and evaluation status. They never include patches, file contents, question
-bodies, API credentials or provider error bodies. Task `probability` is null;
-`proposed_run` and reasons explain the composed decision.
+Version 4 is the current report shape. It keeps `config_sha`, `base_sha`,
+`head_sha`, `tested_sha`, `catalog_hash`, `diff_hash`, `mode`, `status`, model
+configuration, timings, usage, and task decisions, and adds `tested_ref`,
+`diff_base_sha`, `job_metadata`, `observation_error`, and the v4 observation.
+`config_sha` identifies the trusted catalog/workflow revision: the PR base SHA for
+automatic pull requests and the selected `GITHUB_SHA` for manual observation.
+Reports record metadata provenance and hashes, group paths/ranges/hashes, raw
+scores, model, token usage, timings, and evaluation status. They never include
+patches, file contents, question bodies, API credentials, or provider error bodies.
+Task `probability` is null; `proposed_run` and reasons explain the composed decision.
 
 When all job questions do not fit together, independent questions share the same group state in bounded batches. Each request lists its job IDs and evaluation status; completed answers survive failures in another batch.
 
 Workflow-level `defaults` and `env` retain their native values and provenance. Package scripts in composite actions are read from the caller workspace and the declared step directory. Shell directory switches, package-manager workspace/directory switches, and reusable workflows that cannot be resolved are marked incomplete and retain the affected job; they are never attributed to a guessed manifest.
+
+## Development
+
+The source shadow analyzer is `scripts/analyze-shadow.mjs`. The release bundle
+`dist/analyze-shadow.mjs` is standalone and runs with Node.js 24; copy it from the
+same release as the action together with `dist/licenses.txt` when distributing it.
+Use either command with a report and manually prepared results file:
+
+```sh
+node dist/analyze-shadow.mjs report.json results.json
+npm run analyze:shadow -- report.json results.json
+```

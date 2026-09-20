@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, writeFile, rm, copyFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { selectTasks } from '../../src/policy.js';
@@ -28,6 +28,11 @@ test('shadow measurement joins by exact SHA and distinguishes regressions, flaky
     await writeFile(reportFile, JSON.stringify(report)); await writeFile(resultsFile, JSON.stringify(results));
     const args = [resolve('scripts/analyze-shadow.mjs'), reportFile, resultsFile];
     const analysis = JSON.parse(execFileSync(process.execPath, args, { encoding: 'utf8' }));
+    const standalone = join(directory, 'analyze-shadow.mjs');
+    await copyFile(resolve('dist/analyze-shadow.mjs'), standalone);
+    assert.deepEqual(JSON.parse(execFileSync(process.execPath, [standalone, reportFile, resultsFile], {
+      cwd: directory, encoding: 'utf8',
+    })), analysis, 'distributed analyzer works without the repository or installed dependencies');
     assert.equal(analysis.duration_ms_would_skip, 100);
     assert.deepEqual(analysis.failures_would_miss, { regression: ['e2e'], flaky: ['prepare'], infrastructure: ['build'], unknown: [] });
     assert.deepEqual(analysis.manually_relevant_would_skip, ['helm']);

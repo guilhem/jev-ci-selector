@@ -1,3 +1,4 @@
+import { InputError } from './input-error.js';
 import { resolveCatalog, type ResolveCatalogOptions } from './metadata.js';
 import { externalActionResolver } from './external.js';
 import { createHash } from 'node:crypto';
@@ -46,11 +47,12 @@ export interface PlannerDependencies {
 
 export async function planChange(inputs: Inputs, context: Context, dependencies: PlannerDependencies = {}) {
   validateConfigPath(inputs.config);
-  if (!['head', 'merge'].includes(inputs.testedRef ?? 'merge')) throw new Error('invalid-input');
+  if (!['head', 'merge'].includes(inputs.testedRef ?? 'merge')) throw new InputError('tested-ref');
   if (inputs.testedRef === 'head' && context.eventName === 'pull_request') context = { ...context, testedSha: context.headSha };
   const api = resolveJevApi(inputs);
-  if (!['shadow', 'enforce'].includes(inputs.mode) || !Number.isSafeInteger(inputs.timeoutMs) || inputs.timeoutMs < 1 || inputs.timeoutMs > 2_147_483_647 ||
-    !Number.isSafeInteger(inputs.maxDiffBytes) || inputs.maxDiffBytes < 1) throw new Error('invalid-input');
+  if (!['shadow', 'enforce'].includes(inputs.mode)) throw new InputError('mode');
+  if (!Number.isSafeInteger(inputs.timeoutMs) || inputs.timeoutMs < 1 || inputs.timeoutMs > 2_147_483_647) throw new InputError('timeout-ms');
+  if (!Number.isSafeInteger(inputs.maxDiffBytes) || inputs.maxDiffBytes < 1) throw new InputError('max-diff-bytes');
   const started = performance.now();
   const repository = await (dependencies.createRepository ?? GitRepository.create)({
     remoteUrl: `${context.serverUrl}/${context.repository}.git`, token: inputs.githubToken,

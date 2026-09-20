@@ -34069,6 +34069,31 @@ function validateConfigPath(path2) {
   if (!path2 || path2.startsWith("/") || path2.includes("\\") || path2.includes("\0") || path2.split("/").some((part) => !part || part === "." || part === "..")) throw new ConfigError();
 }
 
+// src/input-error.ts
+var constraints = {
+  mode: 'one of "shadow" or "enforce"',
+  "tested-ref": 'one of "head" or "merge"',
+  "allow-external-context": '"true" or "false"',
+  "force-all": '"true" or "false"',
+  "timeout-ms": "an integer from 1 to 2147483647",
+  "max-diff-bytes": "a positive safe integer",
+  "api-base-url": "an absolute HTTPS URL without credentials, query, fragment, whitespace, control characters or backslashes",
+  "api-model": '1–128 characters, starting with an ASCII letter or digit and containing only ASCII letters, digits, ".", "_", ":", "/" or "-"'
+};
+var InputError = class extends Error {
+  constructor(field) {
+    super("invalid-input");
+    this.field = field;
+  }
+};
+function actionFailureMessage(error) {
+  if (error instanceof InputError && Object.hasOwn(constraints, error.field)) {
+    const field = error.field;
+    return `jev-ci-selector: invalid input "${field}"; expected ${constraints[field]}; no plan published.`;
+  }
+  return error instanceof ConfigError ? "jev-ci-selector: catalog unavailable or invalid; no plan published." : "jev-ci-selector: planner failed; CI must reject this run.";
+}
+
 // src/metadata.ts
 var import_node_crypto = require("node:crypto");
 var import_yaml2 = __toESM(require_dist());
@@ -35690,13 +35715,15 @@ var parseBody = async (res) => {
 function resolveJevApi(options) {
   const baseURL = options.apiBaseUrl || "https://api.typesafe.ai";
   const model = options.apiModel || void 0;
+  let url;
   try {
-    const url = new URL(baseURL);
-    if (!/^https:\/\//i.test(baseURL) || /[\s\u0000-\u001f\u007f\\?#]/u.test(baseURL) || url.protocol !== "https:" || url.username || url.password || model !== void 0 && !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}(?![\s\S])/.test(model)) throw new Error();
-    return { baseURL: url.href.replace(/\/+$/, ""), model };
+    url = new URL(baseURL);
+    if (!/^https:\/\//i.test(baseURL) || /[\s\u0000-\u001f\u007f\\?#]/u.test(baseURL) || url.protocol !== "https:" || url.username || url.password) throw new Error();
   } catch {
-    throw new Error("invalid-input");
+    throw new InputError("api-base-url");
   }
+  if (model !== void 0 && !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}(?![\s\S])/.test(model)) throw new InputError("api-model");
+  return { baseURL: url.href.replace(/\/+$/, ""), model };
 }
 var JevError = class extends Error {
   constructor(code, metadata = { model: null, usage: null }) {
@@ -39142,10 +39169,12 @@ function eventContext(env, event, testedRef = "merge") {
 }
 async function planChange(inputs, context, dependencies = {}) {
   validateConfigPath(inputs.config);
-  if (!["head", "merge"].includes(inputs.testedRef ?? "merge")) throw new Error("invalid-input");
+  if (!["head", "merge"].includes(inputs.testedRef ?? "merge")) throw new InputError("tested-ref");
   if (inputs.testedRef === "head" && context.eventName === "pull_request") context = { ...context, testedSha: context.headSha };
   const api = resolveJevApi(inputs);
-  if (!["shadow", "enforce"].includes(inputs.mode) || !Number.isSafeInteger(inputs.timeoutMs) || inputs.timeoutMs < 1 || inputs.timeoutMs > 2147483647 || !Number.isSafeInteger(inputs.maxDiffBytes) || inputs.maxDiffBytes < 1) throw new Error("invalid-input");
+  if (!["shadow", "enforce"].includes(inputs.mode)) throw new InputError("mode");
+  if (!Number.isSafeInteger(inputs.timeoutMs) || inputs.timeoutMs < 1 || inputs.timeoutMs > 2147483647) throw new InputError("timeout-ms");
+  if (!Number.isSafeInteger(inputs.maxDiffBytes) || inputs.maxDiffBytes < 1) throw new InputError("max-diff-bytes");
   const started = performance.now();
   const repository = await (dependencies.createRepository ?? GitRepository.create)({
     remoteUrl: `${context.serverUrl}/${context.repository}.git`,
@@ -39310,19 +39339,19 @@ async function manualContext(env, number, mode, token, fetchImpl = globalThis.fe
 // src/action.ts
 function booleanInput(name) {
   const value = core.getInput(name) || "false";
-  if (value !== "true" && value !== "false") throw new Error("invalid-input");
+  if (value !== "true" && value !== "false") throw new InputError(name);
   return value === "true";
 }
 function integerInput(name, defaultValue) {
   const value = core.getInput(name) || String(defaultValue);
-  if (!/^[1-9][0-9]*$/.test(value) || !Number.isSafeInteger(Number(value))) throw new Error("invalid-input");
+  if (!/^[1-9][0-9]*$/.test(value) || !Number.isSafeInteger(Number(value))) throw new InputError(name);
   return Number(value);
 }
 async function main() {
   const mode = core.getInput("mode") || "shadow";
-  if (mode !== "shadow" && mode !== "enforce") throw new Error("invalid-input");
+  if (mode !== "shadow" && mode !== "enforce") throw new InputError("mode");
   const testedRef = core.getInput("tested-ref") || "merge";
-  if (testedRef !== "head" && testedRef !== "merge") throw new Error("invalid-input");
+  if (testedRef !== "head" && testedRef !== "merge") throw new InputError("tested-ref");
   const inputs = {
     config: core.getInput("config") || ".github/task-routing.yaml",
     mode,
@@ -39349,7 +39378,7 @@ async function main() {
   core.info(`jev-ci-selector: ${plan.status}, ${plan.selected.length}/${Object.keys(plan.tasks).length} tasks (${plan.mode})`);
 }
 void main().catch((error) => {
-  core.setFailed(error instanceof ConfigError ? "jev-ci-selector: catalog unavailable or invalid; no plan published." : "jev-ci-selector: planner failed; CI must reject this run.");
+  core.setFailed(actionFailureMessage(error));
 });
 /*! Bundled license information:
 

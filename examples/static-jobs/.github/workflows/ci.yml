@@ -16,24 +16,22 @@ jobs:
     # script. The selector receives only its declared inputs while planning.
     runs-on: ubuntu-latest
     outputs:
-      run: ${{ github.event_name == 'pull_request' && steps.select.outputs.run || steps.full.outputs.run }}
-      selected: ${{ github.event_name == 'pull_request' && steps.select.outputs.selected || steps.full.outputs.selected }}
-      matrix: ${{ github.event_name == 'pull_request' && steps.select.outputs.matrix || steps.full.outputs.matrix }}
-      has-tasks: ${{ github.event_name == 'pull_request' && steps.select.outputs.has-tasks || steps.full.outputs.has-tasks }}
-      status: ${{ github.event_name == 'pull_request' && steps.select.outputs.status || steps.full.outputs.status }}
-      tested-sha: ${{ github.event_name == 'pull_request' && steps.select.outputs.tested-sha || steps.full.outputs.tested-sha }}
-      build: ${{ github.event_name == 'pull_request' && steps.select.outputs.build || steps.full.outputs.build }}
-      e2e_network: ${{ github.event_name == 'pull_request' && steps.select.outputs.e2e_network || steps.full.outputs.e2e_network }}
-      e2e_upgrade: ${{ github.event_name == 'pull_request' && steps.select.outputs.e2e_upgrade || steps.full.outputs.e2e_upgrade }}
-      helm: ${{ github.event_name == 'pull_request' && steps.select.outputs.helm || steps.full.outputs.helm }}
-      lint: ${{ github.event_name == 'pull_request' && steps.select.outputs.lint || steps.full.outputs.lint }}
-      unit: ${{ github.event_name == 'pull_request' && steps.select.outputs.unit || steps.full.outputs.unit }}
+      run: ${{ steps.select.outputs.run }}
+      selected: ${{ steps.select.outputs.selected }}
+      matrix: ${{ steps.select.outputs.matrix }}
+      has-tasks: ${{ steps.select.outputs.has-tasks }}
+      status: ${{ steps.select.outputs.status }}
+      tested-sha: ${{ steps.select.outputs.tested-sha }}
+      build: ${{ steps.select.outputs.build }}
+      e2e_network: ${{ steps.select.outputs.e2e_network }}
+      e2e_upgrade: ${{ steps.select.outputs.e2e_upgrade }}
+      helm: ${{ steps.select.outputs.helm }}
+      lint: ${{ steps.select.outputs.lint }}
+      unit: ${{ steps.select.outputs.unit }}
     steps:
-      - name: Select pull request tasks
+      - name: Select CI tasks
         id: select
-        if: ${{ github.event_name == 'pull_request' }}
-        # Temporary prototype reference; pin a delivered routing-schema commit before adoption.
-        uses: guilhem/jev-ci-selector@main
+        uses: guilhem/jev-ci-selector@v0.1.0
         with:
           config: .github/task-routing.yaml
           mode: shadow
@@ -43,26 +41,15 @@ jobs:
           # TypeSafe. Remove it when that authorization is not acceptable.
           allow-external-context: 'true'
           force-all: 'false'
-      - name: Plan full CI for non pull request events
-        id: full
-        if: ${{ github.event_name != 'pull_request' }}
-        env:
-          TESTED_SHA: ${{ github.sha }}
-        run: |
-          node <<'NODE'
-          const fs = require('node:fs');
-          const tasks = ['build', 'e2e_network', 'e2e_upgrade', 'helm', 'lint', 'unit'];
-          const run = Object.fromEntries(tasks.map((task) => [task, true]));
-          const matrix = { include: tasks.map((task) => ({ task })) };
-          const set = (name, value) => fs.appendFileSync(process.env.GITHUB_OUTPUT, `${name}=${value}\n`);
-          set('run', JSON.stringify(run));
-          set('selected', JSON.stringify(tasks));
-          set('matrix', JSON.stringify(matrix));
-          set('has-tasks', 'true');
-          set('status', 'bypassed');
-          set('tested-sha', process.env.TESTED_SHA);
-          for (const task of tasks) set(task, 'true');
-          NODE
+      - name: Upload plan report
+        if: ${{ always() && steps.select.outcome == 'success' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        continue-on-error: true
+        with:
+          name: jev-plan-report-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.select.outputs.report-path }}
+          retention-days: 14
+          if-no-files-found: error
 
   build:
     needs: plan

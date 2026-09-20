@@ -43,17 +43,16 @@ Copy an old glob into `force_paths` only if every match must still run that task
 Keep the selector in a dedicated planning job with `contents: read`, without checking out or executing PR code:
 
 ```yaml
-- name: Plan this pull request
+- name: Plan CI tasks
   id: select
-  if: ${{ github.event_name == 'pull_request' }}
-  uses: guilhem/jev-ci-selector@main
+  uses: guilhem/jev-ci-selector@v0.1.0
   with:
     mode: shadow
     api-key: ${{ secrets.JEV_API_KEY }}
     allow-external-context: 'true'
 ```
 
-The key and explicit opt-in authorize sending the diff, paths, SHAs, and task questions to TypeSafe, including in shadow mode. Without either, all tasks are kept without a Jev call. The active catalog comes from the PR's base SHA, and changing it or a workflow forces full CI.
+The key and explicit opt-in authorize sending the diff, paths, SHAs, and task questions to TypeSafe, including in shadow mode. Without either, all tasks are kept without a Jev call. Fork pull requests also bypass the API. The active catalog comes from the PR's base SHA; on other events the action reads it at `github.sha`, makes no Jev call, and returns a full effective plan. An invalid catalog fails the action.
 
 ## 3. Keep the downstream output names
 
@@ -61,10 +60,10 @@ In the planning job, replace a mapping such as `helm: ${{ steps.changes.outputs.
 
 ```yaml
 outputs:
-  helm: ${{ github.event_name == 'pull_request' && steps.select.outputs.helm || steps.full.outputs.helm }}
+  helm: ${{ steps.select.outputs.helm }}
 ```
 
-The [static example](../examples/static-jobs/.github/workflows/ci.yml) includes the `select` and `full` steps. Its full-plan step emits `true` for every task on push, schedule, and merge-group events, without calling the selector.
+The [static example](../examples/static-jobs/.github/workflows/ci.yml) invokes one `select` step on every event. Its non-PR path is still handled by the action: it reads the catalog at `github.sha`, does not call Jev, and emits `true` for every task in the effective plan.
 
 A consumer condition can keep its existing shape:
 
@@ -78,7 +77,7 @@ For an existing matrix built from `paths-filter`'s `changes` array, publish the 
 
 ```yaml
 outputs:
-  packages: ${{ github.event_name == 'pull_request' && steps.select.outputs.selected || steps.full.outputs.selected }}
+  packages: ${{ steps.select.outputs.selected }}
 ```
 
 The consumer can continue to use `fromJSON(needs.plan.outputs.packages)`. Alternatively, use our ready-made `matrix` output. Keep a job-level `has-tasks` guard before matrix expansion, and use only independent tasks. The [matrix example](../examples/matrix/README.md) provides that guard and the final check.
@@ -95,4 +94,4 @@ The consumer can continue to use `fromJSON(needs.plan.outputs.packages)`. Altern
 
 Task IDs preserve their spelling, but must be unique ignoring case and cannot collide with standard action output names or reserved catalog IDs. See the [validation rules](reference.md#validation).
 
-Start in `shadow`: **every named task output is `true`**, even when the report proposes skipping it. Bypassed and fallback plans also keep every task; fork PRs never call Jev. Compare reports with actual outcomes before explicitly switching to `enforce`. [Measure shadow runs →](shadow-mode.md)
+Start in `shadow`: **every named task output is `true`**, even when the report proposes skipping it. Bypassed and fallback plans also keep every task; fork PRs never call Jev. The supplied static and matrix templates require their copied, template-specific validator and final gate; an arbitrary custom workflow can validate the aggregate `run` JSON directly and does not need named task outputs. Compare reports with actual outcomes before explicitly switching to `enforce`. [Measure shadow runs →](shadow-mode.md)

@@ -1,8 +1,8 @@
 import { readFile } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
 import Ajv from 'ajv';
+import schema from '../schemas/report.schema.json' with { type: 'json' };
 
-const schema = JSON.parse(await readFile(new URL('../schemas/report.schema.json', import.meta.url), 'utf8'));
 const validate = new Ajv({ strict: true }).compile(schema);
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 
@@ -46,7 +46,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     const [report, results] = await Promise.all(process.argv.slice(2).map(async file => JSON.parse(await readFile(file, 'utf8'))));
     console.log(JSON.stringify(analyzeShadow(report, results), null, 2));
   } catch {
-    console.error('Invalid shadow measurement. Usage: node scripts/analyze-shadow.mjs report.json results.json');
+    console.error('Invalid shadow measurement. Usage: node analyze-shadow.mjs report.json results.json');
     process.exitCode = 1;
   }
 }

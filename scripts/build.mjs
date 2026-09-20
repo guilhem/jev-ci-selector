@@ -7,7 +7,9 @@ const output = await build({ entryPoints: ['src/action.ts'], bundle: true, platf
 const validator = await build({ entryPoints: ['examples/validate.mjs'], bundle: true, platform: 'node', target: 'node24',
   format: 'cjs', outfile: 'dist/validate.cjs', write: false, legalComments: 'eof', charset: 'utf8', metafile: true });
 const packages = new Set();
-for (const input of [...Object.keys(output.metafile.inputs), ...Object.keys(validator.metafile.inputs)]) {
+const analyzer = await build({ entryPoints: ['scripts/analyze-shadow.mjs'], bundle: true, platform: 'node', target: 'node24',
+  format: 'esm', outfile: 'dist/analyze-shadow.mjs', write: false, legalComments: 'eof', charset: 'utf8', metafile: true });
+for (const input of [...Object.keys(output.metafile.inputs), ...Object.keys(validator.metafile.inputs), ...Object.keys(analyzer.metafile.inputs)]) {
   if (!input.startsWith('node_modules/')) continue;
   const segments = input.split('/');
   packages.add(segments.slice(0, segments[1].startsWith('@') ? 3 : 2).join('/'));
@@ -21,6 +23,7 @@ for (const directory of [...packages].sort()) {
 }
 const artifacts = { 'dist/index.js': Buffer.from(output.outputFiles[0].contents),
   'dist/validate.cjs': Buffer.from(validator.outputFiles[0].contents),
+  'dist/analyze-shadow.mjs': Buffer.from(analyzer.outputFiles[0].contents),
   'dist/licenses.txt': Buffer.from(licenses.join('\n\n---\n\n') + '\n') };
 if (process.argv.includes('--check')) {
   for (const [path, bytes] of Object.entries(artifacts)) {

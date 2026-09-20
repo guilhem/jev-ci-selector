@@ -24,6 +24,14 @@ const set = (values) => [...values].sort();
 
 assert.deepEqual(set(gate.env.EXPECTED_TASKS.split(',').filter(Boolean)), tasks, 'catalog and gate task IDs diverge');
 assert.deepEqual(actualNeeds, expectedNeeds, 'gate needs and source declaration diverge');
+for (const [output, value] of Object.entries(jobs.plan.outputs)) {
+  assert.equal(value, `\${{ steps.select.outputs.${output} }}`, `${output} must come directly from the selector`);
+}
+const selectors = jobs.plan.steps.filter(step => step.id === 'select');
+assert.equal(selectors.length, 1, 'plan must contain exactly one select step');
+assert.ok(typeof selectors[0].uses === 'string' && selectors[0].uses.trim(), 'selector must use an action');
+assert.equal(selectors[0].if, undefined, 'selector must run on every event');
+assert.ok(!jobs.plan.steps.some(step => step.id === 'full'), 'duplicate full planner must be removed');
 assert.ok(jobs.plan.outputs.run && jobs.plan.outputs.selected && jobs.plan.outputs.matrix, 'plan outputs are incomplete');
 
 if (!Object.hasOwn(jobs, 'tasks')) {
@@ -35,8 +43,8 @@ if (!Object.hasOwn(jobs, 'tasks')) {
     assert.ok(taskNeeds.includes('plan'), `${task} must need plan`);
     assert.equal(
       jobs.plan.outputs[task],
-      `\${{ github.event_name == 'pull_request' && steps.select.outputs.${task} || steps.full.outputs.${task} }}`,
-      `${task} must be published from the selector or full plan`,
+      `\${{ steps.select.outputs.${task} }}`,
+      `${task} must be published directly from the selector`,
     );
   }
 } else {

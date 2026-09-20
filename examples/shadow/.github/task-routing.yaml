@@ -1,0 +1,15 @@
+model: jev-1.13.0
+skip_below: 0.05
+
+# These jobs belong to the consumer's existing CI, not the observer workflow.
+tasks:
+  build:
+    description: Runs the compiled Go package checks.
+    jobs:
+      - workflow: .github/workflows/ci.yml
+        job: build
+  unit:
+    description: Runs package behavior tests.
+    jobs:
+      - workflow: .github/workflows/ci.yml
+        job: unit

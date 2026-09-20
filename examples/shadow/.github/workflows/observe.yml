@@ -1,0 +1,32 @@
+name: Observe CI selection
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  observe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Observe task selection
+        id: select
+        uses: guilhem/jev-ci-selector@v0.1.0
+        with:
+          config: .github/task-routing.yaml
+          mode: shadow
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          api-key: ${{ secrets.JEV_API_KEY }}
+          # Authorizes sending the diff, paths, and task questions to TypeSafe.
+          allow-external-context: 'true'
+          force-all: 'false'
+      - name: Upload plan report
+        if: ${{ always() && steps.select.outcome == 'success' }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        continue-on-error: true
+        with:
+          name: jev-plan-report-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.select.outputs.report-path }}
+          retention-days: 14
+          if-no-files-found: error
