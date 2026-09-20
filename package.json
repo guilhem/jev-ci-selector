@@ -23,7 +23,7 @@
     "yaml": "2.9.1"
   },
   "devDependencies": {
-    "@types/node": "^24.0.0",
+    "@types/node": "^26.6.1",
     "esbuild": "^0.28.2",
     "tsx": "^4.20.0",
     "typescript": "^7.0.2"
