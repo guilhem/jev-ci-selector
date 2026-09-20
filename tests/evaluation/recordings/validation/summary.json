@@ -1,0 +1,139 @@
+{
+  "split": "validation",
+  "runs": 24,
+  "cases": [
+    "api-pagination",
+    "documentation-only",
+    "schema-unique-index",
+    "theme-spacing"
+  ],
+  "models": [
+    "jev-1.13.0"
+  ],
+  "calls": 33,
+  "tokens": {
+    "input": 157881,
+    "output": 2244
+  },
+  "elapsed_ms": 9431,
+  "mean_run_ms": 393,
+  "incomplete_runs": 0,
+  "policy_bypassed_runs": 0,
+  "selection": {
+    "context": "enriched",
+    "questionMode": "single",
+    "threshold": 0.1
+  },
+  "chosen": {
+    "context": "enriched",
+    "questions": "single",
+    "threshold": 0.1,
+    "runs": 24,
+    "incomplete_runs": 0,
+    "metrics": {
+      "relevant": 18,
+      "relevantMisses": 0,
+      "irrelevant": 78,
+      "correctIrrelevantOmissions": 73,
+      "irrelevantRetained": 5,
+      "unknown": 0,
+      "mismatches": 5
+    },
+    "repeat_disagreements": 1,
+    "partition_disagreements": 1
+  },
+  "qualified_on_this_split": true,
+  "comparison": [
+    {
+      "context": "enriched",
+      "questions": "single",
+      "threshold": 0.05,
+      "runs": 24,
+      "incomplete_runs": 0,
+      "metrics": {
+        "relevant": 18,
+        "relevantMisses": 0,
+        "irrelevant": 78,
+        "correctIrrelevantOmissions": 31,
+        "irrelevantRetained": 47,
+        "unknown": 0,
+        "mismatches": 47
+      },
+      "repeat_disagreements": 1,
+      "partition_disagreements": 1
+    },
+    {
+      "context": "enriched",
+      "questions": "single",
+      "threshold": 0.1,
+      "runs": 24,
+      "incomplete_runs": 0,
+      "metrics": {
+        "relevant": 18,
+        "relevantMisses": 0,
+        "irrelevant": 78,
+        "correctIrrelevantOmissions": 73,
+        "irrelevantRetained": 5,
+        "unknown": 0,
+        "mismatches": 5
+      },
+      "repeat_disagreements": 1,
+      "partition_disagreements": 1
+    },
+    {
+      "context": "enriched",
+      "questions": "single",
+      "threshold": 0.2,
+      "runs": 24,
+      "incomplete_runs": 0,
+      "metrics": {
+        "relevant": 18,
+        "relevantMisses": 0,
+        "irrelevant": 78,
+        "correctIrrelevantOmissions": 78,
+        "irrelevantRetained": 0,
+        "unknown": 0,
+        "mismatches": 0
+      },
+      "repeat_disagreements": 0,
+      "partition_disagreements": 0
+    },
+    {
+      "context": "enriched",
+      "questions": "single",
+      "threshold": 0.3,
+      "runs": 24,
+      "incomplete_runs": 0,
+      "metrics": {
+        "relevant": 18,
+        "relevantMisses": 0,
+        "irrelevant": 78,
+        "correctIrrelevantOmissions": 78,
+        "irrelevantRetained": 0,
+        "unknown": 0,
+        "mismatches": 0
+      },
+      "repeat_disagreements": 0,
+      "partition_disagreements": 0
+    },
+    {
+      "context": "enriched",
+      "questions": "single",
+      "threshold": 0.5,
+      "runs": 24,
+      "incomplete_runs": 0,
+      "metrics": {
+        "relevant": 18,
+        "relevantMisses": 0,
+        "irrelevant": 78,
+        "correctIrrelevantOmissions": 78,
+        "irrelevantRetained": 0,
+        "unknown": 0,
+        "mismatches": 0
+      },
+      "repeat_disagreements": 0,
+      "partition_disagreements": 0
+    }
+  ],
+  "interpretation": "Counts are repeated task decisions, not independent pull requests. Omissions are semantic proposals; effective shadow outputs retain every task. No CI savings are measured. Repeat disagreements count case/task/grouping combinations; partition disagreements count case/task/repeat combinations."
+}

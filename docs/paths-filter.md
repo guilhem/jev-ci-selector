@@ -19,24 +19,24 @@ A typical filter step might be:
         - 'charts/**'
 ```
 
-Create `.github/ci-selector.yml` in the base branch with a question for each optional task:
+Create `.github/task-routing.yaml` in the base branch with a description and job reference for each task:
 
 ```yaml
-version: 1
 model: jev-1.13.0
 skip_below: 0.05
 tasks:
   helm:
-    question: >
-      Does this change affect Helm chart rendering, default values,
-      configuration validation, or generated Kubernetes manifests?
+    description: Covers Helm chart rendering, default values, configuration validation, and generated Kubernetes manifests.
+    jobs:
+      - workflow: .github/workflows/ci.yml
+        job: helm
     force_paths:
       - charts/**/values.schema.json
 ```
 
-The question defines the scope Jev evaluates, including changes inside `charts/`. Here, `force_paths` deliberately keeps Helm mandatory for values-schema edits. Other chart changes can be proposed for exclusion when their probability falls below the threshold.
+The description defines the scope Jev evaluates, including changes inside `charts/`. Here, `force_paths` deliberately keeps Helm mandatory for values-schema edits. Other chart changes can be proposed for exclusion when their probability falls below the threshold.
 
-Copy an old glob into `force_paths` only if every match must still run that task. A broad `charts/**` force rule preserves every positive path match, so it cannot save additional Helm runs for changes inside that directory. Essential tasks can use `always: true`; `requires` adds selection dependencies, with execution order declared separately through `needs`.
+Copy an old glob into `force_paths` only if every match must still run that task. A broad `charts/**` force rule preserves every positive path match, so it cannot save additional Helm runs for changes inside that directory. Essential tasks can use `always: true`; execution dependencies stay declared through `needs`.
 
 ## 2. Replace the planning step
 
@@ -46,7 +46,7 @@ Keep the selector in a dedicated planning job with `contents: read`, without che
 - name: Plan this pull request
   id: select
   if: ${{ github.event_name == 'pull_request' }}
-  uses: guilhem/jev-ci-selector@5ae911f413054938f714f3c6f0eefbe2e3c33c7a
+  uses: guilhem/jev-ci-selector@main
   with:
     mode: shadow
     api-key: ${{ secrets.JEV_API_KEY }}
@@ -89,7 +89,7 @@ The consumer can continue to use `fromJSON(needs.plan.outputs.packages)`. Altern
 | --- | --- |
 | Named boolean outputs | Same string shape; now means “run this task” |
 | `changes` array | Use `selected`, mapping it to your existing job output name if useful |
-| Broad component globs | Describe the behavioral scope with a question |
+| Broad component globs | Describe the verification scope and reference the jobs |
 | Mandatory path matches | Put deliberate must-run cases in `force_paths` |
 | File lists, counts, or advanced filter predicates | No equivalent; retain the file-selection tool for those uses |
 

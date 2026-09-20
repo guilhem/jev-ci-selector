@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "sourceSplit": "calibration",
+  "corpusFingerprint": "2d786fdc013e91ccb99cff717ad6894993ddca4a89bff5fa9e3142fecc69eb24",
+  "qualified": true,
+  "exploratory": false,
+  "selected": {
+    "context": "enriched",
+    "questionMode": "single",
+    "threshold": 0.1
+  },
+  "metrics": {
+    "relevant": 42,
+    "relevantMisses": 0,
+    "irrelevant": 54,
+    "correctIrrelevantOmissions": 54,
+    "irrelevantRetained": 0,
+    "unknown": 0,
+    "mismatches": 0,
+    "runs": 24,
+    "completeRuns": 24,
+    "failedRuns": 0,
+    "variant": "enriched/single"
+  },
+  "caseIds": [
+    "button-keyboard",
+    "library-normalization",
+    "schema-nullability",
+    "shared-install"
+  ]
+}

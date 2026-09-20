@@ -1,0 +1,23 @@
+diff --git a/.github/actions/setup/action.yml b/.github/actions/setup/action.yml
+index 259f7a1..fa2ea44 100644
+--- a/.github/actions/setup/action.yml
++++ b/.github/actions/setup/action.yml
+@@ -6,5 +6,5 @@ inputs:
+ runs:
+   using: composite
+   steps:
+-    - run: npm ci
++    - run: npm ci --ignore-scripts
+       shell: bash
+diff --git a/package.json b/package.json
+index ff791ac..58d916c 100644
+--- a/package.json
++++ b/package.json
+@@ -10,6 +10,6 @@
+     "check:api": "node tools/check-api.mjs"
+   },
+   "devDependencies": {
+-    "@playwright/test": "1.50.0"
++    "@playwright/test": "1.51.0"
+   }
+ }

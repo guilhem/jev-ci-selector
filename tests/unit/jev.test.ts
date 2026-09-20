@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { evaluateJev, validateJevResponse, JevError, resolveJevApi } from '../../src/jev.js';
+import { evaluateJev, validateJevResponse, JevError, buildQuestions, resolveJevApi } from '../../src/jev.js';
 import { catalog } from '../fixtures/catalog.js';
 
 const valid = () => ({ model: 'jev-1.13.0', answers: { helm: { type: 'noul', noul: 0.02 } }, usage: { input_tokens: 100, output_tokens: 10 } });
@@ -18,7 +18,7 @@ test('custom System One root and model alias retain strict canonical response va
       const body = JSON.parse(init!.body as string);
       assert.equal(body.model, 'jev-1.13-free');
       assert.deepEqual(body.state, input().state);
-      assert.deepEqual(body.questions, { helm: { type: 'noul', instructions: catalog().tasks.helm!.question } });
+      assert.deepEqual(body.questions, buildQuestions(catalog(), ['helm']));
       return Response.json({ ...valid(), model: returnedModel });
     });
     if (returnedModel === 'jev-1.13.0') assert.equal((await result).model, returnedModel);
@@ -56,7 +56,7 @@ test('SDK sends one independent noul question per task against common state with
     assert.equal(new Headers(init?.headers).get('Authorization'), 'Bearer SECRET-SENTINEL');
     const body = JSON.parse(init!.body as string);
     assert.deepEqual(body.state, input().state);
-    assert.deepEqual(body.questions, { helm: { type: 'noul', instructions: catalog().tasks.helm!.question } });
+    assert.deepEqual(body.questions, buildQuestions(catalog(), ['helm']));
     assert.equal(body.model, 'jev-1.13.0');
     return Response.json(valid());
   });
@@ -121,4 +121,20 @@ test('SDK environment cannot enable debug logs or override the destination and m
     if (old.url === undefined) delete process.env.TYPESAFE_BASE_URL; else process.env.TYPESAFE_BASE_URL = old.url;
     if (old.model === undefined) delete process.env.TYPESAFE_DEFAULT_MODEL; else process.env.TYPESAFE_DEFAULT_MODEL = old.model;
   }
+});
+
+test('split judgments stay independent and both raw scores are validated', async () => {
+  const value = input();
+  value.catalog.tasks.helm!.question = JSON.stringify({ description: 'Checks database schema against SQL migrations.', jobs: [] });
+  const request = { ...value, questionMode: 'split' as const };
+  const answer = { ...valid(), answers: { 'helm::behavior': { type: 'noul', noul: 0.03 }, 'helm::verification': { type: 'noul', noul: 0.8 } } };
+  const result = await evaluateJev(request, async (_url, init) => {
+    const body = JSON.parse(init!.body as string);
+    assert.deepEqual(Object.keys(body.questions), ['helm::behavior', 'helm::verification']);
+    assert.notDeepEqual(body.questions['helm::behavior'], body.questions['helm::verification']);
+    assert.match(JSON.stringify(body.questions['helm::behavior']), /Checks database schema/);
+    return Response.json(answer);
+  });
+  assert.deepEqual(result.probabilities, { 'helm::behavior': 0.03, 'helm::verification': 0.8 });
+  await assert.rejects(evaluateJev(request, async () => Response.json({ ...answer, answers: { 'helm::behavior': answer.answers['helm::behavior'] } })), JevError);
 });

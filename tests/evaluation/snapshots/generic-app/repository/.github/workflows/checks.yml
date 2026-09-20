@@ -1,0 +1,33 @@
+name: Generic verification
+jobs:
+  unit:
+    name: Pure library tests
+    steps:
+      - uses: ./.github/actions/setup
+        with:
+          profile: tests
+      - run: npm run test:unit
+  unit-compat:
+    name: Library compatibility tests
+    steps:
+      - uses: ./.github/actions/setup
+        with:
+          profile: compatibility
+      - run: npm run test:compat
+  schema:
+    name: SQL schema and migration checks
+    steps:
+      - uses: ./.github/actions/setup
+        with:
+          profile: database
+      - uses: fixture-actions/database@v1
+        with:
+          engine: sqlite
+      - run: npm run check:schema
+  api:
+    name: API schema and generated client consistency
+    steps:
+      - uses: ./.github/actions/setup
+        with:
+          profile: contract
+      - run: npm run check:api

@@ -6,13 +6,13 @@ import { spawnSync } from 'node:child_process';
 import { test } from 'node:test';
 import vm from 'node:vm';
 import { parse as parseYaml, stringify } from 'yaml';
-import { parseCatalog, type Catalog } from '../../src/config.js';
+import { parseCatalog, type RoutingCatalog } from '../../src/config.js';
 
 const root = process.cwd();
 const examples = ['static-jobs', 'matrix'] as const;
-const taskIds = (catalog: Catalog): string[] => Object.keys(catalog.tasks).sort();
-const readCatalog = (name: string): Catalog =>
-  parseCatalog(readFileSync(resolve(root, 'examples', name, '.github/ci-selector.yml'), 'utf8'));
+const taskIds = (catalog: RoutingCatalog): string[] => Object.keys(catalog.tasks).sort();
+const readCatalog = (name: string): RoutingCatalog =>
+  parseCatalog(readFileSync(resolve(root, 'examples', name, '.github/task-routing.yaml'), 'utf8'));
 const readWorkflow = (name: string): Record<string, any> => parseYaml(
   readFileSync(resolve(root, 'examples', name, '.github/workflows/ci.yml'), 'utf8'),
 );
@@ -107,9 +107,9 @@ test('example catalogs and workflow job IDs have one stable contract', () => {
     assert.ok(jobs.plan.steps.every((step: Record<string, unknown>) => !('uses' in step && String(step.uses).startsWith('actions/checkout@'))), 'planning must not checkout PR code');
     const selector = jobs.plan.steps.find((step: Record<string, unknown>) => step.id === 'select') as Record<string, any>;
     assert.equal(selector.if, "${{ github.event_name == 'pull_request' }}");
-    assert.equal(selector.uses, 'guilhem/jev-ci-selector@5ae911f413054938f714f3c6f0eefbe2e3c33c7a');
+    assert.equal(selector.uses, 'guilhem/jev-ci-selector@main');
     assert.deepEqual(selector.with, {
-      config: '.github/ci-selector.yml',
+      config: '.github/task-routing.yaml',
       mode: 'shadow',
       'github-token': '${{ secrets.GITHUB_TOKEN }}',
       'api-key': '${{ secrets.JEV_API_KEY }}',
@@ -129,7 +129,6 @@ test('example catalogs and workflow job IDs have one stable contract', () => {
         assert.equal(jobs.plan.outputs[task], `\${{ github.event_name == 'pull_request' && steps.select.outputs.${task} || steps.full.outputs.${task} }}`);
         assert.match(String(jobs[task].if), new RegExp(`needs\\.plan\\.outputs\\.${task} == ['"]true['"]`));
         assert.doesNotMatch(String(jobs[task].if), /fromJSON\(needs\.plan\.outputs\.run\)/);
-        for (const dependency of catalog.tasks[task]?.requires ?? []) assert.ok(needs.includes(dependency), `${task} must depend on ${dependency}`);
       }
       assert.match(jobs['ci-required'].env.NEEDS_JSON, /toJSON\(needs\)/);
       assert.ok(jobs.lint.steps.some((step: Record<string, any>) => step.run === 'node .github/ci-selector-validate.cjs .' && !step.if));
@@ -143,12 +142,6 @@ test('example catalogs and workflow job IDs have one stable contract', () => {
       assert.match(jobs.tasks.steps[1].run, /unsupported task/);
       const launcher = String(jobs.tasks.steps[1].run);
       for (const task of tasks) assert.match(launcher, new RegExp(`\\b${task}\\)`), `${task} must have a fixed launcher case`);
-      for (const [task, definition] of Object.entries(catalog.tasks)) {
-        for (const dependency of definition.requires ?? []) {
-          assert.ok(catalog.tasks[dependency], `${task} requires an unknown catalog task`);
-          assert.match(launcher, new RegExp(`(?:${task}|${dependency})`), `${task} dependency must be represented by the launcher contract`);
-        }
-      }
       assert.doesNotMatch(readFileSync(resolve(root, 'examples', name, '.github/workflows/ci.yml'), 'utf8'), /continue-on-error/);
     }
     for (const task of tasks) assert.match(readFileSync(resolve(root, 'examples', name, '.github/workflows/ci.yml'), 'utf8'), new RegExp(`['"]?${task}['"]?`));
@@ -243,11 +236,11 @@ test('standalone consumer validator catches unknown jobs, incomplete final needs
     mkdirSync(resolve(directory, '.github/workflows'), { recursive: true });
     const validatorPath = resolve(directory, '.github/ci-selector-validate.cjs');
     copyFileSync(resolve(root, 'dist/validate.cjs'), validatorPath);
-    const check = (name: string, mutate?: (workflow: Record<string, any>, catalog: Catalog) => void) => {
+    const check = (name: string, mutate?: (workflow: Record<string, any>, catalog: RoutingCatalog) => void) => {
       const workflow = readWorkflow(name), catalog = readCatalog(name);
       mutate?.(workflow, catalog);
       writeFileSync(resolve(directory, '.github/workflows/ci.yml'), stringify(workflow));
-      writeFileSync(resolve(directory, '.github/ci-selector.yml'), stringify(catalog));
+      writeFileSync(resolve(directory, '.github/task-routing.yaml'), stringify(catalog));
       return spawnSync(process.execPath, [validatorPath, directory], { encoding: 'utf8' });
     };
     for (const name of examples) assert.equal(check(name).status, 0, 'validator works at any consumer path');
@@ -258,10 +251,10 @@ test('standalone consumer validator catches unknown jobs, incomplete final needs
       workflow.jobs['ci-required'].needs = workflow.jobs['ci-required'].needs.filter((id: string) => id !== 'helm');
       workflow.jobs['ci-required'].env.EXPECTED_NEEDS = workflow.jobs['ci-required'].env.EXPECTED_NEEDS.replace('helm,', '');
     }).status, 0);
-    assert.notEqual(check('static-jobs', workflow => { workflow.jobs.e2e_network.needs = ['plan']; }).status, 0);
-    assert.notEqual(check('matrix', (_workflow, catalog) => { catalog.tasks.e2e_network!.requires = ['build']; }).status, 0);
+    assert.notEqual(check('static-jobs', workflow => { workflow.jobs.e2e_network.needs = ['helm']; }).status, 0);
+    assert.notEqual(check('matrix', (workflow) => { workflow.jobs.tasks.steps[1].run = 'echo unsupported task'; }).status, 0);
     assert.notEqual(check('matrix', (workflow, catalog) => {
-      catalog.tasks.extra = { question: 'Does this affect storage?' };
+      catalog.tasks.extra = { description: 'Does this affect storage?', jobs: [{ workflow: '.github/workflows/ci.yml', job: 'tasks' }] };
       workflow.jobs['ci-required'].env.EXPECTED_TASKS = Object.keys(catalog.tasks).sort().join(',');
     }).status, 0);
   } finally { rmSync(directory, { recursive: true, force: true }); }

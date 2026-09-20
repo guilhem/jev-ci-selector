@@ -1,6 +1,6 @@
 # Keep your existing CI jobs
 
-[← Back to the README](../../README.md) · [Workflow](.github/workflows/ci.yml) · [Catalog](.github/ci-selector.yml)
+[← Back to the README](../../README.md) · [Workflow](.github/workflows/ci.yml) · [Catalog](.github/task-routing.yaml)
 
 Use this integration when your checks are separate jobs with their own setup, or when one task depends on another. The example models a Go and Helm project with `build`, `lint`, `unit`, `helm`, `e2e_network`, and `e2e_upgrade`.
 
@@ -10,13 +10,13 @@ Copy these three files into your repository:
 
 | From this project | Destination in your repository |
 | --- | --- |
-| [Task catalog](.github/ci-selector.yml) | `.github/ci-selector.yml` |
+| [Task routing catalog](.github/task-routing.yaml) | `.github/task-routing.yaml` |
 | [Workflow](.github/workflows/ci.yml) | `.github/workflows/ci.yml` |
 | [Bundled validator](../../dist/validate.cjs) | `.github/ci-selector-validate.cjs` |
 
 Adapt the commands and tool setup to your project before enabling the workflow. The e2e scripts `./ci/e2e-network.sh` and `./ci/e2e-upgrade.sh` belong to the consuming repository. Install Go, Helm, and any cluster tools through your normal job setup. The validator includes its dependencies and requires Node.js 24; the example installs that runtime in `lint`.
 
-The action is pinned to `guilhem/jev-ci-selector@5ae911f413054938f714f3c6f0eefbe2e3c33c7a`, a published commit containing the bundle. Keep a reviewed full SHA when updating it.
+The workflow uses `guilhem/jev-ci-selector@main` temporarily while this routing schema is unpublished. Pin a delivered routing-schema commit before adoption.
 
 Merge the catalog into your base branch before analyzing PRs. Keep `mode: shadow`. Add `JEV_API_KEY` only after approving external context transfer: the example's `allow-external-context: 'true'` sends the diff, changed paths, SHAs, and task questions to TypeSafe. Remove that opt-in to keep every task without a Jev call.
 
@@ -24,7 +24,7 @@ Merge the catalog into your base branch before analyzing PRs. Keep `mode: shadow
 
 The selector runs only on `pull_request`. Push, scheduled, and merge-group events produce a full plan without invoking the action. Each consumer checks out `tested-sha`, the merge commit supplied by the PR event.
 
-The network and upgrade jobs declare `needs: [plan, build]`, matching their catalog dependencies. A selected job requires a successful plan and any real prerequisites before running. The planning job never checks out or executes PR code.
+The network and upgrade jobs declare `needs: [plan, build]`, matching their workflow dependencies. A selected job requires a successful plan and any real prerequisites before running. The planning job never checks out or executes PR code.
 
 Each static job consumes its named plan output, for example `needs.plan.outputs.helm == 'true'`. The plan job publishes every catalog task from either `steps.select.outputs.<task>` or the non-PR full plan, where the full plan writes `true` for every task. The final gate compares those named strings with the aggregate `run` map, so a missing or incorrect mapping cannot silently skip a selected job. The aggregate outputs remain available for the gate and other consumers.
 
@@ -49,4 +49,4 @@ npm test
 
 The tests check task/job parity, dependencies, malformed plans, skipped selected jobs, and final-gate failures. [Full action reference →](../../docs/reference.md)
 
-For a `paths-filter` migration, keep only narrow must-run cases in `force_paths` (the example uses a chart values schema path). Put the broader behavioral scope in each task's question. See [the migration guide](../../docs/paths-filter.md).
+For a `paths-filter` migration, keep only narrow must-run cases in `force_paths` (the example uses a chart values schema path). Put the broader behavioral scope in each task's description. See [the migration guide](../../docs/paths-filter.md).

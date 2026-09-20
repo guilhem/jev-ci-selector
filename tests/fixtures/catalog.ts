@@ -1,5 +1,5 @@
-import type { Catalog } from '../../src/config.js';
-export function catalog(): Catalog {
+import type { CatalogV1 } from '../../src/config.js';
+export function catalog(): CatalogV1 {
   return {
     version: 1, model: 'jev-1.13.0', skip_below: 0.05,
     tasks: {

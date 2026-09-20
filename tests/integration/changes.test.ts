@@ -64,7 +64,7 @@ async function withRepository<T>(fixtureValue: Fixture, callback: (repository: G
 
 test('collects a tested merge tree, reads the base catalog, and preserves special paths', async () => {
   const value = await fixture(async (work) => {
-    await writeFile(join(work, '.github-ci catalog.yml'), 'version: 1\n');
+    await writeFile(join(work, '.github-ci catalog.yml'), 'model: jev-1.13.0\nskip_below: 0.05\ntasks: {}\n');
     await writeFile(join(work, 'old name [x].txt'), 'same content\n');
     await writeFile(join(work, '-\t-\told.txt'), 'unique tab rename\n');
     await writeFile(join(work, 'delete me.txt'), 'gone\n');
@@ -78,7 +78,7 @@ test('collects a tested merge tree, reads the base catalog, and preserves specia
     git(work, 'mv', 'old name [x].txt', 'new name $(x)\n.txt');
     git(work, 'mv', '--', '-\t-\told.txt', '-\t-\tnew.txt');
     git(work, 'rm', '--quiet', 'delete me.txt');
-    await writeFile(join(work, '.github-ci catalog.yml'), 'version: 2\n');
+    await writeFile(join(work, '.github-ci catalog.yml'), 'model: jev-1.13.0\nskip_below: 0.05\ntasks: {}\n');
     await writeFile(join(work, '\uFEFFunicodé.txt'), 'BOM in filename\n');
     await writeFile(join(work, '$(touch CANARY); x.txt'), 'not executable\n');
     await chmod(join(work, 'run me.sh'), 0o755);
@@ -99,7 +99,7 @@ test('collects a tested merge tree, reads the base catalog, and preserves specia
     const adjusted = { ...value, head, tested };
     await withRepository(adjusted, async (repository) => {
       await repository.fetchCommit(adjusted.base);
-      assert.equal((await repository.readFile(adjusted.base, '.github-ci catalog.yml')).toString(), 'version: 1\n');
+      assert.equal((await repository.readFile(adjusted.base, '.github-ci catalog.yml')).toString(), 'model: jev-1.13.0\nskip_below: 0.05\ntasks: {}\n');
       const changes = await repository.collect({ baseSha: adjusted.base, headSha: adjusted.head, testedSha: adjusted.tested, maxDiffBytes: 100_000 });
       assert.ok(changes.changedPaths.includes('new name $(x)\n.txt'));
       assert.ok(changes.changedPaths.includes('old name [x].txt'));
@@ -110,7 +110,7 @@ test('collects a tested merge tree, reads the base catalog, and preserves specia
       assert.ok(changes.changedPaths.includes('-\t-\told.txt'));
       assert.ok(changes.changedPaths.includes('-\t-\tnew.txt'));
       assert.match(changes.diff, /old mode 100644\nnew mode 100755/);
-      assert.equal((await repository.readFile(adjusted.tested, '.github-ci catalog.yml')).toString(), 'version: 2\n');
+      assert.equal((await repository.readFile(adjusted.tested, '.github-ci catalog.yml')).toString(), 'model: jev-1.13.0\nskip_below: 0.05\ntasks: {}\n');
       await assert.rejects(access(join(work, 'CANARY')));
       assert.equal(changes.diffBytes, Buffer.byteLength(changes.diff));
       assert.equal(changes.diffHash.length, 64);
@@ -261,5 +261,56 @@ test('external diff, textconv and inherited Git configuration cannot execute pro
       if (value === undefined) delete process.env[key]; else process.env[key] = value;
     }
     await rm(value.root, { recursive: true, force: true });
+  }
+});
+
+test('head collection deepens shallow history and diffs from the verified unique merge-base', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'jev-head-changes-test-'));
+  const work = join(root, 'work');
+  const remote = join(root, 'remote.git');
+  await mkdir(work);
+  try {
+    git(work, 'init', '--quiet', '-b', 'main');
+    await writeFile(join(work, 'common.txt'), 'common\n');
+    git(work, 'add', '--all');
+    git(work, 'commit', '--quiet', '-m', 'common');
+    const common = git(work, 'rev-parse', 'HEAD');
+    git(work, 'switch', '--quiet', '-c', 'feature');
+    await writeFile(join(work, 'head-only.txt'), 'head\n');
+    git(work, 'add', '--all');
+    git(work, 'commit', '--quiet', '-m', 'head');
+    const head = git(work, 'rev-parse', 'HEAD');
+    git(work, 'switch', '--quiet', 'main');
+    await writeFile(join(work, 'base-only.txt'), 'base\n');
+    git(work, 'add', '--all');
+    git(work, 'commit', '--quiet', '-m', 'base');
+    const base = git(work, 'rev-parse', 'HEAD');
+    assert.equal(git(work, 'merge-base', base, head), common);
+    git(root, 'init', '--bare', '--quiet', remote);
+    git(work, 'push', '--quiet', remote, 'HEAD:refs/heads/main', `${head}:refs/heads/feature`);
+
+    const repository = await GitRepository.create({ remoteUrl: pathToFileURL(remote).href });
+    try {
+      await repository.fetchCommit(base);
+      const changes = await repository.collect({
+        baseSha: base,
+        headSha: head,
+        // The announced tested SHA must exactly identify the head.
+        testedSha: head,
+        testedRef: 'head',
+        maxDiffBytes: 100_000,
+      });
+      await assert.rejects(repository.collect({ baseSha: base, headSha: head, testedSha: base, testedRef: 'head', maxDiffBytes: 100_000 }),
+        (error: unknown) => error instanceof ChangeError && error.code === 'sha-incoherent');
+      assert.equal(changes.diffBaseSha, common);
+      assert.ok(changes.changedPaths.includes('head-only.txt'));
+      assert.ok(!changes.changedPaths.includes('base-only.txt'));
+      assert.match(changes.diff, /head-only\.txt/);
+      assert.doesNotMatch(changes.diff, /base-only\.txt/);
+    } finally {
+      await repository.dispose();
+    }
+  } finally {
+    await rm(root, { recursive: true, force: true });
   }
 });

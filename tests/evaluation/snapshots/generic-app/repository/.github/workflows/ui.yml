@@ -1,0 +1,16 @@
+name: Generic browser verification
+jobs:
+  components:
+    name: Browser component interactions
+    steps:
+      - uses: ./.github/actions/setup
+        with:
+          profile: browser
+      - run: npm run test:ui
+  accessibility:
+    name: Browser accessibility checks
+    steps:
+      - uses: ./.github/actions/setup
+        with:
+          profile: accessibility
+      - run: npm run test:a11y

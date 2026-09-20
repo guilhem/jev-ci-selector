@@ -41,7 +41,10 @@ export interface ChangeSet {
   diff: string;
   diffHash: string;
   diffBytes: number;
+  diffBaseSha?: string;
 }
+
+export type TestedRef = 'head' | 'merge';
 
 export interface GitRepositoryOptions {
   remoteUrl: string;
@@ -54,6 +57,7 @@ export interface CollectOptions {
   headSha: string;
   testedSha: string;
   maxDiffBytes: number;
+  testedRef?: TestedRef;
 }
 
 class GitCommandError extends Error {}
@@ -65,6 +69,7 @@ const utf8Decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
 const MAX_CONFIG_BYTES = 1024 * 1024;
 const MAX_METADATA_BYTES = 4 * 1024 * 1024;
 const MAX_BLOB_BYTES = 16 * 1024 * 1024;
+const HISTORY_DEEPEN_STEPS = [32, 128, 512, 2048];
 
 function safeRemoteUrl(remoteUrl: string): boolean {
   try {
@@ -276,12 +281,14 @@ export class GitRepository {
     }
   }
 
-  async collect({ baseSha, headSha, testedSha, maxDiffBytes }: CollectOptions): Promise<ChangeSet> {
+  async collect({ baseSha, headSha, testedSha, maxDiffBytes, testedRef = 'merge' }: CollectOptions): Promise<ChangeSet> {
     this.ensureOpen();
     if (
       !validSha(baseSha) ||
       !validSha(headSha) ||
       !validSha(testedSha) ||
+      (testedRef !== 'head' && testedRef !== 'merge') ||
+      (testedRef === 'head' && testedSha !== headSha) ||
       !Number.isSafeInteger(maxDiffBytes) ||
       maxDiffBytes < 0
     ) {
@@ -293,22 +300,27 @@ export class GitRepository {
     // different remote branch during collection.
     if (!(await this.hasCommit(baseSha))) throw new ChangeError('sha-incoherent');
     if (!(await this.hasCommit(headSha))) await this.fetchCommit(headSha);
-    if (!(await this.hasCommit(testedSha))) await this.fetchCommit(testedSha);
 
-    let testedCommit: Buffer;
-    try {
-      testedCommit = await GitRepository.runGitFrom(
-        this.repoPath,
-        this.env,
-        ['cat-file', 'commit', testedSha],
-        MAX_METADATA_BYTES,
-      );
-    } catch {
-      throw new ChangeError('sha-incoherent');
-    }
-    const parents = parseCommitParents(testedCommit);
-    if (!parents || parents.length !== 2 || parents[0] !== baseSha.toLowerCase() || parents[1] !== headSha.toLowerCase()) {
-      throw new ChangeError('sha-incoherent');
+    const effectiveTestedSha = testedRef === 'head' ? headSha : testedSha;
+    const diffBaseSha = testedRef === 'head' ? await this.findUniqueMergeBase(baseSha, headSha) : baseSha;
+    if (testedRef === 'merge') {
+      if (!(await this.hasCommit(testedSha))) await this.fetchCommit(testedSha);
+
+      let testedCommit: Buffer;
+      try {
+        testedCommit = await GitRepository.runGitFrom(
+          this.repoPath,
+          this.env,
+          ['cat-file', 'commit', testedSha],
+          MAX_METADATA_BYTES,
+        );
+      } catch {
+        throw new ChangeError('sha-incoherent');
+      }
+      const parents = parseCommitParents(testedCommit);
+      if (!parents || parents.length !== 2 || parents[0] !== baseSha.toLowerCase() || parents[1] !== headSha.toLowerCase()) {
+        throw new ChangeError('sha-incoherent');
+      }
     }
 
     let raw: Buffer;
@@ -324,8 +336,8 @@ export class GitRepository {
           '-M',
           '--no-ext-diff',
           '--no-textconv',
-          baseSha,
-          testedSha,
+          diffBaseSha,
+          effectiveTestedSha,
           '--',
         ], MAX_METADATA_BYTES),
         GitRepository.runGitFrom(this.repoPath, this.env, [
@@ -335,8 +347,8 @@ export class GitRepository {
           '-M',
           '--no-ext-diff',
           '--no-textconv',
-          baseSha,
-          testedSha,
+          diffBaseSha,
+          effectiveTestedSha,
           '--',
         ], MAX_METADATA_BYTES),
       ]);
@@ -401,8 +413,8 @@ export class GitRepository {
           '--no-ext-diff',
           '--no-textconv',
           '--no-color',
-          baseSha,
-          testedSha,
+          diffBaseSha,
+          effectiveTestedSha,
           '--',
         ],
         maxDiffBytes,
@@ -415,7 +427,13 @@ export class GitRepository {
     const diff = decodeUtf8(patch);
     if (diff === undefined) throw new ChangeError('unrepresentable-change', changedPaths);
     const diffHash = createHash('sha256').update(patch).digest('hex');
-    return { changedPaths: changedPaths.sort(), diff, diffHash, diffBytes: patch.length };
+    return {
+      changedPaths: changedPaths.sort(),
+      diff,
+      diffHash,
+      diffBytes: patch.length,
+      ...(testedRef === 'head' ? { diffBaseSha } : {}),
+    };
   }
 
   async dispose(): Promise<void> {
@@ -439,6 +457,87 @@ export class GitRepository {
     } catch {
       return false;
     }
+  }
+
+  private async findUniqueMergeBase(baseSha: string, headSha: string): Promise<string> {
+    for (const deepenBy of HISTORY_DEEPEN_STEPS) {
+      await this.deepenHistory(deepenBy, baseSha, headSha);
+      if (!(await this.isShallowRepository())) return this.readUniqueMergeBase(baseSha, headSha);
+    }
+
+    await this.fetchCompleteHistory(baseSha, headSha);
+    if (await this.isShallowRepository()) throw new ChangeError('git-fetch-failed');
+    return this.readUniqueMergeBase(baseSha, headSha);
+  }
+
+  private async deepenHistory(deepenBy: number, baseSha: string, headSha: string): Promise<void> {
+    try {
+      await GitRepository.runGitFrom(this.repoPath, this.env, [
+        'fetch',
+        '--no-tags',
+        '--no-write-fetch-head',
+        '--force',
+        `--deepen=${deepenBy}`,
+        this.remoteUrl,
+        baseSha,
+        headSha,
+      ]);
+    } catch {
+      throw new ChangeError('git-fetch-failed');
+    }
+  }
+
+  private async fetchCompleteHistory(baseSha: string, headSha: string): Promise<void> {
+    try {
+      await GitRepository.runGitFrom(this.repoPath, this.env, [
+        'fetch',
+        '--no-tags',
+        '--no-write-fetch-head',
+        '--force',
+        '--unshallow',
+        this.remoteUrl,
+        baseSha,
+        headSha,
+      ]);
+    } catch { /* Try the exact object IDs with a complete depth below. */ }
+    if (!(await this.isShallowRepository())) return;
+    try {
+      await GitRepository.runGitFrom(this.repoPath, this.env, [
+        'fetch',
+        '--no-tags',
+        '--no-write-fetch-head',
+        '--force',
+        '--depth=2147483647',
+        this.remoteUrl,
+        baseSha,
+        headSha,
+      ]);
+    } catch {
+      throw new ChangeError('git-fetch-failed');
+    }
+  }
+
+  private async isShallowRepository(): Promise<boolean> {
+    try {
+      const output = await GitRepository.runGitFrom(this.repoPath, this.env, ['rev-parse', '--is-shallow-repository']);
+      const value = output.toString('ascii').trim();
+      if (value !== 'true' && value !== 'false') throw new GitCommandError('invalid shallow state');
+      return value === 'true';
+    } catch {
+      throw new ChangeError('git-read-failed');
+    }
+  }
+
+  private async readUniqueMergeBase(baseSha: string, headSha: string): Promise<string> {
+    let output: Buffer;
+    try {
+      output = await GitRepository.runGitFrom(this.repoPath, this.env, ['merge-base', '--all', baseSha, headSha], MAX_METADATA_BYTES);
+    } catch {
+      throw new ChangeError('sha-incoherent');
+    }
+    const mergeBases = output.toString('ascii').trim().split(/\s+/u).filter(Boolean);
+    if (mergeBases.length !== 1 || !validSha(mergeBases[0]!)) throw new ChangeError('sha-incoherent');
+    return mergeBases[0]!.toLowerCase();
   }
 
   private static gitEnvironment(token: string | undefined, remoteUrl: string): NodeJS.ProcessEnv {

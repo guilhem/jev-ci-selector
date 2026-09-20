@@ -1,0 +1,30 @@
+diff --git a/api/spec.json b/api/spec.json
+index 5084efc..89d0cf1 100644
+--- a/api/spec.json
++++ b/api/spec.json
+@@ -11,7 +11,16 @@
+           "200": {
+             "description": "List of notes"
+           }
+-        }
++        },
++        "parameters": [
++          {
++            "name": "cursor",
++            "in": "query",
++            "schema": {
++              "type": "string"
++            }
++          }
++        ]
+       }
+     }
+   }
+diff --git a/client/generated.ts b/client/generated.ts
+index 5ffc77c..f37033d 100644
+--- a/client/generated.ts
++++ b/client/generated.ts
+@@ -1,2 +1,2 @@
+-export type ListNotesRequest = {};
++export type ListNotesRequest = {cursor?: string};
+ export type Note = {id: number; title: string};

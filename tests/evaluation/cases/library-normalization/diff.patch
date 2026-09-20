@@ -1,0 +1,18 @@
+diff --git a/library/src/normalize.mjs b/library/src/normalize.mjs
+index f2687ec..406cab2 100644
+--- a/library/src/normalize.mjs
++++ b/library/src/normalize.mjs
+@@ -1,3 +1,3 @@
+ export function normalize(value) {
+-  return value.trim();
++  return value.trim().toLowerCase();
+ }
+diff --git a/library/tests/normalize.test.mjs b/library/tests/normalize.test.mjs
+index 730da8e..9c63c27 100644
+--- a/library/tests/normalize.test.mjs
++++ b/library/tests/normalize.test.mjs
+@@ -1,3 +1,3 @@
+ import { normalize } from '../src/normalize.mjs';
+ import assert from 'node:assert/strict';
+-assert.equal(normalize(' Label '), 'Label');
++assert.equal(normalize(' Label '), 'label');

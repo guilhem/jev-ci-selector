@@ -1,0 +1,477 @@
+{
+  "version": 1,
+  "baseline": null,
+  "current": "/tmp/jev-job-metadata/tests/evaluation/recordings/calibration",
+  "comparable": false,
+  "guard": {
+    "comparable": false,
+    "reasons": [
+      "baseline-not-found"
+    ],
+    "baseline": null,
+    "current": {
+      "split": "calibration",
+      "corpusFingerprint": "2d786fdc013e91ccb99cff717ad6894993ddca4a89bff5fa9e3142fecc69eb24",
+      "cases": [
+        {
+          "id": "button-keyboard",
+          "split": "calibration",
+          "caseFingerprint": "12214fdab770c25bc75cb589ce33a556d1f4d728283f06a2b61e0c130fbc488d"
+        },
+        {
+          "id": "library-normalization",
+          "split": "calibration",
+          "caseFingerprint": "6fe49201692b87b6f205db528c30c1e55288c63e143f3c7102839279611d997c"
+        },
+        {
+          "id": "schema-nullability",
+          "split": "calibration",
+          "caseFingerprint": "6ed5919804f7f9c0e72906d500371ff3b57f3456b56af8096c6e783ce1ff02ca"
+        },
+        {
+          "id": "shared-install",
+          "split": "calibration",
+          "caseFingerprint": "f785dc7890c45df6e4d3a0230cf3bcbfa5cbfd1c47c13eece03254cc52ea7452"
+        }
+      ],
+      "variants": [
+        {
+          "context": "description",
+          "questionMode": "single",
+          "grouping": "natural",
+          "maxGroupBytes": 49152
+        },
+        {
+          "context": "description",
+          "questionMode": "single",
+          "grouping": "partitioned",
+          "maxGroupBytes": 8192
+        },
+        {
+          "context": "description",
+          "questionMode": "split",
+          "grouping": "natural",
+          "maxGroupBytes": 49152
+        },
+        {
+          "context": "description",
+          "questionMode": "split",
+          "grouping": "partitioned",
+          "maxGroupBytes": 8192
+        },
+        {
+          "context": "enriched",
+          "questionMode": "single",
+          "grouping": "natural",
+          "maxGroupBytes": 49152
+        },
+        {
+          "context": "enriched",
+          "questionMode": "single",
+          "grouping": "partitioned",
+          "maxGroupBytes": 8192
+        },
+        {
+          "context": "enriched",
+          "questionMode": "split",
+          "grouping": "natural",
+          "maxGroupBytes": 49152
+        },
+        {
+          "context": "enriched",
+          "questionMode": "split",
+          "grouping": "partitioned",
+          "maxGroupBytes": 8192
+        }
+      ],
+      "repeats": 3,
+      "thresholds": [
+        0.05,
+        0.1,
+        0.2,
+        0.3,
+        0.5
+      ],
+      "sdk": {
+        "package": "@typesafe-ai/sdk",
+        "version": "0.6.0",
+        "model": null
+      }
+    }
+  },
+  "metrics": {
+    "relevant_misses": {
+      "baseline": null,
+      "current": 69,
+      "delta": null
+    },
+    "useful_omissions": {
+      "baseline": null,
+      "current": 883,
+      "delta": null
+    }
+  },
+  "stability": {
+    "repeat_disagreements": {
+      "baseline": null,
+      "current": 9,
+      "delta": null
+    },
+    "partition_disagreements": {
+      "baseline": null,
+      "current": 14,
+      "delta": null
+    }
+  },
+  "tokens": {
+    "input": {
+      "baseline": null,
+      "current": 301128,
+      "delta": null
+    },
+    "output": {
+      "baseline": null,
+      "current": 10368,
+      "delta": null
+    },
+    "total": {
+      "baseline": null,
+      "current": 311496,
+      "delta": null
+    }
+  },
+  "latency_ms": {
+    "elapsed": {
+      "baseline": null,
+      "current": 32244,
+      "delta": null
+    },
+    "mean_run": {
+      "baseline": null,
+      "current": 336,
+      "delta": null
+    }
+  },
+  "variants": [
+    {
+      "key": "description/single/0.05",
+      "baseline": null,
+      "current": {
+        "relevant_misses": 0,
+        "useful_omissions": 24,
+        "repeat_disagreements": 2,
+        "partition_disagreements": 2
+      },
+      "deltas": {
+        "relevant_misses": null,
+        "useful_omissions": null,
+        "repeat_disagreements": null,
+        "partition_disagreements": null
+      }
+    },
+    {
+      "key": "description/single/0.1",
+      "baseline": null,
+      "current": {
+        "relevant_misses": 6,
+        "useful_omissions": 50,
+        "repeat_disagreements": 1,
+        "partition_disagreements": 2
+      },
+      "deltas": {
+        "relevant_misses": null,
+        "useful_omissions": null,
+        "repeat_disagreements": null,
+        "partition_disagreements": null
+      }
+    },
+    {
+      "key": "description/single/0.2",
+      "baseline": null,
+      "current": {
+        "relevant_misses": 6,
+        "useful_omissions": 54,
+        "repeat_disagreements": 0,
+        "partition_disagreements": 0
+      },
+      "deltas": {
+        "relevant_misses": null,
+        "useful_omissions": null,
+        "repeat_disagreements": null,
+        "partition_disagreements": null
+      }
+    },
+    {
+      "key": "description/single/0.3",
+      "baseline": null,
+      "current": {
+        "relevant_misses": 8,
+        "useful_omissions": 54,
+        "repeat_disagreements": 2,
+        "partition_disagreements": 2
+      },
+      "deltas": {
+        "relevant_misses": null,
+        "useful_omissions": null,
+        "repeat_disagreements": null,
+        "partition_disagreements": null
+      }
+    },
+    {
+      "key": "description/single/0.5",
+      "baseline": null,
+      "current": {
+        "relevant_misses": 18,
+        "useful_omissions": 54,
+        "repeat_disagreements": 0,
+        "partition_disagreements": 0
+      },
+      "deltas": {
+        "relevant_misses": null,
+        "useful_omissions": null,
+        "repeat_disagreements": null,
+        "partition_disagreements": null
+      }
+    },
+    {
+      "key": "description/split/0.05",
+      "baseline": null,
+      "current": {
+        "relevant_misses": 0,
+        "useful_omissions": 3,
+        "repeat_disagreements": 2,
+        "partition_disagreements": 3
+      },
+      "deltas": {
+        "relevant_misses": null,
+        "useful_omissions": null,
+        "repeat_disagreements": null,
+        "partition_disagreements": null
+      }
+    },
+    {
+      "key": "description/split/0.1",
+      "baseline": null,
+      "current": {
+        "relevant_misses": 0,
+        "useful_omissions": 47,
+        "repeat_disagreements": 1,
+        "partition_disagreements": 1
+      },
+      "deltas": {
+        "relevant_misses": null,
+        "useful_omissions": null,
+        "repeat_disagreements": null,
+        "partition_disagreements": null
+      }
+    },
+    {
+      "key": "description/split/0.2",
+      "baseline": null,
+      "current": {
+        "relevant_misses": 6,
+        "useful_omissions": 54,
+        "repeat_disagreements": 0,
+        "partition_disagreements": 0
+      },
+      "deltas": {
+        "relevant_misses": null,
+        "useful_omissions": null,
+        "repeat_disagreements": null,
+        "partition_disagreements": null
+      }
+    },
+    {
+      "key": "description/split/0.3",
+      "baseline": null,
+      "current": {
+        "relevant_misses": 7,
+        "useful_omissions": 54,
+        "repeat_disagreements": 1,
+        "partition_disagreements": 1
+      },
+      "deltas": {
+        "relevant_misses": null,
+        "useful_omissions": null,
+        "repeat_disagreements": null,
+        "partition_disagreements": null
+      }
+    },
+    {
+      "key": "description/split/0.5",
+      "baseline": null,
+      "current": {
+        "relevant_misses": 18,
+        "useful_omissions": 54,
+        "repeat_disagreements": 0,
+        "partition_disagreements": 0
+      },
+      "deltas": {
+        "relevant_misses": null,
+        "useful_omissions": null,
+        "repeat_disagreements": null,
+        "partition_disagreements": null
+      }
+    },
+    {
+      "key": "enriched/single/0.05",
+      "baseline": null,
+      "current": {
+        "relevant_misses": 0,
+        "useful_omissions": 6,
+        "repeat_disagreements": 0,
+        "partition_disagreements": 0
+      },
+      "deltas": {
+        "relevant_misses": null,
+        "useful_omissions": null,
+        "repeat_disagreements": null,
+        "partition_disagreements": null
+      }
+    },
+    {
+      "key": "enriched/single/0.1",
+      "baseline": null,
+      "current": {
+        "relevant_misses": 0,
+        "useful_omissions": 54,
+        "repeat_disagreements": 0,
+        "partition_disagreements": 0
+      },
+      "deltas": {
+        "relevant_misses": null,
+        "useful_omissions": null,
+        "repeat_disagreements": null,
+        "partition_disagreements": null
+      }
+    },
+    {
+      "key": "enriched/single/0.2",
+      "baseline": null,
+      "current": {
+        "relevant_misses": 0,
+        "useful_omissions": 54,
+        "repeat_disagreements": 0,
+        "partition_disagreements": 0
+      },
+      "deltas": {
+        "relevant_misses": null,
+        "useful_omissions": null,
+        "repeat_disagreements": null,
+        "partition_disagreements": null
+      }
+    },
+    {
+      "key": "enriched/single/0.3",
+      "baseline": null,
+      "current": {
+        "relevant_misses": 0,
+        "useful_omissions": 54,
+        "repeat_disagreements": 0,
+        "partition_disagreements": 0
+      },
+      "deltas": {
+        "relevant_misses": null,
+        "useful_omissions": null,
+        "repeat_disagreements": null,
+        "partition_disagreements": null
+      }
+    },
+    {
+      "key": "enriched/single/0.5",
+      "baseline": null,
+      "current": {
+        "relevant_misses": 0,
+        "useful_omissions": 54,
+        "repeat_disagreements": 0,
+        "partition_disagreements": 0
+      },
+      "deltas": {
+        "relevant_misses": null,
+        "useful_omissions": null,
+        "repeat_disagreements": null,
+        "partition_disagreements": null
+      }
+    },
+    {
+      "key": "enriched/split/0.05",
+      "baseline": null,
+      "current": {
+        "relevant_misses": 0,
+        "useful_omissions": 0,
+        "repeat_disagreements": 0,
+        "partition_disagreements": 0
+      },
+      "deltas": {
+        "relevant_misses": null,
+        "useful_omissions": null,
+        "repeat_disagreements": null,
+        "partition_disagreements": null
+      }
+    },
+    {
+      "key": "enriched/split/0.1",
+      "baseline": null,
+      "current": {
+        "relevant_misses": 0,
+        "useful_omissions": 51,
+        "repeat_disagreements": 0,
+        "partition_disagreements": 3
+      },
+      "deltas": {
+        "relevant_misses": null,
+        "useful_omissions": null,
+        "repeat_disagreements": null,
+        "partition_disagreements": null
+      }
+    },
+    {
+      "key": "enriched/split/0.2",
+      "baseline": null,
+      "current": {
+        "relevant_misses": 0,
+        "useful_omissions": 54,
+        "repeat_disagreements": 0,
+        "partition_disagreements": 0
+      },
+      "deltas": {
+        "relevant_misses": null,
+        "useful_omissions": null,
+        "repeat_disagreements": null,
+        "partition_disagreements": null
+      }
+    },
+    {
+      "key": "enriched/split/0.3",
+      "baseline": null,
+      "current": {
+        "relevant_misses": 0,
+        "useful_omissions": 54,
+        "repeat_disagreements": 0,
+        "partition_disagreements": 0
+      },
+      "deltas": {
+        "relevant_misses": null,
+        "useful_omissions": null,
+        "repeat_disagreements": null,
+        "partition_disagreements": null
+      }
+    },
+    {
+      "key": "enriched/split/0.5",
+      "baseline": null,
+      "current": {
+        "relevant_misses": 0,
+        "useful_omissions": 54,
+        "repeat_disagreements": 0,
+        "partition_disagreements": 0
+      },
+      "deltas": {
+        "relevant_misses": null,
+        "useful_omissions": null,
+        "repeat_disagreements": null,
+        "partition_disagreements": null
+      }
+    }
+  ]
+}

@@ -31,7 +31,7 @@ You define the tasks and the checks that must always run. The action returns a s
 ## Why use it?
 
 - **Try it while keeping every check.** Shadow mode records what would be skipped while all tasks still run.
-- **Keep the final say.** Mandatory tasks, path rules, and dependencies take precedence over model decisions.
+- **Keep the final say.** Mandatory tasks and path rules take precedence over model decisions; workflows own execution dependencies.
 - **Fit it into your workflow.** Use a JSON map for existing jobs or a matrix for independent tasks.
 - **Inspect every proposal.** Reports include the tested commit, probabilities, deterministic reason codes, timings, and API usage.
 - **Test without an API key.** The pure selection engine and the normal test suite work offline.
@@ -39,8 +39,8 @@ You define the tasks and the checks that must always run. The action returns a s
 ```mermaid
 flowchart LR
     A[Your task catalog + PR diff] --> B[Deterministic rules]
-    B --> C[Jev evaluates optional tasks]
-    C --> D[Selection + dependencies]
+    B --> C[Jev observes task relevance]
+    C --> D[Task selection]
     D --> E[Your existing CI jobs]
 ```
 
@@ -60,36 +60,35 @@ Start from a complete workflow, including its final `ci-required` check:
 
 Both examples target Go and Helm projects. Adapt the commands and tool setup to your repository. Copy the catalog, workflow, and bundled validator as described in each guide. Keep their task IDs and dependencies in sync.
 
-### 2. Describe what your checks cover
+### 2. Reference your existing jobs
 
-The catalog lives at `.github/ci-selector.yml`. A small catalog could look like this:
+The catalog lives at `.github/task-routing.yaml`. A small catalog could look like this:
 
 ```yaml
-version: 1
 model: jev-1.13.0
 skip_below: 0.05
-
-force_all_paths:
-  - "ci/**"
-  - "go.mod"
-  - "go.sum"
-
 tasks:
   unit:
+    description: Runs unit behavior tests.
     always: true
-
+    jobs:
+      - workflow: .github/workflows/ci.yml
+        job: unit
   build:
+    description: Runs compilation checks.
     always: true
-
+    jobs:
+      - workflow: .github/workflows/ci.yml
+        job: build
   helm:
-    requires: [build]
-    force_paths: ["charts/**/values.schema.json"]
-    question: >
-      Does this change affect Helm chart rendering, default values,
-      configuration validation, or generated Kubernetes manifests?
+    description: Runs chart rendering checks.
+    force_paths: [charts/**/values.schema.json]
+    jobs:
+      - workflow: .github/workflows/ci.yml
+        job: helm
 ```
 
-`unit` and `build` always run. A change to a chart values schema also forces `helm`; other changes leave it eligible for Jev's assessment. Selecting `helm` includes its `build` dependency. Ask whether a change **affects the scope**, rather than whether a test will fail.
+`unit` and `build` always run. A change to a chart values schema also forces `helm`; other changes leave it eligible for Jev's assessment. The workflow declares `build` as a prerequisite for `helm`; it stays mandatory here. Describe what each task verifies. A task may reference several jobs; omitting `job` includes all jobs in that workflow.
 
 Every catalog task also has a direct action output with the same ID. It is the exact string `true` or `false`, so a static job can use its own output without parsing the aggregate map. This job excerpt keeps the build dependency declared above:
 
@@ -106,20 +105,20 @@ This small catalog illustrates the format; the complete templates include more t
 
 ### 3. Enable shadow mode
 
-The selector step in the example workflows is pinned to a published commit containing the action bundle:
+This is an unpublished prototype. The excerpt uses `@main` temporarily; pin the delivered routing-schema commit before adoption:
 
 ```yaml
 - name: Plan this pull request
   id: select
   if: ${{ github.event_name == 'pull_request' }}
-  uses: guilhem/jev-ci-selector@5ae911f413054938f714f3c6f0eefbe2e3c33c7a
+  uses: guilhem/jev-ci-selector@main
   with:
     mode: shadow
     api-key: ${{ secrets.JEV_API_KEY }}
     allow-external-context: 'true'
 ```
 
-Add `JEV_API_KEY` as a repository secret and opt in to sending the diff, changed paths, commit SHAs, and task questions to TypeSafe. Shadow mode still makes that external call when authorized. Without a key or permission, every task is kept and no Jev call is made.
+Add `JEV_API_KEY` as a repository secret and opt in to sending the diff, changed paths, commit SHAs, and task context and questions to TypeSafe. Shadow mode still makes that external call when authorized. Without a key or permission, every task is kept and no Jev call is made.
 
 The default provider is TypeSafe at `https://api.typesafe.ai`; the SDK calls its
 System One endpoint under `/v1/systemone` and uses the catalog's `model`. A
@@ -139,8 +138,10 @@ The catalog still declares a pinned version such as `model: jev-1.13.0`; the pro
 return that pinned canonical version in its response. The endpoint must use
 HTTPS and contain no URL credentials, query, or fragment. Trailing slashes are
 normalized. OpenCode Free is temporary; see [its endpoint documentation](https://opencode.ai/docs/zen/#endpoints).
-This example documents the provider contract; live inference against OpenCode
-was not verified.
+A provider response that identifies itself only by an alias, such as
+`jev-1.13-free`, produces a full-CI fallback when it does not match the pinned
+canonical version. See the [evaluation guide](docs/evaluation.md) for reproducible
+contract and relevance checks.
 
 This is a **step excerpt**, not a complete workflow. Use the linked templates for job outputs, checkouts at `tested-sha`, dependency wiring, and the final gate. The planning job needs only `contents: read` and must not check out or run PR code.
 
@@ -148,12 +149,12 @@ Make **`ci-required` a required status check** in your branch protection rule or
 
 ## See what would change
 
-Imagine Jev returns `0.02` for `helm`, below the `0.05` threshold, and no path rule forces it. Here is an illustrative report excerpt:
+Imagine every evaluated group returns `0.02` for `helm`, below the `0.05` threshold, and no path rule forces it. The raw scores live in `observation.chunks`; the task has no global probability. Here is an illustrative report excerpt:
 
 ```json
 {
   "helm": {
-    "probability": 0.02,
+    "probability": null,
     "proposed_run": false,
     "run": true,
     "reasons": ["jev-below-threshold", "shadow-mode"]
@@ -170,9 +171,11 @@ The job summary gives you a quick view. The `report-path` output points to the d
 | Mode | What goes into CI outputs | What you learn |
 | --- | --- | --- |
 | **`shadow`** · default | Every task | The proposed selection, while observing the full run |
-| `enforce` · explicit opt-in | Selected tasks, mandatory tasks, and their dependencies | The effect of applying a measured selection policy |
+| `enforce` · explicit opt-in | Selected and mandatory tasks; workflow `needs` still applies | The effect of applying a measured selection policy |
 
-Keep essential checks under `always: true`. A timeout, API problem, invalid response, or unsupported diff keeps all tasks. Fork PRs and changes to the catalog or workflow files also run everything without calling Jev. An invalid or unavailable catalog fails the planner because it cannot identify a complete task set.
+Keep essential checks under `always: true`. A timeout, API problem, invalid response, or unsupported diff keeps all tasks. Fork PRs never call Jev. Catalog/workflow changes and forced paths keep every task too, but both modes still record model answers for configured tasks. A policy marked `bypassed` can therefore have a completed model observation. An invalid or unavailable catalog fails the planner because it cannot identify a complete task set.
+
+Both modes group the complete diff by files and directories and retain the answers for each group. The code composes relevance decisions without calculating a global model probability. The complete diff must still fit `max-diff-bytes`; request count, concurrency and total evaluation time are bounded. See the [shadow guide](docs/shadow-mode.md) for limits and manual PR observation using `workflow_dispatch`.
 
 Need an immediate return to full CI? Set `force-all: 'true'` in the selector's inputs.
 
@@ -205,3 +208,12 @@ The suite covers deterministic selection, real temporary Git repositories, mocke
 After changing bundled code, run `npm run build` and commit `dist/` with its sources. `npm run check:dist` verifies that the shipped bundles match. See the [module map](docs/reference.md#development) to find your way around.
 
 Have a use case or an integration snag? [Open an issue](https://github.com/guilhem/jev-ci-selector/issues). Please keep secrets and private source code out of reports.
+
+## Reproducible Jev qualification
+
+The [committed corpus and runner](tests/evaluation/README.md) use generic synthetic
+examples with independent relevance annotations. Each case includes its own diff,
+configuration and source files; no external project checkout is needed.
+Run `npm run eval:replay` without a key or network. Use `npm run eval:live`
+explicitly to create a campaign for those same inputs. Read the
+[evaluation guide](docs/evaluation.md) for how to interpret results.

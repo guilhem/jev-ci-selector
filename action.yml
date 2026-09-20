@@ -2,11 +2,17 @@ name: jev-ci-selector
 description: Produce a conservative CI task selection plan using deterministic rules and Jev.
 inputs:
   config:
-    description: Repository-relative catalog path (read from the PR base commit).
-    default: .github/ci-selector.yml
+    description: Catalog path at the PR base commit, or the selected workflow commit for a manual observation.
+    default: .github/task-routing.yaml
   mode:
     description: shadow preserves all effective tasks; enforce applies the proposal.
     default: shadow
+  tested-ref:
+    description: Commit tested by the consumer; merge uses the tested merge commit and head uses the PR head with a verified merge-base diff.
+    default: merge
+  pull-request:
+    description: For workflow_dispatch, observe this open PR using the selected workflow commit's catalog in shadow or enforce mode. Requires pull-requests read permission.
+    default: ''
   github-token:
     description: Read-only GitHub token for fetching immutable Git objects.
     default: ${{ github.token }}
@@ -26,7 +32,7 @@ inputs:
     description: Bypass optimization immediately.
     default: 'false'
   timeout-ms:
-    description: Maximum Jev request duration, without retries.
+    description: Total Jev evaluation budget, with at most 3 concurrent requests and 10 seconds per request, without retries.
     default: '10000'
   max-diff-bytes:
     description: Maximum complete UTF-8 diff size; not a token count.

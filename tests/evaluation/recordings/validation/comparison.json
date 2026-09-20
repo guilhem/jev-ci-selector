@@ -1,0 +1,232 @@
+{
+  "version": 1,
+  "baseline": null,
+  "current": "/tmp/jev-job-metadata/tests/evaluation/recordings/validation",
+  "comparable": false,
+  "guard": {
+    "comparable": false,
+    "reasons": [
+      "baseline-not-found"
+    ],
+    "baseline": null,
+    "current": {
+      "split": "validation",
+      "corpusFingerprint": "2d786fdc013e91ccb99cff717ad6894993ddca4a89bff5fa9e3142fecc69eb24",
+      "cases": [
+        {
+          "id": "api-pagination",
+          "split": "validation",
+          "caseFingerprint": "c990b1e8dc28e44e008c56515605123b904e22b61db5f55fa17b133c2e22fdb3"
+        },
+        {
+          "id": "documentation-only",
+          "split": "validation",
+          "caseFingerprint": "31d583e58555223b48ed35bf3e35b47adb84b16ecb0cfab886512d6d09c25bd7"
+        },
+        {
+          "id": "schema-unique-index",
+          "split": "validation",
+          "caseFingerprint": "948683fea0c31eed083e0598d8311f62d27753518f74472ede9b02af82e35454"
+        },
+        {
+          "id": "theme-spacing",
+          "split": "validation",
+          "caseFingerprint": "f34b1b6e79f8f63021c0421f8ac1d421e9e2a28dd3a83841bf168364d818d156"
+        }
+      ],
+      "variants": [
+        {
+          "context": "enriched",
+          "questionMode": "single",
+          "grouping": "natural",
+          "maxGroupBytes": 49152
+        },
+        {
+          "context": "enriched",
+          "questionMode": "single",
+          "grouping": "partitioned",
+          "maxGroupBytes": 8192
+        }
+      ],
+      "repeats": 3,
+      "thresholds": [
+        0.05,
+        0.1,
+        0.2,
+        0.3,
+        0.5
+      ],
+      "sdk": {
+        "package": "@typesafe-ai/sdk",
+        "version": "0.6.0",
+        "model": null
+      },
+      "selection": {
+        "version": 1,
+        "sourceSplit": "calibration",
+        "corpusFingerprint": "2d786fdc013e91ccb99cff717ad6894993ddca4a89bff5fa9e3142fecc69eb24",
+        "qualified": true,
+        "exploratory": false,
+        "selected": {
+          "context": "enriched",
+          "questionMode": "single",
+          "threshold": 0.1
+        },
+        "metrics": {
+          "relevant": 42,
+          "relevantMisses": 0,
+          "irrelevant": 54,
+          "correctIrrelevantOmissions": 54,
+          "irrelevantRetained": 0,
+          "unknown": 0,
+          "mismatches": 0,
+          "runs": 24,
+          "completeRuns": 24,
+          "failedRuns": 0,
+          "variant": "enriched/single"
+        },
+        "caseIds": [
+          "button-keyboard",
+          "library-normalization",
+          "schema-nullability",
+          "shared-install"
+        ]
+      }
+    }
+  },
+  "metrics": {
+    "relevant_misses": {
+      "baseline": null,
+      "current": 0,
+      "delta": null
+    },
+    "useful_omissions": {
+      "baseline": null,
+      "current": 338,
+      "delta": null
+    }
+  },
+  "stability": {
+    "repeat_disagreements": {
+      "baseline": null,
+      "current": 2,
+      "delta": null
+    },
+    "partition_disagreements": {
+      "baseline": null,
+      "current": 2,
+      "delta": null
+    }
+  },
+  "tokens": {
+    "input": {
+      "baseline": null,
+      "current": 157881,
+      "delta": null
+    },
+    "output": {
+      "baseline": null,
+      "current": 2244,
+      "delta": null
+    },
+    "total": {
+      "baseline": null,
+      "current": 160125,
+      "delta": null
+    }
+  },
+  "latency_ms": {
+    "elapsed": {
+      "baseline": null,
+      "current": 9431,
+      "delta": null
+    },
+    "mean_run": {
+      "baseline": null,
+      "current": 393,
+      "delta": null
+    }
+  },
+  "variants": [
+    {
+      "key": "enriched/single/0.05",
+      "baseline": null,
+      "current": {
+        "relevant_misses": 0,
+        "useful_omissions": 31,
+        "repeat_disagreements": 1,
+        "partition_disagreements": 1
+      },
+      "deltas": {
+        "relevant_misses": null,
+        "useful_omissions": null,
+        "repeat_disagreements": null,
+        "partition_disagreements": null
+      }
+    },
+    {
+      "key": "enriched/single/0.1",
+      "baseline": null,
+      "current": {
+        "relevant_misses": 0,
+        "useful_omissions": 73,
+        "repeat_disagreements": 1,
+        "partition_disagreements": 1
+      },
+      "deltas": {
+        "relevant_misses": null,
+        "useful_omissions": null,
+        "repeat_disagreements": null,
+        "partition_disagreements": null
+      }
+    },
+    {
+      "key": "enriched/single/0.2",
+      "baseline": null,
+      "current": {
+        "relevant_misses": 0,
+        "useful_omissions": 78,
+        "repeat_disagreements": 0,
+        "partition_disagreements": 0
+      },
+      "deltas": {
+        "relevant_misses": null,
+        "useful_omissions": null,
+        "repeat_disagreements": null,
+        "partition_disagreements": null
+      }
+    },
+    {
+      "key": "enriched/single/0.3",
+      "baseline": null,
+      "current": {
+        "relevant_misses": 0,
+        "useful_omissions": 78,
+        "repeat_disagreements": 0,
+        "partition_disagreements": 0
+      },
+      "deltas": {
+        "relevant_misses": null,
+        "useful_omissions": null,
+        "repeat_disagreements": null,
+        "partition_disagreements": null
+      }
+    },
+    {
+      "key": "enriched/single/0.5",
+      "baseline": null,
+      "current": {
+        "relevant_misses": 0,
+        "useful_omissions": 78,
+        "repeat_disagreements": 0,
+        "partition_disagreements": 0
+      },
+      "deltas": {
+        "relevant_misses": null,
+        "useful_omissions": null,
+        "repeat_disagreements": null,
+        "partition_disagreements": null
+      }
+    }
+  ]
+}

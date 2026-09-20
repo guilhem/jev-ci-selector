@@ -1,0 +1,2 @@
+CREATE TABLE tags (id INTEGER PRIMARY KEY, name TEXT NOT NULL);
+CREATE INDEX tags_name ON tags(name);

@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { ConfigError } from './config.js';
 import { eventContext, planChange, type Inputs } from './planner.js';
 import { actionOutputs, summary } from './report.js';
+import { manualContext } from './manual.js';
 
 function booleanInput(name: string): boolean {
   const value = core.getInput(name) || 'false';
@@ -19,15 +20,21 @@ function integerInput(name: string, defaultValue: number): number {
 async function main(): Promise<void> {
   const mode = core.getInput('mode') || 'shadow';
   if (mode !== 'shadow' && mode !== 'enforce') throw new Error('invalid-input');
+  const testedRef = core.getInput('tested-ref') || 'merge';
+  if (testedRef !== 'head' && testedRef !== 'merge') throw new Error('invalid-input');
   const inputs: Inputs = {
-    config: core.getInput('config') || '.github/ci-selector.yml', mode,
+    config: core.getInput('config') || '.github/task-routing.yaml', mode, testedRef,
     githubToken: core.getInput('github-token'), apiKey: core.getInput('api-key'),
     apiBaseUrl: core.getInput('api-base-url'), apiModel: core.getInput('api-model'),
     allowExternalContext: booleanInput('allow-external-context'), forceAll: booleanInput('force-all'),
     timeoutMs: integerInput('timeout-ms', 10000), maxDiffBytes: integerInput('max-diff-bytes', 65536),
   };
   const event: unknown = JSON.parse(await readFile(process.env.GITHUB_EVENT_PATH!, 'utf8'));
-  const context = eventContext(process.env, event);
+  const pullRequest = core.getInput('pull-request');
+  const context = pullRequest
+    ? await manualContext(process.env, pullRequest, mode, inputs.githubToken, globalThis.fetch, testedRef)
+    : eventContext(process.env, event, testedRef);
+  if (pullRequest && testedRef === 'head') context.testedSha = context.headSha;
   const { plan, report } = await planChange(inputs, context);
   const directory = await mkdtemp(join(process.env.RUNNER_TEMP || tmpdir(), 'jev-ci-selector-report-'));
   const reportPath = join(directory, 'report.json');

@@ -1,0 +1,222 @@
+{
+  "version": 1,
+  "command": "live",
+  "split": "calibration",
+  "corpusFingerprint": "2d786fdc013e91ccb99cff717ad6894993ddca4a89bff5fa9e3142fecc69eb24",
+  "cases": [
+    {
+      "id": "library-normalization",
+      "split": "calibration",
+      "caseFingerprint": "6fe49201692b87b6f205db528c30c1e55288c63e143f3c7102839279611d997c"
+    },
+    {
+      "id": "button-keyboard",
+      "split": "calibration",
+      "caseFingerprint": "12214fdab770c25bc75cb589ce33a556d1f4d728283f06a2b61e0c130fbc488d"
+    },
+    {
+      "id": "schema-nullability",
+      "split": "calibration",
+      "caseFingerprint": "6ed5919804f7f9c0e72906d500371ff3b57f3456b56af8096c6e783ce1ff02ca"
+    },
+    {
+      "id": "shared-install",
+      "split": "calibration",
+      "caseFingerprint": "f785dc7890c45df6e4d3a0230cf3bcbfa5cbfd1c47c13eece03254cc52ea7452"
+    }
+  ],
+  "variants": [
+    {
+      "context": "description",
+      "questionMode": "single",
+      "grouping": "natural",
+      "maxGroupBytes": 49152
+    },
+    {
+      "context": "description",
+      "questionMode": "single",
+      "grouping": "partitioned",
+      "maxGroupBytes": 8192
+    },
+    {
+      "context": "description",
+      "questionMode": "split",
+      "grouping": "natural",
+      "maxGroupBytes": 49152
+    },
+    {
+      "context": "description",
+      "questionMode": "split",
+      "grouping": "partitioned",
+      "maxGroupBytes": 8192
+    },
+    {
+      "context": "enriched",
+      "questionMode": "single",
+      "grouping": "natural",
+      "maxGroupBytes": 49152
+    },
+    {
+      "context": "enriched",
+      "questionMode": "single",
+      "grouping": "partitioned",
+      "maxGroupBytes": 8192
+    },
+    {
+      "context": "enriched",
+      "questionMode": "split",
+      "grouping": "natural",
+      "maxGroupBytes": 49152
+    },
+    {
+      "context": "enriched",
+      "questionMode": "split",
+      "grouping": "partitioned",
+      "maxGroupBytes": 8192
+    }
+  ],
+  "repeats": 3,
+  "thresholds": [
+    0.05,
+    0.1,
+    0.2,
+    0.3,
+    0.5
+  ],
+  "sdk": {
+    "package": "@typesafe-ai/sdk",
+    "version": "0.6.0",
+    "model": null
+  },
+  "created": "2026-09-20T18:18:02.663Z",
+  "updated": "2026-09-20T18:18:35.159Z",
+  "runs": [
+    "runs/0000-library-normalization-description-single-natural-1.json",
+    "runs/0001-library-normalization-description-single-natural-2.json",
+    "runs/0002-library-normalization-description-single-natural-3.json",
+    "runs/0003-library-normalization-description-single-partitioned-1.json",
+    "runs/0004-library-normalization-description-single-partitioned-2.json",
+    "runs/0005-library-normalization-description-single-partitioned-3.json",
+    "runs/0006-library-normalization-description-split-natural-1.json",
+    "runs/0007-library-normalization-description-split-natural-2.json",
+    "runs/0008-library-normalization-description-split-natural-3.json",
+    "runs/0009-library-normalization-description-split-partitioned-1.json",
+    "runs/0010-library-normalization-description-split-partitioned-2.json",
+    "runs/0011-library-normalization-description-split-partitioned-3.json",
+    "runs/0012-library-normalization-enriched-single-natural-1.json",
+    "runs/0013-library-normalization-enriched-single-natural-2.json",
+    "runs/0014-library-normalization-enriched-single-natural-3.json",
+    "runs/0015-library-normalization-enriched-single-partitioned-1.json",
+    "runs/0016-library-normalization-enriched-single-partitioned-2.json",
+    "runs/0017-library-normalization-enriched-single-partitioned-3.json",
+    "runs/0018-library-normalization-enriched-split-natural-1.json",
+    "runs/0019-library-normalization-enriched-split-natural-2.json",
+    "runs/0020-library-normalization-enriched-split-natural-3.json",
+    "runs/0021-library-normalization-enriched-split-partitioned-1.json",
+    "runs/0022-library-normalization-enriched-split-partitioned-2.json",
+    "runs/0023-library-normalization-enriched-split-partitioned-3.json",
+    "runs/0024-button-keyboard-description-single-natural-1.json",
+    "runs/0025-button-keyboard-description-single-natural-2.json",
+    "runs/0026-button-keyboard-description-single-natural-3.json",
+    "runs/0027-button-keyboard-description-single-partitioned-1.json",
+    "runs/0028-button-keyboard-description-single-partitioned-2.json",
+    "runs/0029-button-keyboard-description-single-partitioned-3.json",
+    "runs/0030-button-keyboard-description-split-natural-1.json",
+    "runs/0031-button-keyboard-description-split-natural-2.json",
+    "runs/0032-button-keyboard-description-split-natural-3.json",
+    "runs/0033-button-keyboard-description-split-partitioned-1.json",
+    "runs/0034-button-keyboard-description-split-partitioned-2.json",
+    "runs/0035-button-keyboard-description-split-partitioned-3.json",
+    "runs/0036-button-keyboard-enriched-single-natural-1.json",
+    "runs/0037-button-keyboard-enriched-single-natural-2.json",
+    "runs/0038-button-keyboard-enriched-single-natural-3.json",
+    "runs/0039-button-keyboard-enriched-single-partitioned-1.json",
+    "runs/0040-button-keyboard-enriched-single-partitioned-2.json",
+    "runs/0041-button-keyboard-enriched-single-partitioned-3.json",
+    "runs/0042-button-keyboard-enriched-split-natural-1.json",
+    "runs/0043-button-keyboard-enriched-split-natural-2.json",
+    "runs/0044-button-keyboard-enriched-split-natural-3.json",
+    "runs/0045-button-keyboard-enriched-split-partitioned-1.json",
+    "runs/0046-button-keyboard-enriched-split-partitioned-2.json",
+    "runs/0047-button-keyboard-enriched-split-partitioned-3.json",
+    "runs/0048-schema-nullability-description-single-natural-1.json",
+    "runs/0049-schema-nullability-description-single-natural-2.json",
+    "runs/0050-schema-nullability-description-single-natural-3.json",
+    "runs/0051-schema-nullability-description-single-partitioned-1.json",
+    "runs/0052-schema-nullability-description-single-partitioned-2.json",
+    "runs/0053-schema-nullability-description-single-partitioned-3.json",
+    "runs/0054-schema-nullability-description-split-natural-1.json",
+    "runs/0055-schema-nullability-description-split-natural-2.json",
+    "runs/0056-schema-nullability-description-split-natural-3.json",
+    "runs/0057-schema-nullability-description-split-partitioned-1.json",
+    "runs/0058-schema-nullability-description-split-partitioned-2.json",
+    "runs/0059-schema-nullability-description-split-partitioned-3.json",
+    "runs/0060-schema-nullability-enriched-single-natural-1.json",
+    "runs/0061-schema-nullability-enriched-single-natural-2.json",
+    "runs/0062-schema-nullability-enriched-single-natural-3.json",
+    "runs/0063-schema-nullability-enriched-single-partitioned-1.json",
+    "runs/0064-schema-nullability-enriched-single-partitioned-2.json",
+    "runs/0065-schema-nullability-enriched-single-partitioned-3.json",
+    "runs/0066-schema-nullability-enriched-split-natural-1.json",
+    "runs/0067-schema-nullability-enriched-split-natural-2.json",
+    "runs/0068-schema-nullability-enriched-split-natural-3.json",
+    "runs/0069-schema-nullability-enriched-split-partitioned-1.json",
+    "runs/0070-schema-nullability-enriched-split-partitioned-2.json",
+    "runs/0071-schema-nullability-enriched-split-partitioned-3.json",
+    "runs/0072-shared-install-description-single-natural-1.json",
+    "runs/0073-shared-install-description-single-natural-2.json",
+    "runs/0074-shared-install-description-single-natural-3.json",
+    "runs/0075-shared-install-description-single-partitioned-1.json",
+    "runs/0076-shared-install-description-single-partitioned-2.json",
+    "runs/0077-shared-install-description-single-partitioned-3.json",
+    "runs/0078-shared-install-description-split-natural-1.json",
+    "runs/0079-shared-install-description-split-natural-2.json",
+    "runs/0080-shared-install-description-split-natural-3.json",
+    "runs/0081-shared-install-description-split-partitioned-1.json",
+    "runs/0082-shared-install-description-split-partitioned-2.json",
+    "runs/0083-shared-install-description-split-partitioned-3.json",
+    "runs/0084-shared-install-enriched-single-natural-1.json",
+    "runs/0085-shared-install-enriched-single-natural-2.json",
+    "runs/0086-shared-install-enriched-single-natural-3.json",
+    "runs/0087-shared-install-enriched-single-partitioned-1.json",
+    "runs/0088-shared-install-enriched-single-partitioned-2.json",
+    "runs/0089-shared-install-enriched-single-partitioned-3.json",
+    "runs/0090-shared-install-enriched-split-natural-1.json",
+    "runs/0091-shared-install-enriched-split-natural-2.json",
+    "runs/0092-shared-install-enriched-split-natural-3.json",
+    "runs/0093-shared-install-enriched-split-partitioned-1.json",
+    "runs/0094-shared-install-enriched-split-partitioned-2.json",
+    "runs/0095-shared-install-enriched-split-partitioned-3.json"
+  ],
+  "selection": {
+    "version": 1,
+    "sourceSplit": "calibration",
+    "corpusFingerprint": "2d786fdc013e91ccb99cff717ad6894993ddca4a89bff5fa9e3142fecc69eb24",
+    "qualified": true,
+    "exploratory": false,
+    "selected": {
+      "context": "enriched",
+      "questionMode": "single",
+      "threshold": 0.1
+    },
+    "metrics": {
+      "relevant": 42,
+      "relevantMisses": 0,
+      "irrelevant": 54,
+      "correctIrrelevantOmissions": 54,
+      "irrelevantRetained": 0,
+      "unknown": 0,
+      "mismatches": 0,
+      "runs": 24,
+      "completeRuns": 24,
+      "failedRuns": 0,
+      "variant": "enriched/single"
+    },
+    "caseIds": [
+      "button-keyboard",
+      "library-normalization",
+      "schema-nullability",
+      "shared-install"
+    ]
+  }
+}

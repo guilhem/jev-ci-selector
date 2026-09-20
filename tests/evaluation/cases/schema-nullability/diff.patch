@@ -1,0 +1,16 @@
+diff --git a/db/migrations/002-notes.sql b/db/migrations/002-notes.sql
+index 11b9867..0318d6d 100644
+--- a/db/migrations/002-notes.sql
++++ b/db/migrations/002-notes.sql
+@@ -1,2 +1,2 @@
+--- Create notes
+-CREATE TABLE notes (id INTEGER PRIMARY KEY, title TEXT);
++-- Create notes with a required title
++CREATE TABLE notes (id INTEGER PRIMARY KEY, title TEXT NOT NULL);
+diff --git a/db/schema.sql b/db/schema.sql
+index 948ebe3..6e36670 100644
+--- a/db/schema.sql
++++ b/db/schema.sql
+@@ -1 +1 @@
+-CREATE TABLE notes (id INTEGER PRIMARY KEY, title TEXT);
++CREATE TABLE notes (id INTEGER PRIMARY KEY, title TEXT NOT NULL);

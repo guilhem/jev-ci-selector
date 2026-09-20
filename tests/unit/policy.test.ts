@@ -43,7 +43,7 @@ test('shadow exposes only the full effective plan; proposal lives in task report
   assert.deepEqual(plan.tasks.helm!.reasons, ['jev-below-threshold', 'shadow-mode']);
 });
 test('catalog, workflows and configured protected paths bypass semantic probabilities', () => {
-  for (const path of ['.github/ci-selector.yml', '.github/workflows/ci.yml', 'ci/test.sh']) {
+  for (const path of ['.github/task-routing.yaml', '.github/workflows/ci.yml', 'ci/test.sh']) {
     const value = catalog(); value.force_all_paths = ['ci/**'];
     const plan = selectTasks({ catalog: value, changedPaths: [path], mode: 'enforce' });
     assert.equal(plan.status, 'bypassed'); assert.ok(Object.values(plan.run).every(Boolean));

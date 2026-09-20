@@ -24,10 +24,10 @@ jobs:
       - name: Select pull request tasks
         id: select
         if: ${{ github.event_name == 'pull_request' }}
-        # Reviewed distribution commit; keep a full SHA when upgrading.
-        uses: guilhem/jev-ci-selector@5ae911f413054938f714f3c6f0eefbe2e3c33c7a
+        # Temporary prototype reference; pin a delivered routing-schema commit before adoption.
+        uses: guilhem/jev-ci-selector@main
         with:
-          config: .github/ci-selector.yml
+          config: .github/task-routing.yaml
           mode: shadow
           github-token: ${{ secrets.GITHUB_TOKEN }}
           api-key: ${{ secrets.JEV_API_KEY }}

@@ -1,0 +1,9 @@
+model: jev-1.13.0
+skip_below: 0.05
+tasks:
+  validate:
+    description: Runs TypeScript checks, tests and verifies bundled action consistency.
+    jobs:
+      - workflow: .github/workflows/ci.yml
+        job: validate
+    always: true

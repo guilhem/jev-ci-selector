@@ -9,6 +9,8 @@
     "check:dist": "node scripts/build.mjs --check",
     "typecheck": "tsc --noEmit",
     "test": "tsx --test tests/unit/*.test.ts tests/integration/*.test.ts",
+    "eval:replay": "./node_modules/.bin/tsx tests/evaluation/runner.ts replay",
+    "eval:live": "./node_modules/.bin/tsx tests/evaluation/runner.ts live",
     "check": "npm run typecheck && npm test && npm run check:dist"
   },
   "dependencies": {

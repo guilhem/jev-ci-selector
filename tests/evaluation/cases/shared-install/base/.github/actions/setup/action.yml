@@ -1,0 +1,10 @@
+name: Install verification dependencies
+description: Install Node dependencies used by all verification tasks.
+inputs:
+  profile:
+    description: Name of the verification environment to prepare.
+runs:
+  using: composite
+  steps:
+    - run: npm ci
+      shell: bash

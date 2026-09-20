@@ -1,0 +1,15 @@
+{
+  "name": "synthetic-task-routing-example",
+  "private": true,
+  "scripts": {
+    "test:unit": "node --test library/tests/*.test.mjs",
+    "test:compat": "node --test library/compat/*.test.mjs",
+    "test:ui": "playwright test --config=web/playwright.config.mjs",
+    "test:a11y": "playwright test --config=web/playwright.config.mjs --grep accessibility",
+    "check:schema": "node tools/check-schema.mjs",
+    "check:api": "node tools/check-api.mjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.50.0"
+  }
+}

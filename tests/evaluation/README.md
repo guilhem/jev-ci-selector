@@ -1,0 +1,78 @@
+# Evaluation runner
+
+All eight scenarios and every snapshot file were authored from scratch for this
+public repository. They are synthetic fixtures, not extracts or anonymizations
+of a real application. The external action descriptor is fictional. The base/head
+hashes identify locally generated fixture commits, not an external repository.
+
+The runner uses the committed corpus under this directory and the trusted local
+snapshot named by each case. It never checks out a repository, runs a source
+script, reads `.env`, or sends credentials in a replay.
+
+The corpus has this shape:
+
+```json
+{
+  "version": 1,
+  "cases": [{
+    "id": "case-id",
+    "split": "calibration",
+    "diff": "cases/case-id/diff.patch",
+    "baseFiles": "cases/case-id/base",
+    "snapshot": "snapshots/generic-app",
+    "expected": {"unit": {"relevance": "relevant", "reason": "..."}},
+    "provenance": {"base": "...", "head": "...", "metadataCommit": "..."}
+  }]
+}
+```
+
+Each snapshot contains `repository/` and `external-actions.json`. The repository
+must contain `.github/task-routing.yaml`, its referenced workflows, action
+metadata, package manifests, and any context files. The runner resolves these
+files through `parseCatalog` and `resolveCatalog`; it does not execute them.
+Expected relevance labels are annotations made by code inspection before Jev
+evaluation. They are qualification data for this experiment, not independent
+human validation or evidence of test outcomes.
+
+Replay is offline and uses the exact request bodies captured from the SDK:
+
+```sh
+npm run eval:replay -- --campaign tests/evaluation/recordings/<campaign>
+```
+
+With no `--campaign`, replay requires and checks both committed baselines at
+`tests/evaluation/recordings/calibration` and
+`tests/evaluation/recordings/validation`. Pass `--campaign <path>` to check one
+campaign explicitly. Replay matches the serialized SDK body and its SHA-256
+before returning the stored structured response. A changed corpus, source
+fingerprint, request, response, or derived observation fails explicitly as a
+stale replay. Measured durations are ignored only in the final deterministic
+comparison.
+
+Live evaluation requires an explicit API key in `JEV_API_KEY`, `JEV_KEY_API`, or
+`TYPESAFE_API_KEY`; it does not load `.env`. Calibration evaluates description
+and enriched context, single and split questions, natural and 8 KiB partitioned
+grouping, and three repeats. Natural grouping uses a 48 KiB target; large diffs
+may still produce several actual groups. Use `--case id` for a smoke run.
+
+```sh
+npm run eval:live -- --split calibration --output /tmp/jev-calibration
+npm run eval:live -- --split validation --selection /tmp/jev-calibration/selection.json --output /tmp/jev-validation
+```
+
+Live output must be a new directory. When the committed
+`tests/evaluation/recordings/<split>` baseline exists, `eval:live` compares the
+new campaign with it; use `--baseline <campaign>` to select another previous
+campaign explicitly. The baseline is read-only and is never replaced. Each
+live output contains `manifest.json`, `summary.json`, `comparison.json`,
+`selection.json` for calibration, and one structured JSON record per run under
+`runs/`. `comparison.json` reports relevant misses, useful omissions, repeat and
+partition stability, token totals, latency deltas, and a comparable-settings
+guard. Incompatible corpus, case, variant, repeat, threshold, SDK, or frozen
+validation-selection settings leave deltas null and explain the guard reason.
+Partial observations and sanitized error codes are persisted. Records
+contain no HTTP headers, credentials, or private provider error bodies. The
+selection maximizes correctly omitted irrelevant tasks while requiring zero
+relevant misses across all calibration repeats and groupings; ties use the
+lowest threshold and stable context/question ordering. If no variant qualifies,
+the best exploratory choice is recorded with `qualified: false`.

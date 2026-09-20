@@ -1,0 +1,18 @@
+diff --git a/docs/contributing.md b/docs/contributing.md
+index bf2f75d..0073050 100644
+--- a/docs/contributing.md
++++ b/docs/contributing.md
+@@ -1,7 +1,11 @@
+ # Contributing
+ 
+-Describe the purpose of your change in each pull request.
++Describe the purpose and verification of your change in each pull request.
+ 
+ ## Review
+ 
+-Keep changes focused.
++Keep changes focused and explain any follow-up work.
++
++## Examples
++
++Use fictional data in public examples.

@@ -1,0 +1,15 @@
+diff --git a/db/migrations/003-tag-index.sql b/db/migrations/003-tag-index.sql
+index 0ff7137..1d20df4 100644
+--- a/db/migrations/003-tag-index.sql
++++ b/db/migrations/003-tag-index.sql
+@@ -1 +1 @@
+-CREATE INDEX tags_name ON tags(name);
++CREATE UNIQUE INDEX tags_name ON tags(name);
+diff --git a/db/schema.sql b/db/schema.sql
+index 207aa4e..8ed98ee 100644
+--- a/db/schema.sql
++++ b/db/schema.sql
+@@ -1,2 +1,2 @@
+ CREATE TABLE tags (id INTEGER PRIMARY KEY, name TEXT NOT NULL);
+-CREATE INDEX tags_name ON tags(name);
++CREATE UNIQUE INDEX tags_name ON tags(name);
