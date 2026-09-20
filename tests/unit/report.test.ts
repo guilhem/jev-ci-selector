@@ -13,10 +13,17 @@ test('report schema covers every deterministic reason and rejects arbitrary publ
     mode: 'shadow', status: 'bypassed', model: { requested: 'jev-1.13.0', returned: null },
     durations_ms: { collection: 1, jev: null, total: 1 }, usage: null, tasks: plan.tasks };
   validateReport(report);
-  validateReport({ ...report, model: { requested: 'jev-1.13-free', expected: 'jev-1.13.0', returned: 'jev-1.13.0' } });
-  assert.throws(() => validateReport({ ...report, model: { ...report.model, expected: 'jev-latest' } }));
+  const current = { ...report, version: 2,
+    model: { requested: 'jev-1.13-free', expected: 'jev-1.13.0', returned: 'jev-1.13.0' } };
+  validateReport(current);
+  assert.throws(() => validateReport({ ...current, model: { ...current.model, expected: 'jev-latest' } }));
+  assert.throws(() => validateReport({ ...current, version: 1 }), 'v2 metadata cannot claim v1');
+  assert.throws(() => validateReport({ ...report, model: { ...report.model, requested: 'jev-1.13-free' } }), 'v1 rejects aliases');
+  assert.throws(() => validateReport({ ...report, model: { ...report.model, expected: 'jev-1.13.0' } }), 'v1 rejects expected');
+  assert.throws(() => validateReport({ ...report, version: 2 }), 'v2 requires expected');
+  assert.throws(() => validateReport({ ...current, version: 3 }), 'unknown versions are rejected');
   for (const requested of ['invalid model', 'jev-free\n', 'm'.repeat(129)]) {
-    assert.throws(() => validateReport({ ...report, model: { ...report.model, requested } }));
+    assert.throws(() => validateReport({ ...current, model: { ...current.model, requested } }));
   }
   assert.throws(() => validateReport({ ...report, diff: 'private source' }));
   assert.throws(() => validateReport({ ...report, usage: { input_tokens: 1, output_tokens: 1, raw: 'private error' } }));

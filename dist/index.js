@@ -37100,12 +37100,12 @@ var import_ajv2 = __toESM(require_ajv());
 // schemas/report.schema.json
 var report_schema_default = {
   $schema: "http://json-schema.org/draft-07/schema#",
-  title: "jev-ci-selector source-free report v1",
+  title: "jev-ci-selector source-free reports v1 and v2",
   type: "object",
   additionalProperties: false,
   required: ["version", "config_sha", "base_sha", "head_sha", "tested_sha", "catalog_hash", "diff_hash", "diff_bytes", "changed_path_count", "mode", "status", "model", "durations_ms", "usage", "tasks"],
   properties: {
-    version: { const: 1 },
+    version: { enum: [1, 2] },
     config_sha: { $ref: "#/definitions/sha" },
     base_sha: { $ref: "#/definitions/sha" },
     head_sha: { $ref: "#/definitions/sha" },
@@ -37121,7 +37121,7 @@ var report_schema_default = {
       additionalProperties: false,
       required: ["requested", "returned"],
       properties: {
-        requested: { type: "string", pattern: "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}(?![\\s\\S])" },
+        requested: { type: "string" },
         expected: { type: "string", pattern: "^jev-[0-9]+\\.[0-9]+\\.[0-9]+$" },
         returned: { type: ["string", "null"], pattern: "^jev-[0-9]+\\.[0-9]+\\.[0-9]+$" }
       }
@@ -37183,6 +37183,26 @@ var report_schema_default = {
         }
       }
     }
+  },
+  if: { properties: { version: { const: 1 } } },
+  then: {
+    properties: { model: {
+      type: "object",
+      properties: {
+        requested: { type: "string", pattern: "^jev-[0-9]+\\.[0-9]+\\.[0-9]+$" },
+        expected: false
+      }
+    } }
+  },
+  else: {
+    properties: { model: {
+      type: "object",
+      required: ["expected"],
+      properties: {
+        expected: {},
+        requested: { type: "string", pattern: "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}(?![\\s\\S])" }
+      }
+    } }
   },
   definitions: { sha: { type: "string", pattern: "^[a-f0-9]{40}$" } }
 };
@@ -37323,7 +37343,7 @@ async function planChange(inputs, context, dependencies = {}) {
       ...forced ? { forceAllReason: forced } : {}
     });
     const report = {
-      version: 1,
+      version: 2,
       config_sha: context.baseSha,
       base_sha: context.baseSha,
       head_sha: context.headSha,

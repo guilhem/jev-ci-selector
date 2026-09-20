@@ -101,7 +101,7 @@ export async function planChange(inputs: Inputs, context: Context, dependencies:
     const plan = selectTasks({ catalog, changedPaths: change?.changedPaths ?? [], probabilities,
       mode: inputs.mode, configPath: inputs.config, ...(forced ? { forceAllReason: forced } : {}) });
     const report: Report = {
-      version: 1, config_sha: context.baseSha, base_sha: context.baseSha, head_sha: context.headSha, tested_sha: context.testedSha,
+      version: 2, config_sha: context.baseSha, base_sha: context.baseSha, head_sha: context.headSha, tested_sha: context.testedSha,
       catalog_hash: createHash('sha256').update(configBytes).digest('hex'),
       diff_hash: change?.diffHash ?? null, diff_bytes: change?.diffBytes ?? null, changed_path_count: change?.changedPaths.length ?? null,
       mode: plan.mode, status: plan.status, model: { requested: requestedModel, expected: catalog.model, returned: metadata.model },

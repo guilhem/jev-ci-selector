@@ -3,8 +3,7 @@ import schema from '../schemas/report.schema.json';
 import type { ExecutionPlan } from './policy.js';
 import type { Usage } from './jev.js';
 
-export interface Report {
-  version: 1;
+interface ReportFields {
   config_sha: string;
   base_sha: string;
   head_sha: string;
@@ -15,11 +14,14 @@ export interface Report {
   changed_path_count: number | null;
   mode: ExecutionPlan['mode'];
   status: ExecutionPlan['status'];
-  model: { requested: string; expected?: string; returned: string | null };
   durations_ms: { collection: number; jev: number | null; total: number };
   usage: Usage | null;
   tasks: ExecutionPlan['tasks'];
 }
+export type Report = ReportFields & (
+  { version: 1; model: { requested: string; returned: string | null } } |
+  { version: 2; model: { requested: string; expected: string; returned: string | null } }
+);
 const validate = new Ajv({ strict: true }).compile(schema);
 export function validateReport(value: unknown): asserts value is Report {
   if (!validate(value)) throw new Error('invalid-report');

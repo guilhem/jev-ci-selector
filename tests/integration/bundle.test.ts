@@ -53,6 +53,7 @@ test('distributed bundle runs against real Git objects, publishes shadow/enforce
       const { result, outputs } = await run({ INPUT_MODE: mode });
       assert.equal(result.status, 0, result.stdout + result.stderr);
       const report: unknown = JSON.parse(await readFile(outputs['report-path']!, 'utf8')); validateReport(report);
+      assert.equal(report.version, 2);
       assert.equal(outputs.status, 'planned', JSON.stringify(report));
       assert.deepEqual(JSON.parse(outputs.run!), { helm: mode === 'shadow', unit: true });
       assert.equal(outputs.helm, mode === 'shadow' ? 'true' : 'false');
@@ -67,6 +68,7 @@ test('distributed bundle runs against real Git objects, publishes shadow/enforce
     assert.equal(custom.outputs.status, 'planned');
     assert.equal(custom.outputs.helm, 'false'); assert.equal(custom.outputs.unit, 'true');
     const customReport: unknown = JSON.parse(await readFile(custom.outputs['report-path']!, 'utf8')); validateReport(customReport);
+    assert.equal(customReport.version, 2);
     assert.deepEqual(customReport.model, { requested: 'jev-1.13-free', expected: 'jev-1.13.0', returned: 'jev-1.13.0' });
     assert.ok(!JSON.stringify(customReport).includes('SENTINEL'));
     const wrongModel = await run({ ...api, FIXTURE_RESPONSE: JSON.stringify({ model: 'jev-1.13.1',
