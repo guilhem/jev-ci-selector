@@ -1,9 +1,10 @@
 import { createHash } from 'node:crypto';
 import { ChangeError, GitRepository, type ChangeSet } from './changes.js';
 import { ConfigError, parseCatalog, validateConfigPath } from './config.js';
-import { evaluateJev, JevError, resolveJevApi, type JevMetadata, type JevApiOptions } from './jev.js';
+import { evaluateJev, resolveJevApi, type JevMetadata, type JevApiOptions } from './jev.js';
 import { globalPathReason, selectTasks, semanticTaskIds, type ForceAllReason, type Mode } from './policy.js';
 import { validateReport, type Report } from './report.js';
+import { observeChange, ObservationSizeError, type Observation } from './observations.js';
 
 export interface Inputs extends JevApiOptions {
   config: string; mode: Mode; githubToken: string; apiKey: string;
@@ -12,6 +13,7 @@ export interface Inputs extends JevApiOptions {
 export interface Context {
   eventName: string; repository: string; serverUrl: string; testedSha: string;
   baseSha: string; headSha: string; fork: boolean;
+  configSha?: string;
 }
 const object = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
 const sha = (value: unknown): value is string => typeof value === 'string' && /^[a-f0-9]{40}$/.test(value);
@@ -48,10 +50,11 @@ export async function planChange(inputs: Inputs, context: Context, dependencies:
     remoteUrl: `${context.serverUrl}/${context.repository}.git`, token: inputs.githubToken,
   });
   try {
+    const configSha = context.configSha ?? context.baseSha;
     let configBytes: Buffer;
     try {
-      await repository.fetchCommit(context.baseSha);
-      configBytes = await repository.readFile(context.baseSha, inputs.config);
+      await repository.fetchCommit(configSha);
+      configBytes = await repository.readFile(configSha, inputs.config);
     } catch { throw new ConfigError(); }
     let source: string;
     try { source = new TextDecoder('utf-8', { fatal: true }).decode(configBytes); }
@@ -67,6 +70,7 @@ export async function planChange(inputs: Inputs, context: Context, dependencies:
     let change: ChangeSet | undefined;
     if (!forced) {
       try {
+        if (configSha !== context.baseSha) await repository.fetchCommit(context.baseSha);
         change = await repository.collect({ baseSha: context.baseSha, headSha: context.headSha,
           testedSha: context.testedSha, maxDiffBytes: inputs.maxDiffBytes });
         forced = globalPathReason(catalog, change.changedPaths, inputs.config);
@@ -80,33 +84,49 @@ export async function planChange(inputs: Inputs, context: Context, dependencies:
     let probabilities: Record<string, number> = {};
     let metadata: JevMetadata = { model: null, usage: null };
     let jevMs: number | null = null;
-    const candidates = semanticTaskIds(catalog, change?.changedPaths ?? []);
-    if (!forced && candidates.length) {
-      if (!change) throw new Error('missing-change');
+    let observation: Observation | null = null;
+    const policyCandidates = semanticTaskIds(catalog, change?.changedPaths ?? []);
+    const candidates = inputs.mode === 'shadow'
+      ? Object.keys(catalog.tasks).filter(id => catalog.tasks[id]!.question).sort()
+      : policyCandidates;
+    // Shadow asks the model even when paths fix the policy's execution decision.
+    // Explicit opt-outs and unsupported Git changes still prevent every API call.
+    if (change && (!forced || inputs.mode === 'shadow') && candidates.length) {
       const callStarted = performance.now();
       try {
-        const result = await (dependencies.evaluate ?? evaluateJev)({ catalog, taskIds: candidates,
+        const result = await observeChange({ catalog, taskIds: candidates,
           apiBaseUrl: api.baseURL, apiModel: requestedModel,
           apiKey: inputs.apiKey, timeoutMs: inputs.timeoutMs,
           state: { base_sha: context.baseSha, head_sha: context.headSha, tested_sha: context.testedSha,
-            changed_paths: change.changedPaths, diff: change.diff } });
-        probabilities = result.probabilities;
+            changed_paths: change.changedPaths, diff: change.diff } }, inputs.mode === 'shadow', dependencies.evaluate ?? evaluateJev);
+        observation = result.observation;
+        probabilities = Object.fromEntries(policyCandidates.filter(id => Object.hasOwn(result.probabilities, id))
+          .map(id => [id, result.probabilities[id]!]));
         metadata = result;
+        if (result.failure) forced = { status: 'fallback', code: result.failure };
       } catch (error) {
-        if (!(error instanceof JevError)) throw error;
+        if (!(error instanceof ObservationSizeError)) throw error;
         forced = { status: 'fallback', code: error.code };
-        metadata = error.metadata;
       } finally { jevMs = performance.now() - callStarted; }
     }
     const plan = selectTasks({ catalog, changedPaths: change?.changedPaths ?? [], probabilities,
       mode: inputs.mode, configPath: inputs.config, ...(forced ? { forceAllReason: forced } : {}) });
+    if (observation?.strategy === 'chunked-diff') {
+      for (const id of candidates) {
+        plan.tasks[id]!.probability = null;
+        plan.tasks[id]!.reasons.push('chunked-observation');
+      }
+    }
+    if (observation && plan.status === 'bypassed') {
+      for (const id of candidates) plan.tasks[id]!.reasons.push('observation-only');
+    }
     const report: Report = {
-      version: 2, config_sha: context.baseSha, base_sha: context.baseSha, head_sha: context.headSha, tested_sha: context.testedSha,
+      version: 3, config_sha: configSha, base_sha: context.baseSha, head_sha: context.headSha, tested_sha: context.testedSha,
       catalog_hash: createHash('sha256').update(configBytes).digest('hex'),
       diff_hash: change?.diffHash ?? null, diff_bytes: change?.diffBytes ?? null, changed_path_count: change?.changedPaths.length ?? null,
       mode: plan.mode, status: plan.status, model: { requested: requestedModel, expected: catalog.model, returned: metadata.model },
       durations_ms: { collection: collectionMs, jev: jevMs, total: performance.now() - started },
-      usage: metadata.usage, tasks: plan.tasks,
+      usage: metadata.usage, tasks: plan.tasks, observation,
     };
     validateReport(report);
     return { plan, report };

@@ -39,7 +39,7 @@ You define the tasks and the checks that must always run. The action returns a s
 ```mermaid
 flowchart LR
     A[Your task catalog + PR diff] --> B[Deterministic rules]
-    B --> C[Jev evaluates optional tasks]
+    B --> C[Jev observes task relevance]
     C --> D[Selection + dependencies]
     D --> E[Your existing CI jobs]
 ```
@@ -172,7 +172,9 @@ The job summary gives you a quick view. The `report-path` output points to the d
 | **`shadow`** · default | Every task | The proposed selection, while observing the full run |
 | `enforce` · explicit opt-in | Selected tasks, mandatory tasks, and their dependencies | The effect of applying a measured selection policy |
 
-Keep essential checks under `always: true`. A timeout, API problem, invalid response, or unsupported diff keeps all tasks. Fork PRs and changes to the catalog or workflow files also run everything without calling Jev. An invalid or unavailable catalog fails the planner because it cannot identify a complete task set.
+Keep essential checks under `always: true`. A timeout, API problem, invalid response, or unsupported diff keeps all tasks. Fork PRs never call Jev. Catalog/workflow changes and forced paths keep every task too, but shadow mode still records model answers for tasks with questions. A policy marked `bypassed` can therefore have a completed model observation. An invalid or unavailable catalog fails the planner because it cannot identify a complete task set.
+
+Large shadow observations split the complete diff into bounded fragments and show the real answers for each fragment. These are not a global model probability, and chunk-based proposals never control `enforce`. The complete diff must still fit `max-diff-bytes`; request count, concurrency and total evaluation time are bounded. See the [shadow guide](docs/shadow-mode.md) for limits and manual PR observation using `workflow_dispatch`.
 
 Need an immediate return to full CI? Set `force-all: 'true'` in the selector's inputs.
 

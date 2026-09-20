@@ -3633,7 +3633,7 @@ var require_util2 = __commonJS({
     try {
       crypto = require("crypto");
       const possibleRelevantHashes = ["sha256", "sha384", "sha512"];
-      supportedHashes = crypto.getHashes().filter((hash) => possibleRelevantHashes.includes(hash));
+      supportedHashes = crypto.getHashes().filter((hash2) => possibleRelevantHashes.includes(hash2));
     } catch {
     }
     function responseURL(response) {
@@ -3909,7 +3909,7 @@ var require_util2 = __commonJS({
         return false;
       }
     }
-    function bytesMatch(bytes, metadataList) {
+    function bytesMatch(bytes2, metadataList) {
       if (crypto === void 0) {
         return true;
       }
@@ -3925,7 +3925,7 @@ var require_util2 = __commonJS({
       for (const item of metadata) {
         const algorithm = item.algo;
         const expectedValue = item.hash;
-        let actualValue = crypto.createHash(algorithm).update(bytes).digest("base64");
+        let actualValue = crypto.createHash(algorithm).update(bytes2).digest("base64");
         if (actualValue[actualValue.length - 1] === "=") {
           if (actualValue[actualValue.length - 2] === "=") {
             actualValue = actualValue.slice(0, -2);
@@ -4152,17 +4152,17 @@ var require_util2 = __commonJS({
       return input;
     }
     async function readAllBytes(reader) {
-      const bytes = [];
+      const bytes2 = [];
       let byteLength = 0;
       while (true) {
         const { done, value: chunk } = await reader.read();
         if (done) {
-          return Buffer.concat(bytes, byteLength);
+          return Buffer.concat(bytes2, byteLength);
         }
         if (!isUint8Array(chunk)) {
           throw new TypeError("Received non-Uint8Array chunk");
         }
-        bytes.push(chunk);
+        bytes2.push(chunk);
         byteLength += chunk.length;
       }
     }
@@ -4691,8 +4691,8 @@ var require_dataURL = __commonJS({
       return input.slice(start, position.position);
     }
     function stringPercentDecode(input) {
-      const bytes = encoder.encode(input);
-      return percentDecode(bytes);
+      const bytes2 = encoder.encode(input);
+      return percentDecode(bytes2);
     }
     function percentDecode(input) {
       const output = [];
@@ -4805,11 +4805,11 @@ var require_dataURL = __commonJS({
         return "failure";
       }
       const binary = atob2(data);
-      const bytes = new Uint8Array(binary.length);
+      const bytes2 = new Uint8Array(binary.length);
       for (let byte = 0; byte < binary.length; byte++) {
-        bytes[byte] = binary.charCodeAt(byte);
+        bytes2[byte] = binary.charCodeAt(byte);
       }
-      return bytes;
+      return bytes2;
     }
     function collectAnHTTPQuotedString(input, position, extractValue) {
       const positionStart = position.position;
@@ -5052,27 +5052,27 @@ var require_file = __commonJS({
       }
     ]);
     function processBlobParts(parts, options) {
-      const bytes = [];
+      const bytes2 = [];
       for (const element of parts) {
         if (typeof element === "string") {
           let s = element;
           if (options.endings === "native") {
             s = convertLineEndingsNative(s);
           }
-          bytes.push(encoder.encode(s));
+          bytes2.push(encoder.encode(s));
         } else if (types2.isAnyArrayBuffer(element) || types2.isTypedArray(element)) {
           if (!element.buffer) {
-            bytes.push(new Uint8Array(element));
+            bytes2.push(new Uint8Array(element));
           } else {
-            bytes.push(
+            bytes2.push(
               new Uint8Array(element.buffer, element.byteOffset, element.byteLength)
             );
           }
         } else if (isBlobLike(element)) {
-          bytes.push(element);
+          bytes2.push(element);
         }
       }
-      return bytes;
+      return bytes2;
     }
     function convertLineEndingsNative(s) {
       let nativeLineEnding = "\n";
@@ -5459,19 +5459,19 @@ Content-Type: ${value.type || "application/octet-stream"}\r
     function bodyMixinMethods(instance) {
       const methods = {
         blob() {
-          return specConsumeBody(this, (bytes) => {
+          return specConsumeBody(this, (bytes2) => {
             let mimeType = bodyMimeType(this);
             if (mimeType === "failure") {
               mimeType = "";
             } else if (mimeType) {
               mimeType = serializeAMimeType(mimeType);
             }
-            return new Blob2([bytes], { type: mimeType });
+            return new Blob2([bytes2], { type: mimeType });
           }, instance);
         },
         arrayBuffer() {
-          return specConsumeBody(this, (bytes) => {
-            return new Uint8Array(bytes).buffer;
+          return specConsumeBody(this, (bytes2) => {
+            return new Uint8Array(bytes2).buffer;
           }, instance);
         },
         text() {
@@ -5602,8 +5602,8 @@ Content-Type: ${value.type || "application/octet-stream"}\r
       const output = textDecoder.decode(buffer);
       return output;
     }
-    function parseJSONFromBytes(bytes) {
-      return JSON.parse(utf8DecodeBytes(bytes));
+    function parseJSONFromBytes(bytes2) {
+      return JSON.parse(utf8DecodeBytes(bytes2));
     }
     function bodyMimeType(object2) {
       const { headersList } = object2[kState];
@@ -11980,10 +11980,10 @@ var require_response = __commonJS({
         if (init !== null) {
           init = webidl.converters.ResponseInit(init);
         }
-        const bytes = textEncoder.encode(
+        const bytes2 = textEncoder.encode(
           serializeJavascriptValueToJSONString(data)
         );
-        const body = extractBody(bytes);
+        const body = extractBody(bytes2);
         const relevantRealm = { settingsObject: {} };
         const responseObject = new _Response();
         responseObject[kRealm] = relevantRealm;
@@ -13322,12 +13322,12 @@ var require_fetch = __commonJS({
           processBodyError(response.error);
           return;
         }
-        const processBody = (bytes) => {
-          if (!bytesMatch(bytes, request.integrity)) {
+        const processBody = (bytes2) => {
+          if (!bytesMatch(bytes2, request.integrity)) {
             processBodyError("integrity mismatch");
             return;
           }
-          response.body = safelyExtractBody(bytes)[0];
+          response.body = safelyExtractBody(bytes2)[0];
           fetchFinale(fetchParams, response);
         };
         await fullyReadBody(response.body, processBody, processBodyError);
@@ -13703,12 +13703,12 @@ var require_fetch = __commonJS({
       if (request.body == null && fetchParams.processRequestEndOfBody) {
         queueMicrotask(() => fetchParams.processRequestEndOfBody());
       } else if (request.body != null) {
-        const processBodyChunk = async function* (bytes) {
+        const processBodyChunk = async function* (bytes2) {
           if (isCancelled(fetchParams)) {
             return;
           }
-          yield bytes;
-          fetchParams.processRequestBodyChunkLength?.(bytes.byteLength);
+          yield bytes2;
+          fetchParams.processRequestBodyChunkLength?.(bytes2.byteLength);
         };
         const processEndOfBody = () => {
           if (isCancelled(fetchParams)) {
@@ -13730,8 +13730,8 @@ var require_fetch = __commonJS({
         };
         requestBody = (async function* () {
           try {
-            for await (const bytes of request.body.stream) {
-              yield* processBodyChunk(bytes);
+            for await (const bytes2 of request.body.stream) {
+              yield* processBodyChunk(bytes2);
             }
             processEndOfBody();
           } catch (err) {
@@ -13787,33 +13787,33 @@ var require_fetch = __commonJS({
       fetchParams.controller.on("terminated", onAborted);
       fetchParams.controller.resume = async () => {
         while (true) {
-          let bytes;
+          let bytes2;
           let isFailure;
           try {
             const { done, value } = await fetchParams.controller.next();
             if (isAborted(fetchParams)) {
               break;
             }
-            bytes = done ? void 0 : value;
+            bytes2 = done ? void 0 : value;
           } catch (err) {
             if (fetchParams.controller.ended && !timingInfo.encodedBodySize) {
-              bytes = void 0;
+              bytes2 = void 0;
             } else {
-              bytes = err;
+              bytes2 = err;
               isFailure = true;
             }
           }
-          if (bytes === void 0) {
+          if (bytes2 === void 0) {
             readableStreamClose(fetchParams.controller.controller);
             finalizeResponse(fetchParams, response);
             return;
           }
-          timingInfo.decodedBodySize += bytes?.byteLength ?? 0;
+          timingInfo.decodedBodySize += bytes2?.byteLength ?? 0;
           if (isFailure) {
-            fetchParams.controller.terminate(bytes);
+            fetchParams.controller.terminate(bytes2);
             return;
           }
-          fetchParams.controller.controller.enqueue(new Uint8Array(bytes));
+          fetchParams.controller.controller.enqueue(new Uint8Array(bytes2));
           if (isErrored(stream)) {
             fetchParams.controller.terminate();
             return;
@@ -13934,9 +13934,9 @@ var require_fetch = __commonJS({
               if (fetchParams.controller.dump) {
                 return;
               }
-              const bytes = chunk;
-              timingInfo.encodedBodySize += bytes.byteLength;
-              return this.body.push(bytes);
+              const bytes2 = chunk;
+              timingInfo.encodedBodySize += bytes2.byteLength;
+              return this.body.push(bytes2);
             },
             onComplete() {
               if (this.abort) {
@@ -14385,7 +14385,7 @@ var require_util4 = __commonJS({
       fr[kError] = null;
       const stream = blob.stream();
       const reader = stream.getReader();
-      const bytes = [];
+      const bytes2 = [];
       let chunkPromise = reader.read();
       let isFirstChunk = true;
       (async () => {
@@ -14399,7 +14399,7 @@ var require_util4 = __commonJS({
             }
             isFirstChunk = false;
             if (!done && types2.isUint8Array(value)) {
-              bytes.push(value);
+              bytes2.push(value);
               if ((fr[kLastProgressEventFired] === void 0 || Date.now() - fr[kLastProgressEventFired] >= 50) && !fr[kAborted]) {
                 fr[kLastProgressEventFired] = Date.now();
                 queueMicrotask(() => {
@@ -14411,7 +14411,7 @@ var require_util4 = __commonJS({
               queueMicrotask(() => {
                 fr[kState] = "done";
                 try {
-                  const result = packageData(bytes, type, blob.type, encodingName);
+                  const result = packageData(bytes2, type, blob.type, encodingName);
                   if (fr[kAborted]) {
                     return;
                   }
@@ -14451,7 +14451,7 @@ var require_util4 = __commonJS({
       });
       reader.dispatchEvent(event);
     }
-    function packageData(bytes, type, mimeType, encodingName) {
+    function packageData(bytes2, type, mimeType, encodingName) {
       switch (type) {
         case "DataURL": {
           let dataURL = "data:";
@@ -14461,7 +14461,7 @@ var require_util4 = __commonJS({
           }
           dataURL += ";base64,";
           const decoder = new StringDecoder("latin1");
-          for (const chunk of bytes) {
+          for (const chunk of bytes2) {
             dataURL += btoa2(decoder.write(chunk));
           }
           dataURL += btoa2(decoder.end());
@@ -14481,16 +14481,16 @@ var require_util4 = __commonJS({
           if (encoding === "failure") {
             encoding = "UTF-8";
           }
-          return decode(bytes, encoding);
+          return decode(bytes2, encoding);
         }
         case "ArrayBuffer": {
-          const sequence = combineByteSequences(bytes);
+          const sequence = combineByteSequences(bytes2);
           return sequence.buffer;
         }
         case "BinaryString": {
           let binaryString = "";
           const decoder = new StringDecoder("latin1");
-          for (const chunk of bytes) {
+          for (const chunk of bytes2) {
             binaryString += decoder.write(chunk);
           }
           binaryString += decoder.end();
@@ -14499,14 +14499,14 @@ var require_util4 = __commonJS({
       }
     }
     function decode(ioQueue, encoding) {
-      const bytes = combineByteSequences(ioQueue);
-      const BOMEncoding = BOMSniffing(bytes);
+      const bytes2 = combineByteSequences(ioQueue);
+      const BOMEncoding = BOMSniffing(bytes2);
       let slice = 0;
       if (BOMEncoding !== null) {
         encoding = BOMEncoding;
         slice = BOMEncoding === "UTF-8" ? 3 : 2;
       }
-      const sliced = bytes.slice(slice);
+      const sliced = bytes2.slice(slice);
       return new TextDecoder(encoding).decode(sliced);
     }
     function BOMSniffing(ioQueue) {
@@ -15084,9 +15084,9 @@ var require_cache = __commonJS({
           // 16.
         };
         operations.push(operation);
-        const bytes = await bodyReadPromise.promise;
+        const bytes2 = await bodyReadPromise.promise;
         if (clonedResponse.body != null) {
-          clonedResponse.body.source = bytes;
+          clonedResponse.body.source = bytes2;
         }
         const cacheJobPromise = createDeferredPromise();
         let errorData = null;
@@ -20836,10 +20836,10 @@ var require_util8 = __commonJS({
     var codegen_1 = require_codegen();
     var code_1 = require_code();
     function toHash(arr) {
-      const hash = {};
+      const hash2 = {};
       for (const item of arr)
-        hash[item] = true;
-      return hash;
+        hash2[item] = true;
+      return hash2;
     }
     exports2.toHash = toHash;
     function alwaysValidSchema(it, schema) {
@@ -34037,7 +34037,7 @@ function validateConfigPath(path2) {
 }
 
 // src/planner.ts
-var import_node_crypto2 = require("node:crypto");
+var import_node_crypto3 = require("node:crypto");
 
 // src/changes.ts
 var import_node_child_process = require("node:child_process");
@@ -34432,13 +34432,13 @@ var GitRepository = class _GitRepository {
         return;
       }
       const chunks = [];
-      let bytes = 0;
+      let bytes2 = 0;
       let outputLimited = false;
       let settled = false;
       child.stdout.on("data", (chunk) => {
         if (outputLimited) return;
-        bytes += chunk.length;
-        if (maxStdoutBytes !== void 0 && bytes > maxStdoutBytes) {
+        bytes2 += chunk.length;
+        if (maxStdoutBytes !== void 0 && bytes2 > maxStdoutBytes) {
           outputLimited = true;
           child.kill("SIGTERM");
           return;
@@ -37100,12 +37100,12 @@ var import_ajv2 = __toESM(require_ajv());
 // schemas/report.schema.json
 var report_schema_default = {
   $schema: "http://json-schema.org/draft-07/schema#",
-  title: "jev-ci-selector source-free reports v1 and v2",
+  title: "jev-ci-selector source-free reports v1, v2 and v3",
   type: "object",
   additionalProperties: false,
   required: ["version", "config_sha", "base_sha", "head_sha", "tested_sha", "catalog_hash", "diff_hash", "diff_bytes", "changed_path_count", "mode", "status", "model", "durations_ms", "usage", "tasks"],
   properties: {
-    version: { enum: [1, 2] },
+    version: { enum: [1, 2, 3] },
     config_sha: { $ref: "#/definitions/sha" },
     base_sha: { $ref: "#/definitions/sha" },
     head_sha: { $ref: "#/definitions/sha" },
@@ -37136,14 +37136,7 @@ var report_schema_default = {
         total: { type: "number", minimum: 0 }
       }
     },
-    usage: {
-      anyOf: [{ type: "null" }, {
-        type: "object",
-        additionalProperties: false,
-        required: ["input_tokens", "output_tokens"],
-        properties: { input_tokens: { type: "integer", minimum: 0 }, output_tokens: { type: "integer", minimum: 0 } }
-      }]
-    },
+    usage: { $ref: "#/definitions/usageOrNull" },
     tasks: {
       type: "object",
       propertyNames: { pattern: "^[A-Za-z_][A-Za-z0-9_-]{0,63}$" },
@@ -37155,56 +37148,141 @@ var report_schema_default = {
           probability: { type: ["number", "null"], minimum: 0, maximum: 1 },
           proposed_run: { type: ["boolean", "null"] },
           run: { type: "boolean" },
-          reasons: { type: "array", minItems: 1, uniqueItems: true, items: { enum: [
-            "always",
-            "path-match",
-            "dependency",
-            "jev-below-threshold",
-            "jev-at-or-above-threshold",
-            "shadow-mode",
-            "force-all",
-            "protected-path",
-            "configured-force-path",
-            "fork",
-            "missing-api-key",
-            "external-context-disabled",
-            "non-pull-request",
-            "git-fetch-failed",
-            "git-read-failed",
-            "sha-incoherent",
-            "diff-too-large",
-            "binary-change",
-            "submodule-change",
-            "unrepresentable-change",
-            "jev-timeout",
-            "jev-error",
-            "invalid-response"
-          ] } }
+          reasons: {
+            type: "array",
+            minItems: 1,
+            uniqueItems: true,
+            items: { enum: [
+              "always",
+              "path-match",
+              "dependency",
+              "jev-below-threshold",
+              "jev-at-or-above-threshold",
+              "shadow-mode",
+              "force-all",
+              "protected-path",
+              "configured-force-path",
+              "fork",
+              "missing-api-key",
+              "external-context-disabled",
+              "non-pull-request",
+              "git-fetch-failed",
+              "git-read-failed",
+              "sha-incoherent",
+              "diff-too-large",
+              "binary-change",
+              "submodule-change",
+              "unrepresentable-change",
+              "jev-timeout",
+              "jev-error",
+              "invalid-response",
+              "context-too-large",
+              "chunked-observation",
+              "observation-only"
+            ] }
+          }
         }
       }
+    },
+    observation: { anyOf: [{ type: "null" }, { $ref: "#/definitions/observation" }] }
+  },
+  allOf: [
+    {
+      if: { properties: { version: { const: 1 } } },
+      then: {
+        properties: {
+          model: {
+            type: "object",
+            properties: {
+              requested: { type: "string", pattern: "^jev-[0-9]+\\.[0-9]+\\.[0-9]+$" },
+              expected: false
+            }
+          },
+          observation: false
+        }
+      }
+    },
+    {
+      if: { properties: { version: { const: 2 } } },
+      then: {
+        properties: {
+          observation: false,
+          model: {
+            type: "object",
+            properties: {
+              requested: { type: "string", pattern: "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}(?![\\s\\S])" },
+              expected: {}
+            },
+            required: ["expected"]
+          }
+        },
+        required: ["version", "model"]
+      }
+    },
+    {
+      if: { properties: { version: { const: 3 } } },
+      then: {
+        properties: {
+          model: {
+            type: "object",
+            required: ["expected"],
+            properties: {
+              requested: { type: "string", pattern: "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}(?![\\s\\S])" },
+              expected: { type: "string", pattern: "^jev-[0-9]+\\.[0-9]+\\.[0-9]+$" }
+            }
+          }
+        },
+        required: ["version", "model", "observation"]
+      }
     }
-  },
-  if: { properties: { version: { const: 1 } } },
-  then: {
-    properties: { model: {
+  ],
+  definitions: {
+    sha: { type: "string", pattern: "^[a-f0-9]{40}$" },
+    usage: {
       type: "object",
+      additionalProperties: false,
+      required: ["input_tokens", "output_tokens"],
       properties: {
-        requested: { type: "string", pattern: "^jev-[0-9]+\\.[0-9]+\\.[0-9]+$" },
-        expected: false
+        input_tokens: { type: "integer", minimum: 0 },
+        output_tokens: { type: "integer", minimum: 0 }
       }
-    } }
-  },
-  else: {
-    properties: { model: {
+    },
+    usageOrNull: { anyOf: [{ type: "null" }, { $ref: "#/definitions/usage" }] },
+    probabilities: {
       type: "object",
-      required: ["expected"],
+      propertyNames: { pattern: "^[A-Za-z_][A-Za-z0-9_-]{0,63}$" },
+      additionalProperties: { type: "number", minimum: 0, maximum: 1 }
+    },
+    observationChunk: {
+      type: "object",
+      additionalProperties: false,
+      required: ["index", "start_byte", "end_byte", "diff_hash", "state_hash", "diff_bytes", "status", "probabilities", "model", "usage", "duration_ms", "error"],
       properties: {
-        expected: {},
-        requested: { type: "string", pattern: "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}(?![\\s\\S])" }
+        index: { type: "integer", minimum: 0 },
+        start_byte: { type: "integer", minimum: 0 },
+        end_byte: { type: "integer", minimum: 0 },
+        diff_hash: { type: "string", pattern: "^[a-f0-9]{64}$" },
+        state_hash: { type: "string", pattern: "^[a-f0-9]{64}$" },
+        diff_bytes: { type: "integer", minimum: 0 },
+        status: { enum: ["completed", "failed", "not-started"] },
+        probabilities: { anyOf: [{ type: "null" }, { $ref: "#/definitions/probabilities" }] },
+        model: { type: ["string", "null"], pattern: "^jev-[0-9]+\\.[0-9]+\\.[0-9]+$" },
+        usage: { $ref: "#/definitions/usageOrNull" },
+        duration_ms: { type: ["number", "null"], minimum: 0 },
+        error: { enum: ["jev-timeout", "jev-error", "invalid-response", null] }
       }
-    } }
-  },
-  definitions: { sha: { type: "string", pattern: "^[a-f0-9]{40}$" } }
+    },
+    observation: {
+      type: "object",
+      additionalProperties: false,
+      required: ["strategy", "status", "chunks"],
+      properties: {
+        strategy: { enum: ["whole-diff", "chunked-diff"] },
+        status: { enum: ["complete", "incomplete"] },
+        chunks: { type: "array", minItems: 1, items: { $ref: "#/definitions/observationChunk" } }
+      }
+    }
+  }
 };
 
 // src/report.ts
@@ -37224,19 +37302,317 @@ function actionOutputs(plan, testedSha, reportPath) {
     ...Object.fromEntries(Object.keys(plan.run).sort().map((id) => [id, String(plan.run[id])]))
   };
 }
+function observationSummary(observation) {
+  if (!observation) return ["Observation status: not-collected (no Jev call)."];
+  const rows = observation.chunks.map((chunk) => {
+    const scores = chunk.probabilities ? Object.entries(chunk.probabilities).sort(([left], [right]) => left.localeCompare(right)).map(([id, probability]) => `${id}=${probability}`).join(", ") || "—" : "—";
+    return `| ${chunk.index} | ${chunk.start_byte}–${chunk.end_byte} | ${chunk.diff_bytes} | ${chunk.status} | ${chunk.model ?? "—"} | ${chunk.duration_ms ?? "—"} | ${scores} | ${chunk.error ?? "—"} |`;
+  });
+  return [
+    `Observation status: ${observation.status} (${observation.strategy}); ${observation.chunks.length} chunk(s).`,
+    "",
+    "| Chunk | Byte range | Diff bytes | Status | Model | Duration (ms) | Per-task scores | Error |",
+    "| ---: | ---: | ---: | --- | --- | ---: | --- | --- |",
+    ...rows,
+    "",
+    "Scores above are raw per-chunk Jev responses. No cross-chunk aggregate or global model probability is reported."
+  ];
+}
 function summary(report) {
   const rows = Object.entries(report.tasks).map(([id, task]) => `| ${id} | ${task.probability ?? "—"} | ${task.proposed_run ?? "—"} | ${task.run} | ${task.reasons.join(", ")} |`);
+  const observation = report.version === 3 ? observationSummary(report.observation) : [];
   return [
     `### jev-ci-selector: ${report.status} (${report.mode})`,
+    `Policy status: ${report.status} (${report.mode})`,
     `Tested commit: \`${report.tested_sha}\``,
     "",
-    "| Task | Probability | Proposed | Effective | Reasons |",
+    "| Task | Policy probability | Proposed | Effective | Reasons |",
     "| --- | ---: | --- | --- | --- |",
     ...rows,
+    "",
+    ...observation,
     "",
     "Probabilities are experimental selection signals, not guarantees about test outcomes.",
     ""
   ].join("\n");
+}
+
+// src/observations.ts
+var import_node_crypto2 = require("node:crypto");
+
+// src/chunks.ts
+var ChunkError = class extends Error {
+  code;
+  constructor(code, message) {
+    super(message);
+    this.name = "ChunkError";
+    this.code = code;
+  }
+};
+function byteOffsets(value) {
+  const offsets = new Array(value.length + 1).fill(0);
+  let byteCount = 0;
+  let index = 0;
+  while (index < value.length) {
+    const codePoint = value.codePointAt(index);
+    if (codePoint === void 0) break;
+    const width = codePoint > 65535 ? 2 : 1;
+    const encodedBytes = Buffer.byteLength(value.slice(index, index + width), "utf8");
+    offsets[index] = byteCount;
+    if (width === 2) offsets[index + 1] = byteCount;
+    byteCount += encodedBytes;
+    offsets[index + width] = byteCount;
+    index += width;
+  }
+  return offsets;
+}
+function linesOf(value, offsets) {
+  const lines = [];
+  let startChar = 0;
+  while (startChar < value.length) {
+    const newline = value.indexOf("\n", startChar);
+    const endChar = newline < 0 ? value.length : newline + 1;
+    lines.push({
+      startChar,
+      endChar,
+      startByte: offsets[startChar],
+      endByte: offsets[endChar],
+      text: value.slice(startChar, endChar)
+    });
+    startChar = endChar;
+  }
+  return lines;
+}
+function isFileHeader(line) {
+  return line.text.startsWith("diff --git ");
+}
+function isHunkHeader(line) {
+  return /^@@+ /.test(line.text);
+}
+function continuationContext(lines, startChar) {
+  let fileHeader;
+  let hunkHeader;
+  for (const line of lines) {
+    if (line.endChar > startChar) {
+      if (isFileHeader(line)) return "";
+      if (isHunkHeader(line)) hunkHeader = void 0;
+      break;
+    }
+    if (isFileHeader(line)) {
+      fileHeader = line;
+      hunkHeader = void 0;
+    } else if (isHunkHeader(line)) {
+      hunkHeader = line;
+    }
+  }
+  return `${fileHeader?.text ?? ""}${hunkHeader?.text ?? ""}`;
+}
+function nextBoundaryPriority(lines, index) {
+  const next = lines[index + 1];
+  if (!next) return 1;
+  if (isFileHeader(next)) return 3;
+  if (isHunkHeader(next)) return 2;
+  return 1;
+}
+function splitDiff(diff, maxBytes) {
+  if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) {
+    throw new ChunkError("invalid-budget", "maxBytes must be a positive safe integer.");
+  }
+  const offsets = byteOffsets(diff);
+  const totalBytes = offsets[diff.length];
+  if (diff.length === 0) return [{ diff: "", context: "", startByte: 0, endByte: 0 }];
+  const lines = linesOf(diff, offsets);
+  const chunks = [];
+  let startChar = 0;
+  while (startChar < diff.length) {
+    const context = continuationContext(lines, startChar);
+    const contextBytes = Buffer.byteLength(context, "utf8");
+    if (contextBytes >= maxBytes) {
+      throw new ChunkError("context-too-large", "Continuation context leaves no room for diff bytes.");
+    }
+    const availableBytes = maxBytes - contextBytes;
+    const startByte = offsets[startChar];
+    const byteLimit = startByte + availableBytes;
+    const lineIndex = lines.findIndex((line) => startChar >= line.startChar && startChar < line.endChar);
+    if (lineIndex < 0) throw new ChunkError("line-too-large", "Unable to locate the current diff line.");
+    let scanChar = startChar;
+    let bestEndChar = startChar;
+    let bestPriority = 0;
+    for (let index = lineIndex; index < lines.length; index += 1) {
+      const line = lines[index];
+      const lineEndByte = offsets[line.endChar];
+      if (lineEndByte > byteLimit) break;
+      scanChar = line.endChar;
+      const priority = nextBoundaryPriority(lines, index);
+      if (priority >= bestPriority) {
+        bestEndChar = scanChar;
+        bestPriority = priority;
+      }
+    }
+    if (bestEndChar === startChar) {
+      let endChar = startChar;
+      while (endChar < diff.length) {
+        const codePoint = diff.codePointAt(endChar);
+        if (codePoint === void 0) break;
+        const width = codePoint > 65535 ? 2 : 1;
+        const endByte2 = offsets[endChar + width];
+        if (endByte2 - startByte > availableBytes) break;
+        endChar += width;
+      }
+      if (endChar === startChar) {
+        throw new ChunkError("line-too-large", "A Unicode code point does not fit the diff budget.");
+      }
+      bestEndChar = endChar;
+    }
+    const endByte = offsets[bestEndChar];
+    const chunkDiff = diff.slice(startChar, bestEndChar);
+    if (endByte <= startByte || Buffer.byteLength(chunkDiff, "utf8") + contextBytes > maxBytes) {
+      throw new ChunkError("line-too-large", "Unable to represent a diff chunk within the budget.");
+    }
+    chunks.push({ diff: chunkDiff, context, startByte, endByte });
+    startChar = bestEndChar;
+  }
+  if (chunks[chunks.length - 1]?.endByte !== totalBytes) {
+    throw new ChunkError("line-too-large", "Diff partition did not cover the complete source.");
+  }
+  return chunks;
+}
+
+// src/observations.ts
+var hash = (value) => (0, import_node_crypto2.createHash)("sha256").update(value).digest("hex");
+var bytes = (value) => Buffer.byteLength(JSON.stringify(value));
+var ObservationSizeError = class extends Error {
+  constructor(code) {
+    super(code);
+    this.code = code;
+  }
+};
+var STATE_AND_QUESTION_BYTES = 24 * 1024;
+var REQUEST_BYTES = 48 * 1024;
+var MAX_CHUNKS = 32;
+function prepareStates(request, shadow) {
+  const { state } = request;
+  const questions = Object.fromEntries(request.taskIds.map((id) => [
+    id,
+    { type: "noul", instructions: request.catalog.tasks[id].question }
+  ]));
+  const longestQuestion = Math.max(0, ...Object.values(questions).map(bytes));
+  const overhead = Math.max(longestQuestion, bytes(questions) - (REQUEST_BYTES - STATE_AND_QUESTION_BYTES));
+  if (!shadow || bytes(state) + overhead <= STATE_AND_QUESTION_BYTES) {
+    return [{ state, startByte: 0, endByte: Buffer.byteLength(state.diff), diff: state.diff }];
+  }
+  const { diff, ...shared } = state;
+  let budget = STATE_AND_QUESTION_BYTES - bytes(shared) - overhead - 1024;
+  for (let attempt = 0; attempt < 8 && budget >= 1024; attempt++) {
+    let parts;
+    try {
+      parts = splitDiff(diff, budget);
+    } catch (error) {
+      if (error instanceof ChunkError) throw new ObservationSizeError("context-too-large");
+      throw error;
+    }
+    if (parts.length > MAX_CHUNKS) throw new ObservationSizeError("diff-too-large");
+    const states = parts.map((part, index) => ({
+      ...part,
+      state: {
+        ...shared,
+        diff: part.diff,
+        chunk: {
+          index,
+          total: parts.length,
+          start_byte: part.startByte,
+          end_byte: part.endByte,
+          preceding_diff_headers: part.context,
+          scope: "Partial diff. Evaluate the supplied fragment; changes in other fragments are not included."
+        }
+      }
+    }));
+    const excess = Math.max(...states.map((part) => Math.max(
+      bytes(part.state) + longestQuestion - STATE_AND_QUESTION_BYTES,
+      bytes(part.state) + bytes(questions) - REQUEST_BYTES
+    )));
+    if (excess <= 0) return states;
+    budget -= excess + 128;
+  }
+  throw new ObservationSizeError("context-too-large");
+}
+async function observeChange(request, shadow, evaluate) {
+  const states = prepareStates(request, shadow);
+  const observation = {
+    strategy: states.length === 1 ? "whole-diff" : "chunked-diff",
+    status: "incomplete",
+    chunks: states.map((part, index) => ({
+      index,
+      start_byte: part.startByte,
+      end_byte: part.endByte,
+      diff_hash: hash(part.diff),
+      state_hash: hash(JSON.stringify(part.state)),
+      diff_bytes: Buffer.byteLength(part.diff),
+      status: "not-started",
+      probabilities: null,
+      model: null,
+      usage: null,
+      duration_ms: null,
+      error: null
+    }))
+  };
+  const deadline = performance.now() + request.timeoutMs;
+  let next = 0;
+  let failure;
+  async function worker() {
+    while (!failure && next < states.length) {
+      const index = next++;
+      const chunk = observation.chunks[index];
+      const remaining = Math.floor(deadline - performance.now());
+      if (remaining <= 0) {
+        failure = "jev-timeout";
+        break;
+      }
+      const started = performance.now();
+      try {
+        const result = await evaluate({
+          ...request,
+          state: states[index].state,
+          timeoutMs: Math.min(1e4, remaining)
+        });
+        chunk.status = "completed";
+        chunk.probabilities = result.probabilities;
+        chunk.model = result.model;
+        chunk.usage = result.usage;
+      } catch (error) {
+        if (!(error instanceof JevError)) {
+          failure = "jev-error";
+          throw error;
+        }
+        failure ??= error.code;
+        chunk.status = "failed";
+        chunk.error = error.code;
+        chunk.model = error.metadata.model;
+        chunk.usage = error.metadata.usage;
+      } finally {
+        chunk.duration_ms = performance.now() - started;
+      }
+    }
+  }
+  const workers = await Promise.allSettled(Array.from({ length: Math.min(3, states.length) }, worker));
+  const rejected = workers.find((result) => result.status === "rejected");
+  if (rejected?.status === "rejected") throw rejected.reason;
+  for (const chunk of observation.chunks) if (chunk.status === "not-started") chunk.error = failure ?? "jev-timeout";
+  observation.status = observation.chunks.every((chunk) => chunk.status === "completed") ? "complete" : "incomplete";
+  const observedModels = [...new Set(observation.chunks.map((chunk) => chunk.model).filter((model) => model !== null))];
+  const usages = observation.chunks.flatMap((chunk) => chunk.usage ? [chunk.usage] : []);
+  const metadata = {
+    model: observedModels.length === 1 ? observedModels[0] : null,
+    usage: usages.length ? usages.reduce((total, usage) => ({
+      input_tokens: total.input_tokens + usage.input_tokens,
+      output_tokens: total.output_tokens + usage.output_tokens
+    }), { input_tokens: 0, output_tokens: 0 }) : null
+  };
+  const probabilities = observation.status === "complete" ? Object.fromEntries(request.taskIds.map((id) => [
+    id,
+    Math.max(...observation.chunks.map((chunk) => chunk.probabilities[id]))
+  ])) : {};
+  return { observation, probabilities, ...metadata, failure };
 }
 
 // src/planner.ts
@@ -37264,10 +37640,11 @@ async function planChange(inputs, context, dependencies = {}) {
     token: inputs.githubToken
   });
   try {
+    const configSha = context.configSha ?? context.baseSha;
     let configBytes;
     try {
-      await repository.fetchCommit(context.baseSha);
-      configBytes = await repository.readFile(context.baseSha, inputs.config);
+      await repository.fetchCommit(configSha);
+      configBytes = await repository.readFile(configSha, inputs.config);
     } catch {
       throw new ConfigError();
     }
@@ -37288,6 +37665,7 @@ async function planChange(inputs, context, dependencies = {}) {
     let change;
     if (!forced) {
       try {
+        if (configSha !== context.baseSha) await repository.fetchCommit(context.baseSha);
         change = await repository.collect({
           baseSha: context.baseSha,
           headSha: context.headSha,
@@ -37304,12 +37682,13 @@ async function planChange(inputs, context, dependencies = {}) {
     let probabilities = {};
     let metadata = { model: null, usage: null };
     let jevMs = null;
-    const candidates = semanticTaskIds(catalog, change?.changedPaths ?? []);
-    if (!forced && candidates.length) {
-      if (!change) throw new Error("missing-change");
+    let observation = null;
+    const policyCandidates = semanticTaskIds(catalog, change?.changedPaths ?? []);
+    const candidates = inputs.mode === "shadow" ? Object.keys(catalog.tasks).filter((id) => catalog.tasks[id].question).sort() : policyCandidates;
+    if (change && (!forced || inputs.mode === "shadow") && candidates.length) {
       const callStarted = performance.now();
       try {
-        const result = await (dependencies.evaluate ?? evaluateJev)({
+        const result = await observeChange({
           catalog,
           taskIds: candidates,
           apiBaseUrl: api.baseURL,
@@ -37323,13 +37702,14 @@ async function planChange(inputs, context, dependencies = {}) {
             changed_paths: change.changedPaths,
             diff: change.diff
           }
-        });
-        probabilities = result.probabilities;
+        }, inputs.mode === "shadow", dependencies.evaluate ?? evaluateJev);
+        observation = result.observation;
+        probabilities = Object.fromEntries(policyCandidates.filter((id) => Object.hasOwn(result.probabilities, id)).map((id) => [id, result.probabilities[id]]));
         metadata = result;
+        if (result.failure) forced = { status: "fallback", code: result.failure };
       } catch (error) {
-        if (!(error instanceof JevError)) throw error;
+        if (!(error instanceof ObservationSizeError)) throw error;
         forced = { status: "fallback", code: error.code };
-        metadata = error.metadata;
       } finally {
         jevMs = performance.now() - callStarted;
       }
@@ -37342,13 +37722,22 @@ async function planChange(inputs, context, dependencies = {}) {
       configPath: inputs.config,
       ...forced ? { forceAllReason: forced } : {}
     });
+    if (observation?.strategy === "chunked-diff") {
+      for (const id of candidates) {
+        plan.tasks[id].probability = null;
+        plan.tasks[id].reasons.push("chunked-observation");
+      }
+    }
+    if (observation && plan.status === "bypassed") {
+      for (const id of candidates) plan.tasks[id].reasons.push("observation-only");
+    }
     const report = {
-      version: 2,
-      config_sha: context.baseSha,
+      version: 3,
+      config_sha: configSha,
       base_sha: context.baseSha,
       head_sha: context.headSha,
       tested_sha: context.testedSha,
-      catalog_hash: (0, import_node_crypto2.createHash)("sha256").update(configBytes).digest("hex"),
+      catalog_hash: (0, import_node_crypto3.createHash)("sha256").update(configBytes).digest("hex"),
       diff_hash: change?.diffHash ?? null,
       diff_bytes: change?.diffBytes ?? null,
       changed_path_count: change?.changedPaths.length ?? null,
@@ -37357,13 +37746,31 @@ async function planChange(inputs, context, dependencies = {}) {
       model: { requested: requestedModel, expected: catalog.model, returned: metadata.model },
       durations_ms: { collection: collectionMs, jev: jevMs, total: performance.now() - started },
       usage: metadata.usage,
-      tasks: plan.tasks
+      tasks: plan.tasks,
+      observation
     };
     validateReport(report);
     return { plan, report };
   } finally {
     await repository.dispose();
   }
+}
+
+// src/manual.ts
+async function manualContext(env, number, mode, token, fetchImpl = globalThis.fetch) {
+  if (env.GITHUB_EVENT_NAME !== "workflow_dispatch" || mode !== "shadow" || !/^[1-9][0-9]*$/.test(number) || !Number.isSafeInteger(Number(number))) throw new Error("invalid-manual-request");
+  const workflow = eventContext(env, {});
+  const api = workflow.serverUrl === "https://github.com" ? "https://api.github.com" : `${workflow.serverUrl}/api/v3`;
+  const response = await fetchImpl(`${api}/repos/${workflow.repository}/pulls/${number}`, {
+    headers: { Authorization: `Bearer ${token}`, Accept: "application/vnd.github+json" },
+    redirect: "error",
+    signal: AbortSignal.timeout(1e4)
+  });
+  if (!response.ok) throw new Error("pull-request-unavailable");
+  const pull = await response.json();
+  if (pull.state !== "open" || typeof pull.merge_commit_sha !== "string") throw new Error("merge-unavailable");
+  const context = eventContext({ ...env, GITHUB_EVENT_NAME: "pull_request", GITHUB_SHA: pull.merge_commit_sha }, { pull_request: pull });
+  return { ...context, configSha: workflow.testedSha };
 }
 
 // src/action.ts
@@ -37393,7 +37800,8 @@ async function main() {
     maxDiffBytes: integerInput("max-diff-bytes", 65536)
   };
   const event = JSON.parse(await (0, import_promises2.readFile)(process.env.GITHUB_EVENT_PATH, "utf8"));
-  const context = eventContext(process.env, event);
+  const pullRequest = core.getInput("pull-request");
+  const context = pullRequest ? await manualContext(process.env, pullRequest, mode, inputs.githubToken) : eventContext(process.env, event);
   const { plan, report } = await planChange(inputs, context);
   const directory = await (0, import_promises2.mkdtemp)((0, import_node_path2.join)(process.env.RUNNER_TEMP || (0, import_node_os2.tmpdir)(), "jev-ci-selector-report-"));
   const reportPath = (0, import_node_path2.join)(directory, "report.json");

@@ -2,7 +2,7 @@
 
 [← Back to the README](../README.md) · [Action reference](reference.md) · [paths-filter migration](paths-filter.md)
 
-Shadow mode answers a practical question: **what would this policy have skipped, and what happened when those tasks actually ran?** All effective outputs remain complete, so you can collect evidence before changing execution.
+Shadow mode answers a practical question: **what would this policy have skipped, and what happened when those tasks actually ran?** All effective outputs remain complete, so you can collect evidence before changing execution. A v3 report separates the policy decision from Jev's observation: the task table describes the policy, while the observation records each actual model response.
 
 The direct output for every task is the exact string `"true"` in shadow mode; the aggregate `run` map contains boolean `true` values. Only the report records the hypothetical proposal. Unless an `always` or `force_paths` rule or a required dependency fixes the decision, the task remains eligible for Jev regardless of which paths changed. Bypassed and fallback plans also keep every task.
 
@@ -14,6 +14,8 @@ For each run, keep:
 2. Actual results and durations for every catalog task, from the same workflow run and `tested_sha`.
 
 The report path alone does not move the file between jobs. Do not join an old report with the latest PR state or combine separate attempts just because they share a SHA. The analyzer verifies SHA and task IDs; matching the workflow run or attempt is your responsibility.
+
+When Jev is authorized, shadow mode observes every question-bearing task even when deterministic policy rules keep that task in CI. A protected or configured global path can therefore leave the policy status `bypassed` while the v3 observation is complete and contains real per-task scores. Explicit `force-all`, a disabled opt-in, a fork pull request, a missing key, and non-pull-request events remain no-call cases; their observation is `null`.
 
 For a catalog containing `unit` and `helm`, a `results.json` file could look like this. Replace the SHA placeholder with the report's full `tested_sha`:
 
@@ -51,9 +53,23 @@ The analyzer rejects mismatched SHAs, task IDs, or invalid inputs. It returns:
 
 Task duration is not necessarily elapsed CI time saved: jobs can run in parallel. A skipped or cancelled task is not a successful observation. A passing test is not necessarily an irrelevant test.
 
+## Large diffs and chunked observation
+
+The whole diff is evaluated in one request when it fits. Larger diffs use a deterministic `chunked-diff` observation with at most 32 chunks, at most three requests in flight, and one global timeout. The default total timeout is 10 seconds; each request is capped at ten seconds and the remaining total budget. A partial response is preserved in the report with completed, failed, and not-started chunks, but full CI remains the effective plan whenever the observation is incomplete or a request fails.
+
+Chunking uses conservative byte guards: at most 24 KiB for the shared state plus the longest question, and at most 48 KiB for the complete chunk request. These are byte limits, not tokenizer guarantees. The explicit `max-diff-bytes` input is a separate whole-collection cap and remains 64 KiB by default; exceeding it falls back before observation.
+
+Each chunk reports only its byte range, hashes, status, model metadata, usage, and task probabilities. Source text, paths, questions, credentials, and provider error bodies are never written to the report. Cross-chunk interactions are not evaluated globally. A complete observation is required before a hypothetical skip can be considered. For a chunked proposal, the documented heuristic is that a task is proposed to run when any chunk's score is at or above `skip_below`; this is a policy heuristic over per-chunk scores, not a global model probability. The report keeps the task probability `null` for this case and the summary does not invent a maximum or aggregate score.
+
+Shadow still keeps every task in the effective plan. `enforce` can apply only a complete whole-diff observation; it never skips from a chunked observation.
+
+## Observe a pull request manually
+
+For a workflow dispatch, an operator can request a shadow observation for a selected pull request. The action reads pull request metadata with the read-only token, resolves the current immutable base, head, and merge commits, and still validates the merge parents before collecting the diff. The catalog is the trusted file from the workflow's selected `GITHUB_SHA`, so a manual report can intentionally have a `config_sha` different from `base_sha`; record that relationship with the artifact. This path remains observation-only and never changes CI outputs or enables skipping.
+
 ## From observation to enforce
 
-Compare results by catalog hash, model version, and suite. Look at proposed savings alongside missed regressions and fallback frequency. Classify flaky tests and infrastructure failures separately, and include changes with manually identified relevant suites.
+Compare results by catalog hash, model version, and suite. For v3 reports, inspect policy status and observation status separately, then review every chunk's raw task scores and error code. Look at proposed savings alongside missed regressions and fallback frequency. Classify flaky tests and infrastructure failures separately, and include changes with manually identified relevant suites.
 
 Enable `enforce` only after an explicit review of that evidence. Keep suites that still need observation under `always: true`, and retain full control runs, especially on non-PR events. There is no universal success threshold or guaranteed error rate for the initial `skip_below: 0.05` setting.
 

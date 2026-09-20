@@ -21,13 +21,39 @@ test('report schema covers every deterministic reason and rejects arbitrary publ
   assert.throws(() => validateReport({ ...report, model: { ...report.model, requested: 'jev-1.13-free' } }), 'v1 rejects aliases');
   assert.throws(() => validateReport({ ...report, model: { ...report.model, expected: 'jev-1.13.0' } }), 'v1 rejects expected');
   assert.throws(() => validateReport({ ...report, version: 2 }), 'v2 requires expected');
-  assert.throws(() => validateReport({ ...current, version: 3 }), 'unknown versions are rejected');
+  const chunk = {
+    index: 0, start_byte: 0, end_byte: 32, diff_hash: 'e'.repeat(64), state_hash: 'f'.repeat(64), diff_bytes: 32,
+    status: 'completed', probabilities: { helm: 0.02, unit: 0.9 }, model: 'jev-1.13.0',
+    usage: { input_tokens: 10, output_tokens: 2 }, duration_ms: 12, error: null,
+  } as const;
+  const observation = { strategy: 'chunked-diff', status: 'incomplete', chunks: [
+    chunk,
+    { ...chunk, index: 1, start_byte: 32, end_byte: 64, diff_bytes: 32, status: 'failed', probabilities: null,
+      model: null, usage: null, duration_ms: 100, error: 'jev-timeout' },
+    { ...chunk, index: 2, start_byte: 64, end_byte: 64, diff_bytes: 0, status: 'not-started', probabilities: null,
+      model: null, usage: null, duration_ms: null, error: null },
+  ] };
+  const observed = { ...current, version: 3 as const, observation };
+  validateReport(observed);
+  validateReport({ ...observed, observation: null });
+  assert.throws(() => validateReport({ ...report, observation }));
+  assert.throws(() => validateReport({ ...current, observation }));
+  assert.throws(() => validateReport({ ...current, version: 3 }), 'v3 requires observation');
+  assert.throws(() => validateReport({ ...current, version: 4 }), 'unknown versions are rejected');
   for (const requested of ['invalid model', 'jev-free\n', 'm'.repeat(129)]) {
     assert.throws(() => validateReport({ ...current, model: { ...current.model, requested } }));
   }
   assert.throws(() => validateReport({ ...report, diff: 'private source' }));
   assert.throws(() => validateReport({ ...report, usage: { input_tokens: 1, output_tokens: 1, raw: 'private error' } }));
   assert.throws(() => validateReport({ ...report, tasks: { unit: { ...plan.tasks.unit, reasons: ['generated explanation'] } } }));
+  assert.throws(() => validateReport({ ...observed, observation: { ...observation, chunks: [{ ...chunk, diff: 'private source' }] } }));
+  assert.throws(() => validateReport({ ...observed, observation: { ...observation, chunks: [{ ...chunk, path: 'private/path' }] } }));
+  const observedSummary = summary(observed);
+  assert.match(observedSummary, /Policy status: bypassed \(shadow\)/);
+  assert.match(observedSummary, /Observation status: incomplete \(chunked-diff\)/);
+  assert.match(observedSummary, /helm=0\.02/);
+  assert.match(observedSummary, /jev-timeout/);
+  assert.match(observedSummary, /No cross-chunk aggregate/);
   assert.match(summary(report), /missing-api-key/);
   const outputs = actionOutputs(plan, report.tested_sha, '/tmp/report.json');
   assert.deepEqual(Object.keys(outputs), ['run', 'selected', 'matrix', 'has-tasks', 'status', 'tested-sha', 'report-path', 'build', 'e2e', 'helm', 'prepare', 'unit']);

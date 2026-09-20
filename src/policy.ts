@@ -10,6 +10,7 @@ export const REASONS = [
   'git-fetch-failed', 'git-read-failed', 'sha-incoherent', 'diff-too-large',
   'binary-change', 'submodule-change', 'unrepresentable-change',
   'jev-timeout', 'jev-error', 'invalid-response',
+  'context-too-large', 'chunked-observation', 'observation-only',
 ] as const;
 export type Reason = typeof REASONS[number];
 export interface ForceAllReason { status: 'bypassed' | 'fallback'; code: Reason }

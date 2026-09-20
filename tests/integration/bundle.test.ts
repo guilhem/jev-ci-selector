@@ -5,6 +5,7 @@ import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { createHash } from 'node:crypto';
 import { validateReport } from '../../src/report.js';
 
 function decodeOutputs(source: string): Record<string, string> {
@@ -53,7 +54,7 @@ test('distributed bundle runs against real Git objects, publishes shadow/enforce
       const { result, outputs } = await run({ INPUT_MODE: mode });
       assert.equal(result.status, 0, result.stdout + result.stderr);
       const report: unknown = JSON.parse(await readFile(outputs['report-path']!, 'utf8')); validateReport(report);
-      assert.equal(report.version, 2);
+      assert.equal(report.version, 3);
       assert.equal(outputs.status, 'planned', JSON.stringify(report));
       assert.deepEqual(JSON.parse(outputs.run!), { helm: mode === 'shadow', unit: true });
       assert.equal(outputs.helm, mode === 'shadow' ? 'true' : 'false');
@@ -68,7 +69,7 @@ test('distributed bundle runs against real Git objects, publishes shadow/enforce
     assert.equal(custom.outputs.status, 'planned');
     assert.equal(custom.outputs.helm, 'false'); assert.equal(custom.outputs.unit, 'true');
     const customReport: unknown = JSON.parse(await readFile(custom.outputs['report-path']!, 'utf8')); validateReport(customReport);
-    assert.equal(customReport.version, 2);
+    assert.equal(customReport.version, 3);
     assert.deepEqual(customReport.model, { requested: 'jev-1.13-free', expected: 'jev-1.13.0', returned: 'jev-1.13.0' });
     assert.ok(!JSON.stringify(customReport).includes('SENTINEL'));
     const wrongModel = await run({ ...api, FIXTURE_RESPONSE: JSON.stringify({ model: 'jev-1.13.1',
@@ -92,5 +93,46 @@ test('distributed bundle runs against real Git objects, publishes shadow/enforce
     assert.equal(collision.result.status, 1); assert.deepEqual(collision.outputs, {});
     const invalid = await run({ INPUT_CONFIG: '.github/absent.yml' });
     assert.equal(invalid.result.status, 1); assert.deepEqual(invalid.outputs, {});
+
+    // A manually selected, reviewed workflow catalog can observe a different PR
+    // without executing its code, even when that PR changes a protected path.
+    git('switch', '-c', 'reviewed-workflow', base);
+    await writeFile(join(remote, '.github/ci-selector.yml'), 'version: 1\nmodel: jev-1.13.0\nskip_below: 0.05\ntasks:\n  unit:\n    always: true\n    question: Does this change affect backend behavior?\n  helm:\n    question: Does this change affect rendering?\n');
+    git('add', '.'); git('commit', '-m', 'reviewed observation catalog'); const workflow = git('rev-parse', 'HEAD');
+    git('switch', '-c', 'large-feature', base);
+    await mkdir(join(remote, '.github/workflows'));
+    await writeFile(join(remote, '.github/workflows/test.yml'), 'name: SOURCE-SENTINEL\n');
+    await writeFile(join(remote, 'large.txt'), '+ SOURCE-SENTINEL café 🎉\n'.repeat(4000));
+    git('add', '.'); git('commit', '-m', 'large feature'); const largeHead = git('rev-parse', 'HEAD');
+    git('switch', '-c', 'large-merge', base); git('merge', '--no-ff', 'large-feature', '-m', 'large merge');
+    const largeMerge = git('rev-parse', 'HEAD');
+    const requestsPath = join(root, 'requests.jsonl');
+    const manual = await run({ INPUT_MODE: 'shadow', 'INPUT_PULL-REQUEST': '42', 'INPUT_MAX-DIFF-BYTES': '524288',
+      GITHUB_EVENT_NAME: 'workflow_dispatch', GITHUB_SHA: workflow,
+      FIXTURE_PULL_REQUEST: JSON.stringify({ state: 'open', merge_commit_sha: largeMerge,
+        base: { sha: base, repo }, head: { sha: largeHead, repo } }),
+      FIXTURE_REQUESTS: requestsPath,
+      FIXTURE_RESPONSE: JSON.stringify({ model: 'jev-1.13.0', answers: { helm: { type: 'noul', noul: 0.01 },
+        unit: { type: 'noul', noul: 0.8 } }, usage: { input_tokens: 10, output_tokens: 1 } }),
+    });
+    assert.equal(manual.result.status, 0, manual.result.stdout + manual.result.stderr);
+    const report: unknown = JSON.parse(await readFile(manual.outputs['report-path']!, 'utf8')); validateReport(report);
+    assert.equal(report.version, 3); if (report.version !== 3) throw new Error('Expected observation report');
+    assert.equal(report.config_sha, workflow); assert.equal(report.base_sha, base);
+    assert.equal(report.head_sha, largeHead); assert.equal(report.tested_sha, largeMerge);
+    assert.equal(report.status, 'bypassed'); assert.equal(report.observation?.status, 'complete');
+    assert.equal(report.observation?.strategy, 'chunked-diff');
+    assert.ok(report.diff_bytes! > 65536);
+    assert.deepEqual(JSON.parse(manual.outputs.run!), { helm: true, unit: true });
+    const requests = (await readFile(requestsPath, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+    assert.equal(requests.length, report.observation!.chunks.length);
+    assert.ok(requests.length > 1 && requests.length <= 32);
+    const reconstructed = requests.map(request => request.state.diff).join('');
+    assert.equal(Buffer.byteLength(reconstructed), report.diff_bytes);
+    assert.equal(createHash('sha256').update(reconstructed).digest('hex'), report.diff_hash);
+    for (const request of requests) assert.deepEqual(Object.keys(request.questions).sort(), ['helm', 'unit']);
+    for (const chunk of report.observation!.chunks) assert.deepEqual(chunk.probabilities, { helm: 0.01, unit: 0.8 });
+    assert.ok(!JSON.stringify(report).includes('SENTINEL'));
+    assert.ok(!(await readFile(join(root, 'summary'), 'utf8')).includes('SENTINEL'));
   } finally { await rm(root, { recursive: true, force: true }); }
 });

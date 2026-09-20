@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { ConfigError } from './config.js';
 import { eventContext, planChange, type Inputs } from './planner.js';
 import { actionOutputs, summary } from './report.js';
+import { manualContext } from './manual.js';
 
 function booleanInput(name: string): boolean {
   const value = core.getInput(name) || 'false';
@@ -27,7 +28,10 @@ async function main(): Promise<void> {
     timeoutMs: integerInput('timeout-ms', 10000), maxDiffBytes: integerInput('max-diff-bytes', 65536),
   };
   const event: unknown = JSON.parse(await readFile(process.env.GITHUB_EVENT_PATH!, 'utf8'));
-  const context = eventContext(process.env, event);
+  const pullRequest = core.getInput('pull-request');
+  const context = pullRequest
+    ? await manualContext(process.env, pullRequest, mode, inputs.githubToken)
+    : eventContext(process.env, event);
   const { plan, report } = await planChange(inputs, context);
   const directory = await mkdtemp(join(process.env.RUNNER_TEMP || tmpdir(), 'jev-ci-selector-report-'));
   const reportPath = join(directory, 'report.json');

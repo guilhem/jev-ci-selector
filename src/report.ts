@@ -1,5 +1,6 @@
 import Ajv from 'ajv';
 import schema from '../schemas/report.schema.json';
+import type { Observation } from './observations.js';
 import type { ExecutionPlan } from './policy.js';
 import type { Usage } from './jev.js';
 
@@ -20,7 +21,8 @@ interface ReportFields {
 }
 export type Report = ReportFields & (
   { version: 1; model: { requested: string; returned: string | null } } |
-  { version: 2; model: { requested: string; expected: string; returned: string | null } }
+  { version: 2; model: { requested: string; expected: string; returned: string | null } } |
+  { version: 3; model: { requested: string; expected: string; returned: string | null }; observation: Observation | null }
 );
 const validate = new Ajv({ strict: true }).compile(schema);
 export function validateReport(value: unknown): asserts value is Report {
@@ -33,14 +35,38 @@ export function actionOutputs(plan: ExecutionPlan, testedSha: string, reportPath
     ...Object.fromEntries(Object.keys(plan.run).sort().map(id => [id, String(plan.run[id])])),
   };
 }
+
+function observationSummary(observation: Observation | null): string[] {
+  if (!observation) return ['Observation status: not-collected (no Jev call).'];
+  const rows = observation.chunks.map(chunk => {
+    const scores = chunk.probabilities
+      ? Object.entries(chunk.probabilities).sort(([left], [right]) => left.localeCompare(right))
+        .map(([id, probability]) => `${id}=${probability}`).join(', ') || '—'
+      : '—';
+    return `| ${chunk.index} | ${chunk.start_byte}–${chunk.end_byte} | ${chunk.diff_bytes} | ${chunk.status} | ${chunk.model ?? '—'} | ${chunk.duration_ms ?? '—'} | ${scores} | ${chunk.error ?? '—'} |`;
+  });
+  return [
+    `Observation status: ${observation.status} (${observation.strategy}); ${observation.chunks.length} chunk(s).`,
+    '',
+    '| Chunk | Byte range | Diff bytes | Status | Model | Duration (ms) | Per-task scores | Error |',
+    '| ---: | ---: | ---: | --- | --- | ---: | --- | --- |',
+    ...rows,
+    '',
+    'Scores above are raw per-chunk Jev responses. No cross-chunk aggregate or global model probability is reported.',
+  ];
+}
+
 export function summary(report: Report): string {
   const rows = Object.entries(report.tasks).map(([id, task]) =>
     `| ${id} | ${task.probability ?? '—'} | ${task.proposed_run ?? '—'} | ${task.run} | ${task.reasons.join(', ')} |`);
+  const observation = report.version === 3 ? observationSummary(report.observation) : [];
   return [
     `### jev-ci-selector: ${report.status} (${report.mode})`,
+    `Policy status: ${report.status} (${report.mode})`,
     `Tested commit: \`${report.tested_sha}\``, '',
-    '| Task | Probability | Proposed | Effective | Reasons |',
+    '| Task | Policy probability | Proposed | Effective | Reasons |',
     '| --- | ---: | --- | --- | --- |', ...rows, '',
+    ...observation, '',
     'Probabilities are experimental selection signals, not guarantees about test outcomes.', '',
   ].join('\n');
 }

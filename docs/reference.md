@@ -10,13 +10,14 @@
 | --- | --- | --- |
 | `config` | `.github/ci-selector.yml` | Repository-relative path to the trusted catalog |
 | `mode` | `shadow` | `shadow` records a proposal; `enforce` applies it |
+| `pull-request` | Empty | On `workflow_dispatch` in shadow mode, observe this open PR using the selected workflow commit's catalog; requires `pull-requests: read` |
 | `github-token` | `${{ github.token }}` | Fetch immutable Git objects with `contents: read` |
 | `api-key` | Empty | Bearer key for the selected provider; no key means full CI without Jev |
 | `api-base-url` | `https://api.typesafe.ai` | HTTPS Jev System One provider base URL; the SDK appends `/v1/systemone` |
 | `api-model` | Catalog `model` | Provider model alias; the response must still identify the catalog's canonical model version |
 | `allow-external-context` | `false` | Explicit permission to send the diff and metadata to the configured API |
 | `force-all` | `false` | Immediately bypass selection and keep every task |
-| `timeout-ms` | `10000` | Maximum duration of one Jev request, without retries |
+| `timeout-ms` | `10000` | Total evaluation deadline; up to three concurrent calls, at most ten seconds each, no retries |
 | `max-diff-bytes` | `65536` | Maximum complete UTF-8 diff size; not a token count |
 
 Boolean inputs accept only `true` and `false`. Quote them as strings in workflow YAML. Budgets must be positive integers; the timeout cannot exceed Node's timer limit of `2147483647` ms. `config` must be a relative path within the repository.
@@ -54,7 +55,7 @@ The [JSON Schema](../schemas/config.schema.json) defines the complete format. Ve
 | `question` | Ask whether the change affects the functional scope covered by the task |
 | `force_all_paths` | Top-level patterns that force every task when matched |
 
-Every task without `always: true` needs a nonempty question. Questions describe affected behavior, rather than predicting test failures. Use `force_paths` only for narrow, deterministic must-run cases; broad copied path globs can make semantic evaluation irrelevant. Dependencies already required by deterministic rules do not consume Jev questions. The earlier pre-adoption name `run_if_paths` is rejected; use `force_paths`.
+Every task without `always: true` needs a nonempty question. Questions describe affected behavior, rather than predicting test failures. Use `force_paths` only for narrow, deterministic must-run cases. In `enforce`, tasks already required by deterministic rules do not consume Jev questions. In `shadow`, every task with a question is evaluated, including mandatory tasks, so its raw model answer can be compared with the policy. Add a question to an `always` task if you want its observation too. The earlier pre-adoption name `run_if_paths` is rejected; use `force_paths`.
 
 An optional task may be excluded only when its probability is **strictly below** `skip_below`. Equality keeps the task. The initial `0.05` value is experimental and does not guarantee an error rate.
 
@@ -78,7 +79,7 @@ An empty catalog is valid and produces `has-tasks: 'false'`. A missing, unreadab
 | --- | --- | --- |
 | Selection calculated, including an entirely deterministic plan | `planned` | Apply the chosen mode |
 | `force-all`, fork PR, missing key, or no external-context permission | `bypassed` | All tasks; no Jev call |
-| Protected catalog/workflow path or configured force-all path | `bypassed` | All tasks; no Jev call |
+| Protected catalog/workflow path or configured force-all path | `bypassed` | All tasks; shadow still observes question-bearing tasks, enforce makes no call |
 | Non-PR event | `bypassed` | All tasks; examples bypass the action itself |
 | Timeout, API/network error, rate limit, or invalid/partial response | `fallback` | All tasks |
 | Incomplete, oversized, incoherent, or unsupported diff | `fallback` | All tasks |
@@ -100,7 +101,9 @@ tested_sha = GITHUB_SHA
 diff = base_sha → tested_sha
 ```
 
-The catalog comes from the **base Git object**, never from the PR's edited copy. The tested commit must have exactly `[base_sha, head_sha]` as its two parents. Branch names are never silently resolved to their latest state, so an older run remains tied to its own event.
+For automatic PR events, the catalog comes from the **base Git object**, never from the PR's edited copy. The tested commit must have exactly `[base_sha, head_sha]` as its two parents. Branch names are never silently resolved to their latest state, so an older run remains tied to its own event.
+
+A manual `workflow_dispatch` with `pull-request` deliberately takes a new snapshot of the chosen open PR through the GitHub API. It uses that response's immutable base, head and merge SHAs, and still verifies the merge parents. The catalog comes from `GITHUB_SHA`, the workflow revision selected by the operator, and is recorded separately in `config_sha`. This makes it possible to test a reviewed catalog before merging it. Manual observation is shadow-only; it cannot enable selective execution. It observes the current PR, not an arbitrary historical run. A missing merge commit fails without guessing or polling.
 
 If required objects can no longer be fetched, the action keeps all tasks, or fails if the trusted catalog itself is unavailable. Consumer jobs must check out `tested-sha`.
 
@@ -112,9 +115,11 @@ Implementation limits also cap the catalog at 1 MiB (a blocking error), Git meta
 
 ## Jev request
 
-The official `@typesafe-ai/sdk` calls `TypeSafeClient.systemOne()` with a shared state and one independent `noul()` question per remaining task. A `noul` returns a probability of an affirmative answer; there is no separate confidence field. The default base URL is `https://api.typesafe.ai`; the SDK appends `/v1/systemone`. A custom base URL must provide the Jev System One contract, not a chat-completions API. It must use HTTPS, contain no URL credentials, query, or fragment, and is normalized by removing trailing slashes. The endpoint is used only after the workflow explicitly grants `allow-external-context` and provides the corresponding Bearer `api-key`.
+The official `@typesafe-ai/sdk` calls `TypeSafeClient.systemOne()` with a shared state and one independent `noul()` question per observed task. A `noul` returns a probability of an affirmative answer; there is no separate confidence field. The default base URL is `https://api.typesafe.ai`; the SDK appends `/v1/systemone`. A custom base URL must provide the Jev System One contract, not a chat-completions API. It must use HTTPS, contain no URL credentials, query, or fragment, and is normalized by removing trailing slashes. The endpoint is used only after the workflow explicitly grants `allow-external-context` and provides the corresponding Bearer `api-key`.
 
-The action uses one request, `maxRetries: 0`, disabled SDK logs, and rejects HTTP redirects. `api-model` defaults to the catalog model and may be a provider alias; the returned model version is still validated against the catalog's canonical `model`. The action validates the exact expected IDs, `noul` types, finite probabilities in `[0, 1]`, the returned model version, and API usage. A missing or invalid answer, endpoint error, redirect, rate limit, or version mismatch causes a global fallback.
+Small observations use one request. Shadow observations that exceed the context byte guards split the complete diff into at most 32 lossless UTF-8 fragments, preferring file and hunk boundaries and repeating identifying headers as context. The guards allow 24 KiB for state plus the longest question and 48 KiB for state plus all questions; these are conservative byte checks, not exact tokenizer guarantees. There are at most three simultaneous requests under the total `timeout-ms` deadline, each capped at ten seconds. `enforce` always uses the whole diff and never applies chunk-based skipping.
+
+Requests use `maxRetries: 0`, disabled SDK logs, and reject HTTP redirects. `api-model` defaults to the catalog model and may be a provider alias; the returned model version is still validated against the catalog's canonical `model`. The action validates the exact expected IDs, `noul` types, finite probabilities in `[0, 1]`, the returned model version, and API usage. A missing or invalid answer, endpoint error, redirect, rate limit, or version mismatch causes a global fallback. Completed chunk answers remain in the report; no partial observation justifies skipping a task.
 
 The byte limit is not a token budget. TypeSafe also limits the state and the complete request, including all questions. A provider rejection keeps every task.
 
@@ -130,7 +135,9 @@ The [report schema](../schemas/report.schema.json) covers:
 
 Unavailable probabilities, proposals, and metadata use `null`. No score is invented for a task that was not evaluated. Reasons are deterministic codes generated by the action, not model explanations.
 
-New reports use `version: 2`: `model.requested` records the identifier sent to the API (or configured for a bypassed call), required `model.expected` records the catalog's pinned canonical version, and `model.returned` records the validated version received, even when it caused a mismatch fallback. The schema and shadow analyzer also accept historical version 1 reports, which require a canonical requested model and do not allow `expected`. Consumers pinned to the old v1 schema must update their validator before consuming v2 reports; the version field identifies the contract. The catalog remains version 1. The configured URL is not included in reports. No OpenCode CLI or additional dependency is needed for custom endpoints.
+New reports use `version: 3`, adding `observation` to the version 2 model metadata. This is null when no request was prepared, or records whole/chunked evaluation, completion status, byte ranges and hashes, each chunk's actual probabilities, model, usage, duration and bounded error code. Reports distinguish the policy status from the model observation: a forced full policy can be `bypassed` while raw shadow answers are available.
+
+For multiple chunks, top-level task probabilities are null: there is no invented global model probability. A hypothetical task is kept if any chunk reaches the threshold or policy rules require it, but interactions between chunks are not assessed globally. Read the individual answers, not an inferred global probability. The schema and analyzer continue to accept saved v1/v2 reports; v1/v2 cannot contain v3 observation fields. The catalog remains version 1. The configured URL is not included in reports.
 
 The report excludes source code, changed file paths, questions, API keys, and raw error bodies. It is local to the planning runner; passing its path as an output does not transfer the file to another job. Choose artifact visibility and retention deliberately.
 
@@ -152,6 +159,9 @@ The normal test suite requires no TypeSafe key or service access. It covers pure
 | `src/changes.ts` | Fetch Git objects and collect a complete diff |
 | `src/policy.ts` | Pure deterministic selection with no I/O |
 | `src/jev.ts` | Adapt and validate the SDK request/response |
+| `src/chunks.ts` | Partition UTF-8 diffs without omitting source |
+| `src/observations.ts` | Bound requests and preserve raw per-chunk answers |
+| `src/manual.ts` | Resolve an operator-selected PR snapshot for shadow observation |
 | `src/planner.ts` | Orchestrate collection, evaluation, and failure policy |
 | `src/report.ts` | Validate reports and serialize outputs and summaries |
 | `src/action.ts` | Read action inputs and publish the validated plan |
