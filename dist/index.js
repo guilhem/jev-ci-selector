@@ -35065,6 +35065,17 @@ var parseBody = async (res) => {
 };
 
 // src/jev.ts
+function resolveJevApi(options) {
+  const baseURL = options.apiBaseUrl || "https://api.typesafe.ai";
+  const model = options.apiModel || void 0;
+  try {
+    const url = new URL(baseURL);
+    if (!/^https:\/\//i.test(baseURL) || /[\s\u0000-\u001f\u007f\\?#]/u.test(baseURL) || url.protocol !== "https:" || url.username || url.password || model !== void 0 && !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}(?![\s\S])/.test(model)) throw new Error();
+    return { baseURL: url.href.replace(/\/+$/, ""), model };
+  } catch {
+    throw new Error("invalid-input");
+  }
+}
 var JevError = class extends Error {
   constructor(code, metadata = { model: null, usage: null }) {
     super(code);
@@ -35073,7 +35084,7 @@ var JevError = class extends Error {
   }
 };
 var record = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
-function validateJevResponse(value, taskIds, requestedModel) {
+function validateJevResponse(value, taskIds, expectedModel) {
   const model = record(value) && typeof value.model === "string" && /^jev-\d+\.\d+\.\d+$/.test(value.model) ? value.model : null;
   let usage = null;
   if (record(value) && record(value.usage)) {
@@ -35083,7 +35094,7 @@ function validateJevResponse(value, taskIds, requestedModel) {
     }
   }
   const metadata = { model, usage };
-  if (!record(value) || model !== requestedModel || !usage || !record(value.answers) || Object.keys(value.answers).sort().join("\0") !== [...taskIds].sort().join("\0")) throw new JevError("invalid-response", metadata);
+  if (!record(value) || model !== expectedModel || !usage || !record(value.answers) || Object.keys(value.answers).sort().join("\0") !== [...taskIds].sort().join("\0")) throw new JevError("invalid-response", metadata);
   const probabilities = {};
   for (const id of [...taskIds].sort()) {
     const answer = value.answers[id];
@@ -35094,21 +35105,23 @@ function validateJevResponse(value, taskIds, requestedModel) {
 }
 async function evaluateJev(input, fetchImpl) {
   const { catalog, taskIds, state, apiKey, timeoutMs } = input;
+  const api = resolveJevApi(input);
+  const requestedModel = api.model ?? catalog.model;
   if (!taskIds.length) throw new Error("empty-jev-request");
   const questions = Object.fromEntries([...taskIds].sort().map((id) => [id, noul(catalog.tasks[id].question)]));
   const client = new TypeSafeClient({
     apiKey,
-    baseURL: "https://api.typesafe.ai",
-    defaultModel: catalog.model,
+    baseURL: api.baseURL,
+    defaultModel: requestedModel,
     logLevel: "off",
     retry: { maxRetries: 0 },
     timeout: timeoutMs,
-    ...fetchImpl ? { fetch: fetchImpl } : {}
+    fetch: (url, init) => (fetchImpl ?? globalThis.fetch)(url, { ...init, redirect: "error" })
   });
   const signal = AbortSignal.timeout(timeoutMs);
   try {
     const response = await client.systemOne(
-      { model: catalog.model, state, questions },
+      { model: requestedModel, state, questions },
       { signal, timeout: timeoutMs, retry: { maxRetries: 0 } }
     );
     return validateJevResponse(response, taskIds, catalog.model);
@@ -37108,7 +37121,8 @@ var report_schema_default = {
       additionalProperties: false,
       required: ["requested", "returned"],
       properties: {
-        requested: { type: "string", pattern: "^jev-[0-9]+\\.[0-9]+\\.[0-9]+$" },
+        requested: { type: "string", pattern: "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}(?![\\s\\S])" },
+        expected: { type: "string", pattern: "^jev-[0-9]+\\.[0-9]+\\.[0-9]+$" },
         returned: { type: ["string", "null"], pattern: "^jev-[0-9]+\\.[0-9]+\\.[0-9]+$" }
       }
     },
@@ -37222,6 +37236,7 @@ function eventContext(env, event) {
 }
 async function planChange(inputs, context, dependencies = {}) {
   validateConfigPath(inputs.config);
+  const api = resolveJevApi(inputs);
   if (!["shadow", "enforce"].includes(inputs.mode) || !Number.isSafeInteger(inputs.timeoutMs) || inputs.timeoutMs < 1 || inputs.timeoutMs > 2147483647 || !Number.isSafeInteger(inputs.maxDiffBytes) || inputs.maxDiffBytes < 1) throw new Error("invalid-input");
   const started = performance.now();
   const repository = await (dependencies.createRepository ?? GitRepository.create)({
@@ -37243,6 +37258,7 @@ async function planChange(inputs, context, dependencies = {}) {
       throw new ConfigError();
     }
     const catalog = parseCatalog(source);
+    const requestedModel = api.model ?? catalog.model;
     let forced;
     if (context.eventName !== "pull_request") forced = { status: "bypassed", code: "non-pull-request" };
     else if (inputs.forceAll) forced = { status: "bypassed", code: "force-all" };
@@ -37276,6 +37292,8 @@ async function planChange(inputs, context, dependencies = {}) {
         const result = await (dependencies.evaluate ?? evaluateJev)({
           catalog,
           taskIds: candidates,
+          apiBaseUrl: api.baseURL,
+          apiModel: requestedModel,
           apiKey: inputs.apiKey,
           timeoutMs: inputs.timeoutMs,
           state: {
@@ -37316,7 +37334,7 @@ async function planChange(inputs, context, dependencies = {}) {
       changed_path_count: change?.changedPaths.length ?? null,
       mode: plan.mode,
       status: plan.status,
-      model: { requested: catalog.model, returned: metadata.model },
+      model: { requested: requestedModel, expected: catalog.model, returned: metadata.model },
       durations_ms: { collection: collectionMs, jev: jevMs, total: performance.now() - started },
       usage: metadata.usage,
       tasks: plan.tasks
@@ -37347,6 +37365,8 @@ async function main() {
     mode,
     githubToken: core.getInput("github-token"),
     apiKey: core.getInput("api-key"),
+    apiBaseUrl: core.getInput("api-base-url"),
+    apiModel: core.getInput("api-model"),
     allowExternalContext: booleanInput("allow-external-context"),
     forceAll: booleanInput("force-all"),
     timeoutMs: integerInput("timeout-ms", 1e4),

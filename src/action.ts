@@ -22,6 +22,7 @@ async function main(): Promise<void> {
   const inputs: Inputs = {
     config: core.getInput('config') || '.github/ci-selector.yml', mode,
     githubToken: core.getInput('github-token'), apiKey: core.getInput('api-key'),
+    apiBaseUrl: core.getInput('api-base-url'), apiModel: core.getInput('api-model'),
     allowExternalContext: booleanInput('allow-external-context'), forceAll: booleanInput('force-all'),
     timeoutMs: integerInput('timeout-ms', 10000), maxDiffBytes: integerInput('max-diff-bytes', 65536),
   };

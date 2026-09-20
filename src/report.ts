@@ -15,7 +15,7 @@ export interface Report {
   changed_path_count: number | null;
   mode: ExecutionPlan['mode'];
   status: ExecutionPlan['status'];
-  model: { requested: string; returned: string | null };
+  model: { requested: string; expected?: string; returned: string | null };
   durations_ms: { collection: number; jev: number | null; total: number };
   usage: Usage | null;
   tasks: ExecutionPlan['tasks'];

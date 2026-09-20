@@ -121,6 +121,27 @@ The selector step in the example workflows is pinned to a published commit conta
 
 Add `JEV_API_KEY` as a repository secret and opt in to sending the diff, changed paths, commit SHAs, and task questions to TypeSafe. Shadow mode still makes that external call when authorized. Without a key or permission, every task is kept and no Jev call is made.
 
+The default provider is TypeSafe at `https://api.typesafe.ai`; the SDK calls its
+System One endpoint under `/v1/systemone` and uses the catalog's `model`. A
+custom provider must expose the Jev System One contract, not a chat-completions
+API. For example, this uses OpenCode Zen's temporary free endpoint:
+
+```yaml
+with:
+  mode: shadow
+  api-base-url: https://opencode.ai/zen
+  api-model: jev-1.13-free
+  api-key: ${{ secrets.OPENCODE_API_KEY }}
+  allow-external-context: 'true'
+```
+
+The catalog still declares a pinned version such as `model: jev-1.13.0`; the provider must
+return that pinned canonical version in its response. The endpoint must use
+HTTPS and contain no URL credentials, query, or fragment. Trailing slashes are
+normalized. OpenCode Free is temporary; see [its endpoint documentation](https://opencode.ai/docs/zen/#endpoints).
+This example documents the provider contract; live inference against OpenCode
+was not verified.
+
 This is a **step excerpt**, not a complete workflow. Use the linked templates for job outputs, checkouts at `tested-sha`, dependency wiring, and the final gate. The planning job needs only `contents: read` and must not check out or run PR code.
 
 Make **`ci-required` a required status check** in your branch protection rule or ruleset. It rejects failed planning, invalid plans, and selected tasks that did not succeed. The example workflows run full CI on `push`, `schedule`, and `merge_group` without semantic selection.

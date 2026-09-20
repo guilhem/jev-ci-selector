@@ -11,10 +11,16 @@ inputs:
     description: Read-only GitHub token for fetching immutable Git objects.
     default: ${{ github.token }}
   api-key:
-    description: TypeSafe key; absence bypasses semantic selection.
+    description: Bearer key for the configured Jev API; absence bypasses semantic selection.
+    default: ''
+  api-base-url:
+    description: HTTPS API root before /v1/systemone, without credentials, query or fragment.
+    default: https://api.typesafe.ai
+  api-model:
+    description: Model identifier sent to the API; defaults to the catalog's expected model version.
     default: ''
   allow-external-context:
-    description: Explicit permission to send the diff and metadata to TypeSafe.
+    description: Explicit permission to send the diff and metadata to the configured API.
     default: 'false'
   force-all:
     description: Bypass optimization immediately.

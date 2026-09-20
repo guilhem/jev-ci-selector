@@ -60,6 +60,21 @@ test('distributed bundle runs against real Git objects, publishes shadow/enforce
       assert.equal(outputs['tested-sha'], tested);
       assert.equal(report.tasks.helm!.proposed_run, false); assert.ok(!JSON.stringify(report).includes('SENTINEL'));
     }
+    const api = { 'INPUT_API-BASE-URL': 'https://opencode.ai/zen/', 'INPUT_API-MODEL': 'jev-1.13-free',
+      FIXTURE_API_URL: 'https://opencode.ai/zen/v1/systemone', FIXTURE_API_MODEL: 'jev-1.13-free' };
+    const custom = await run({ ...api, INPUT_MODE: 'enforce' });
+    assert.equal(custom.result.status, 0, custom.result.stdout + custom.result.stderr);
+    assert.equal(custom.outputs.status, 'planned');
+    assert.equal(custom.outputs.helm, 'false'); assert.equal(custom.outputs.unit, 'true');
+    const customReport: unknown = JSON.parse(await readFile(custom.outputs['report-path']!, 'utf8')); validateReport(customReport);
+    assert.deepEqual(customReport.model, { requested: 'jev-1.13-free', expected: 'jev-1.13.0', returned: 'jev-1.13.0' });
+    assert.ok(!JSON.stringify(customReport).includes('SENTINEL'));
+    const wrongModel = await run({ ...api, FIXTURE_RESPONSE: JSON.stringify({ model: 'jev-1.13.1',
+      answers: { helm: { type: 'noul', noul: 0 } }, usage: { input_tokens: 10, output_tokens: 1 } }) });
+    assert.equal(wrongModel.result.status, 0); assert.equal(wrongModel.outputs.status, 'fallback');
+    assert.equal(wrongModel.outputs.helm, 'true'); assert.equal(wrongModel.outputs.unit, 'true');
+    const invalidApi = await run({ 'INPUT_API-BASE-URL': 'https://user:SECRET-SENTINEL@api.test', FIXTURE_RESPONSE: '' });
+    assert.equal(invalidApi.result.status, 1); assert.deepEqual(invalidApi.outputs, {});
     const fallback = await run({ FIXTURE_RESPONSE: '{}' });
     assert.equal(fallback.result.status, 0); assert.equal(fallback.outputs.status, 'fallback');
     assert.deepEqual(JSON.parse(fallback.outputs.run!), { helm: true, unit: true });

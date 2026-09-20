@@ -31,6 +31,9 @@ test('shadow measurement joins by exact SHA and distinguishes regressions, flaky
     assert.equal(analysis.duration_ms_would_skip, 100);
     assert.deepEqual(analysis.failures_would_miss, { regression: ['e2e'], flaky: ['prepare'], infrastructure: ['build'], unknown: [] });
     assert.deepEqual(analysis.manually_relevant_would_skip, ['helm']);
+    await writeFile(reportFile, JSON.stringify({ ...report,
+      model: { requested: 'jev-1.13-free', expected: 'jev-1.13.0', returned: 'jev-1.13.0' } }));
+    assert.deepEqual(JSON.parse(execFileSync(process.execPath, args, { encoding: 'utf8' })), analysis);
     await writeFile(resultsFile, JSON.stringify({ ...results, tested_sha: 'f'.repeat(40) }));
     assert.equal(spawnSync(process.execPath, args).status, 1);
     await writeFile(resultsFile, JSON.stringify({ ...results, tasks: { unit: results.tasks.unit } }));

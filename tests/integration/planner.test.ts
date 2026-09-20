@@ -5,7 +5,7 @@ import { createHash } from 'node:crypto';
 import { planChange, eventContext, type Inputs, type Context, type PlannerDependencies } from '../../src/planner.js';
 import { ConfigError } from '../../src/config.js';
 import { ChangeError } from '../../src/changes.js';
-import { JevError } from '../../src/jev.js';
+import { evaluateJev, JevError } from '../../src/jev.js';
 import { actionOutputs } from '../../src/report.js';
 import { catalog } from '../fixtures/catalog.js';
 
@@ -13,6 +13,7 @@ const inputs: Inputs = { config: '.github/ci-selector.yml', mode: 'enforce', git
   allowExternalContext: true, forceAll: false, timeoutMs: 1000, maxDiffBytes: 65536 };
 const context: Context = { eventName: 'pull_request', repository: 'acme/example', serverUrl: 'https://github.com',
   baseSha: 'a'.repeat(40), headSha: 'b'.repeat(40), testedSha: 'c'.repeat(40), fork: false };
+const customApi = { apiBaseUrl: 'https://opencode.ai/zen/', apiModel: 'jev-1.13-free' };
 function fixture(options: { source?: string; paths?: string[]; failure?: Error; jevFailure?: Error } = {}) {
   const calls = { fetch: [] as string[], read: [] as string[], collect: 0, evaluate: 0, dispose: 0 };
   const dependencies: PlannerDependencies = {
@@ -41,11 +42,47 @@ test('planner uses only base config, tested merge SHA, source-free report and st
   const { plan, report } = await planChange({ ...inputs, mode: 'shadow' }, context, dependencies);
   assert.deepEqual(calls, { fetch: [context.baseSha], read: [`${context.baseSha}:.github/ci-selector.yml`], collect: 1, evaluate: 1, dispose: 1 });
   assert.equal(report.tested_sha, context.testedSha); assert.equal(report.config_sha, context.baseSha);
+  assert.deepEqual(report.model, { requested: 'jev-1.13.0', expected: 'jev-1.13.0', returned: 'jev-1.13.0' });
   assert.equal(report.tasks.helm!.proposed_run, false); assert.equal(report.tasks.helm!.run, true);
   assert.ok(!JSON.stringify(report).includes('SENTINEL'));
   const outputs = actionOutputs(plan, context.testedSha, '/tmp/report.json');
   assert.equal(outputs.status, 'planned'); assert.equal(outputs['has-tasks'], 'true');
   assert.deepEqual(Object.keys(JSON.parse(outputs.run!)), ['build', 'e2e', 'helm', 'prepare', 'unit']);
+});
+test('custom API selection reports the sent alias and pinned version and falls back on a version change', async () => {
+  for (const mode of ['shadow', 'enforce'] as const) for (const returnedModel of ['jev-1.13.0', 'jev-1.13.1']) {
+    const f = fixture();
+    let requests = 0;
+    const { plan, report } = await planChange({ ...inputs, ...customApi, mode }, context, {
+      ...f.dependencies,
+      evaluate: request => evaluateJev(request, async (url, init) => {
+        requests++;
+        assert.equal(url, 'https://opencode.ai/zen/v1/systemone');
+        const body = JSON.parse(init!.body as string);
+        assert.equal(body.model, customApi.apiModel);
+        return Response.json({ model: returnedModel,
+          answers: Object.fromEntries(request.taskIds.map(id => [id, { type: 'noul', noul: 0 }])),
+          usage: { input_tokens: 10, output_tokens: 1 } });
+      }),
+    });
+    assert.equal(requests, 1);
+    assert.deepEqual(report.model, { requested: customApi.apiModel, expected: 'jev-1.13.0', returned: returnedModel });
+    assert.equal(plan.status, returnedModel === 'jev-1.13.0' ? 'planned' : 'fallback');
+    assert.equal(plan.tasks.helm!.run, mode === 'shadow' || returnedModel !== 'jev-1.13.0');
+    if (returnedModel !== 'jev-1.13.0') {
+      assert.ok(Object.values(plan.run).every(Boolean));
+      assert.deepEqual(plan.tasks.helm!.reasons, mode === 'shadow' ? ['invalid-response', 'shadow-mode'] : ['invalid-response']);
+    }
+  }
+});
+test('invalid API configuration fails before repository or API access', async () => {
+  for (const options of [{ apiBaseUrl: 'http://api.test' }, { apiModel: 'invalid model' }]) {
+    let repositories = 0;
+    await assert.rejects(planChange({ ...inputs, ...options }, context, {
+      createRepository: async () => { repositories++; throw new Error('unexpected-repository-access'); },
+    }), /invalid-input/);
+    assert.equal(repositories, 0);
+  }
 });
 test('explicit bypasses never collect diff or call Jev; missing config still blocks', async () => {
   const cases: [Partial<Inputs>, Partial<Context>, string][] = [
@@ -54,9 +91,9 @@ test('explicit bypasses never collect diff or call Jev; missing config still blo
     [{}, { eventName: 'push' }, 'non-pull-request'], [{}, { eventName: 'schedule' }, 'non-pull-request'],
     [{}, { eventName: 'merge_group' }, 'non-pull-request'],
   ];
-  for (const [inputOverride, contextOverride, reason] of cases) {
+  for (const api of [{}, customApi]) for (const [inputOverride, contextOverride, reason] of cases) {
     const { calls, dependencies } = fixture();
-    const { plan, report } = await planChange({ ...inputs, ...inputOverride }, { ...context, ...contextOverride }, dependencies);
+    const { plan, report } = await planChange({ ...inputs, ...api, ...inputOverride }, { ...context, ...contextOverride }, dependencies);
     assert.equal(calls.collect, 0); assert.equal(calls.evaluate, 0); assert.equal(plan.status, 'bypassed');
     assert.ok(Object.values(plan.run).every(Boolean)); assert.ok(plan.tasks.helm!.reasons.includes(reason as never));
     assert.equal(report.model.returned, null); assert.equal(report.usage, null); assert.equal(report.diff_hash, null); assert.equal(report.durations_ms.jev, null);

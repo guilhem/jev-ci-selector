@@ -1,11 +1,11 @@
 import { createHash } from 'node:crypto';
 import { ChangeError, GitRepository, type ChangeSet } from './changes.js';
 import { ConfigError, parseCatalog, validateConfigPath } from './config.js';
-import { evaluateJev, JevError, type JevMetadata } from './jev.js';
+import { evaluateJev, JevError, resolveJevApi, type JevMetadata, type JevApiOptions } from './jev.js';
 import { globalPathReason, selectTasks, semanticTaskIds, type ForceAllReason, type Mode } from './policy.js';
 import { validateReport, type Report } from './report.js';
 
-export interface Inputs {
+export interface Inputs extends JevApiOptions {
   config: string; mode: Mode; githubToken: string; apiKey: string;
   allowExternalContext: boolean; forceAll: boolean; timeoutMs: number; maxDiffBytes: number;
 }
@@ -40,6 +40,7 @@ export interface PlannerDependencies {
 
 export async function planChange(inputs: Inputs, context: Context, dependencies: PlannerDependencies = {}) {
   validateConfigPath(inputs.config);
+  const api = resolveJevApi(inputs);
   if (!['shadow', 'enforce'].includes(inputs.mode) || !Number.isSafeInteger(inputs.timeoutMs) || inputs.timeoutMs < 1 || inputs.timeoutMs > 2_147_483_647 ||
     !Number.isSafeInteger(inputs.maxDiffBytes) || inputs.maxDiffBytes < 1) throw new Error('invalid-input');
   const started = performance.now();
@@ -56,6 +57,7 @@ export async function planChange(inputs: Inputs, context: Context, dependencies:
     try { source = new TextDecoder('utf-8', { fatal: true }).decode(configBytes); }
     catch { throw new ConfigError(); }
     const catalog = parseCatalog(source);
+    const requestedModel = api.model ?? catalog.model;
     let forced: ForceAllReason | undefined;
     if (context.eventName !== 'pull_request') forced = { status: 'bypassed', code: 'non-pull-request' };
     else if (inputs.forceAll) forced = { status: 'bypassed', code: 'force-all' };
@@ -84,6 +86,7 @@ export async function planChange(inputs: Inputs, context: Context, dependencies:
       const callStarted = performance.now();
       try {
         const result = await (dependencies.evaluate ?? evaluateJev)({ catalog, taskIds: candidates,
+          apiBaseUrl: api.baseURL, apiModel: requestedModel,
           apiKey: inputs.apiKey, timeoutMs: inputs.timeoutMs,
           state: { base_sha: context.baseSha, head_sha: context.headSha, tested_sha: context.testedSha,
             changed_paths: change.changedPaths, diff: change.diff } });
@@ -101,7 +104,7 @@ export async function planChange(inputs: Inputs, context: Context, dependencies:
       version: 1, config_sha: context.baseSha, base_sha: context.baseSha, head_sha: context.headSha, tested_sha: context.testedSha,
       catalog_hash: createHash('sha256').update(configBytes).digest('hex'),
       diff_hash: change?.diffHash ?? null, diff_bytes: change?.diffBytes ?? null, changed_path_count: change?.changedPaths.length ?? null,
-      mode: plan.mode, status: plan.status, model: { requested: catalog.model, returned: metadata.model },
+      mode: plan.mode, status: plan.status, model: { requested: requestedModel, expected: catalog.model, returned: metadata.model },
       durations_ms: { collection: collectionMs, jev: jevMs, total: performance.now() - started },
       usage: metadata.usage, tasks: plan.tasks,
     };

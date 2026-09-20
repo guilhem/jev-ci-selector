@@ -16,7 +16,8 @@
     "model": {
       "type": "object", "additionalProperties": false, "required": ["requested", "returned"],
       "properties": {
-        "requested": { "type": "string", "pattern": "^jev-[0-9]+\\.[0-9]+\\.[0-9]+$" },
+        "requested": { "type": "string", "pattern": "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}(?![\\s\\S])" },
+        "expected": { "type": "string", "pattern": "^jev-[0-9]+\\.[0-9]+\\.[0-9]+$" },
         "returned": { "type": ["string", "null"], "pattern": "^jev-[0-9]+\\.[0-9]+\\.[0-9]+$" }
       }
     },
