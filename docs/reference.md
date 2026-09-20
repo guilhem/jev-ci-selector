@@ -4,10 +4,11 @@ The action selects tasks and publishes outputs. Workflows own execution, secrets
 
 ## Compatibility and versions
 
-The action follows Semantic Versioning. The `v0` tag floats to the latest
-compatible `0.x` release; pin a release commit when an immutable reference is
-required. A major version boundary covers changes to the input or output
-contract, the report version, or the default value of `mode`.
+The action follows Semantic Versioning. A major-version tag such as `v0` floats
+to the latest stable release of that major version. A prerelease publishes its
+exact tag only and never moves a floating tag. Pin a release commit when an
+immutable reference is required. A major version boundary covers changes to the
+input or output contract, the report version, or the default value of `mode`.
 
 The report version and canonical Jev model version evolve independently from the
 action version. Consumers that persist or analyze reports must validate the

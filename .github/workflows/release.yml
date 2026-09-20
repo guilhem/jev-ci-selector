@@ -60,11 +60,15 @@ jobs:
           args=(release create "$RELEASE_TAG" --verify-tag --title "jev-ci-selector $RELEASE_TAG" --notes-file release-notes.md)
           if [[ "$RELEASE_TAG" == *-* ]]; then args+=(--prerelease); fi
           gh "${args[@]}"
-      - name: Update the floating v0 tag
+      # A prerelease keeps its exact tag: moving the floating major tag here
+      # would hand prerelease code to consumers pinning that major version.
+      - name: Update the floating major tag
+        if: ${{ !contains(github.ref_name, '-') }}
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ github.ref_name }}
         run: |
+          major_tag="${RELEASE_TAG%%.*}"
           release_sha="$(git rev-parse "$RELEASE_TAG^{commit}")"
           git config http.https://github.com/.extraheader "AUTHORIZATION: bearer $GH_TOKEN"
-          git push --force origin "$release_sha:refs/tags/v0"
+          git push --force origin "$release_sha:refs/tags/$major_tag"
