@@ -18,13 +18,13 @@
   "dependencies": {
     "@actions/core": "1.11.1",
     "@typesafe-ai/sdk": "0.6.0",
-    "ajv": "8.17.1",
-    "minimatch": "10.2.4",
-    "yaml": "2.8.2"
+    "ajv": "8.20.0",
+    "minimatch": "10.2.6",
+    "yaml": "2.9.1"
   },
   "devDependencies": {
     "@types/node": "^24.0.0",
-    "esbuild": "^0.25.0",
+    "esbuild": "^0.28.2",
     "tsx": "^4.20.0",
     "typescript": "^5.9.0"
   }
