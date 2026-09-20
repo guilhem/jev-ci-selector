@@ -9,6 +9,13 @@ updates:
         update-types:
           - minor
           - patch
+    ignore:
+      # @actions/core 3.x is ESM-only. Adopting it requires migrating this
+      # package to ESM: JSON import attributes, ajv default-export interop and
+      # an ESM action bundle. Remove this entry with that migration.
+      - dependency-name: "@actions/core"
+        update-types:
+          - version-update:semver-major
   - package-ecosystem: github-actions
     directory: /
     schedule:
