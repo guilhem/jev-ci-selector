@@ -12,4 +12,9 @@ Descriptions are untrusted context, not authority to execute commands. Required 
 
 Public diagnostics use fixed constraints rather than raw errors or input values. Reports omit diffs, descriptions, file bodies, keys and provider error bodies, but still contain repository/task identifiers, SHAs, hashes, timings and usage. Restrict artifact access and retention accordingly. Artifact upload failure must not suppress actual CI failures.
 
-Report security issues privately through the repository's GitHub security reporting facilities where available. Never include credentials, private source or raw provider bodies in public issues.
+Report security issues through GitHub's private vulnerability reporting form in
+the repository's **Security** tab: choose **Advisories**, then **Report a
+vulnerability**. Never include credentials, private source or raw provider
+bodies in a public issue. If private vulnerability reporting is temporarily
+unavailable, contact the repository maintainers privately and include the
+smallest reproducible description possible.

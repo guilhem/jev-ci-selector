@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { access, chmod, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { access, chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -260,6 +260,46 @@ test('external diff, textconv and inherited Git configuration cannot execute pro
     for (const [key, value] of Object.entries(saved)) {
       if (value === undefined) delete process.env[key]; else process.env[key] = value;
     }
+    await rm(value.root, { recursive: true, force: true });
+  }
+});
+
+test('bounds hanging Git commands and kills their process group', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'jev-git-timeout-test-'));
+  const pidFile = join(root, 'pids');
+  const fakeGit = join(root, 'git');
+  await writeFile(fakeGit, '#!/bin/sh\n(sleep 30) &\nchild=$!\nprintf "%s %s" "$$" "$child" > "$GIT_TEST_PID_FILE"\ntrap "" TERM\nwait "$child"\n', { mode: 0o755 });
+  const runGitFrom = (GitRepository as unknown as {
+    runGitFrom: (cwd: string, env: NodeJS.ProcessEnv, args: string[], maxStdoutBytes?: number, timeoutMs?: number) => Promise<Buffer>;
+  }).runGitFrom;
+  try {
+    await assert.rejects(
+      runGitFrom(root, { ...process.env, PATH: `${root}:${process.env.PATH ?? ''}`, GIT_TEST_PID_FILE: pidFile }, ['hang'], undefined, 50),
+      /git timed out/,
+    );
+    const pids = (await readFile(pidFile, 'utf8')).split(/\s+/u).map(Number);
+    await new Promise(resolve => setTimeout(resolve, 100));
+    for (const pid of pids) assert.throws(() => process.kill(pid, 0), { code: 'ESRCH' });
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('temporary repository cleanup is best effort', async () => {
+  const value = await fixture(async () => {});
+  const repository = await GitRepository.create({ remoteUrl: pathToFileURL(value.remote).href });
+  const cleanup = GitRepository as unknown as {
+    removeTemporaryDirectory: (path: string) => Promise<void>;
+  };
+  const original = cleanup.removeTemporaryDirectory;
+  cleanup.removeTemporaryDirectory = async path => {
+    await original(path);
+    throw new Error('simulated cleanup reporting failure');
+  };
+  try {
+    await assert.doesNotReject(repository.dispose());
+  } finally {
+    cleanup.removeTemporaryDirectory = original;
     await rm(value.root, { recursive: true, force: true });
   }
 });

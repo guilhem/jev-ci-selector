@@ -19735,10 +19735,10 @@ Support boolean input list: \`true | True | TRUE | false | False | FALSE\``);
       (0, command_1.issueCommand)("error", (0, utils_1.toCommandProperties)(properties), message instanceof Error ? message.toString() : message);
     }
     exports2.error = error;
-    function warning2(message, properties = {}) {
+    function warning3(message, properties = {}) {
       (0, command_1.issueCommand)("warning", (0, utils_1.toCommandProperties)(properties), message instanceof Error ? message.toString() : message);
     }
-    exports2.warning = warning2;
+    exports2.warning = warning3;
     function notice(message, properties = {}) {
       (0, command_1.issueCommand)("notice", (0, utils_1.toCommandProperties)(properties), message instanceof Error ? message.toString() : message);
     }
@@ -21448,12 +21448,12 @@ var require_log = __commonJS({
       if (logLevel === "debug")
         console.log(...messages);
     }
-    function warn(logLevel, warning2) {
+    function warn(logLevel, warning3) {
       if (logLevel === "debug" || logLevel === "warn") {
         if (typeof node_process.emitWarning === "function")
-          node_process.emitWarning(warning2);
+          node_process.emitWarning(warning3);
         else
-          console.warn(warning2);
+          console.warn(warning3);
       }
     }
     exports2.debug = debug;
@@ -24906,9 +24906,9 @@ var require_composer = __commonJS({
         this.prelude = [];
         this.errors = [];
         this.warnings = [];
-        this.onError = (source, code, message, warning2) => {
+        this.onError = (source, code, message, warning3) => {
           const pos = getErrorPos(source);
-          if (warning2)
+          if (warning3)
             this.warnings.push(new errors.YAMLWarning(pos, code, message));
           else
             this.errors.push(new errors.YAMLParseError(pos, code, message));
@@ -24979,10 +24979,10 @@ ${cb}` : comment;
           console.dir(token, { depth: null });
         switch (token.type) {
           case "directive":
-            this.directives.add(token.source, (offset, message, warning2) => {
+            this.directives.add(token.source, (offset, message, warning3) => {
               const pos = getErrorPos(token);
               pos[0] += offset;
-              this.onError(pos, "BAD_DIRECTIVE", message, warning2);
+              this.onError(pos, "BAD_DIRECTIVE", message, warning3);
             });
             this.prelude.push(token.source);
             this.atDirectives = true;
@@ -27007,7 +27007,7 @@ var require_public_api = __commonJS({
       const doc = parseDocument3(src, options);
       if (!doc)
         return null;
-      doc.warnings.forEach((warning2) => log.warn(doc.options.logLevel, warning2));
+      doc.warnings.forEach((warning3) => log.warn(doc.options.logLevel, warning3));
       if (doc.errors.length > 0) {
         if (doc.options.logLevel !== "silent")
           throw doc.errors[0];
@@ -34694,6 +34694,9 @@ var MAX_FILE_BYTES = 1024 * 1024;
 var MAX_METADATA_BYTES = 4 * 1024 * 1024;
 var MAX_BLOB_BYTES = 16 * 1024 * 1024;
 var HISTORY_DEEPEN_STEPS = [32, 128, 512, 2048];
+var GIT_TIMEOUT_MS = 12e4;
+var COMPLETE_HISTORY_TIMEOUT_MS = 3e5;
+var TERMINATION_GRACE_MS = 1e3;
 function safeRemoteUrl(remoteUrl) {
   try {
     const parsed = new URL(remoteUrl);
@@ -35000,11 +35003,7 @@ var GitRepository = class _GitRepository {
   async dispose() {
     if (this.disposed) return;
     this.disposed = true;
-    try {
-      await (0, import_promises.rm)(this.workRoot, { recursive: true, force: true });
-    } catch {
-      throw new ChangeError("git-read-failed");
-    }
+    await _GitRepository.removeTemporaryDirectory(this.workRoot).catch(() => void 0);
   }
   ensureOpen() {
     if (this.disposed) throw new ChangeError("git-read-failed");
@@ -35053,7 +35052,7 @@ var GitRepository = class _GitRepository {
         this.remoteUrl,
         baseSha,
         headSha
-      ]);
+      ], void 0, COMPLETE_HISTORY_TIMEOUT_MS);
     } catch {
     }
     if (!await this.isShallowRepository()) return;
@@ -35067,7 +35066,7 @@ var GitRepository = class _GitRepository {
         this.remoteUrl,
         baseSha,
         headSha
-      ]);
+      ], void 0, COMPLETE_HISTORY_TIMEOUT_MS);
     } catch {
       throw new ChangeError("git-fetch-failed");
     }
@@ -35110,7 +35109,6 @@ var GitRepository = class _GitRepository {
       config.unshift(["http.extraheader", `Authorization: Basic ${basic}`]);
     }
     environment.GIT_CONFIG_NOSYSTEM = "1";
-    environment.GIT_CONFIG_NOGLOBAL = "1";
     environment.GIT_CONFIG_SYSTEM = "/dev/null";
     environment.GIT_CONFIG_GLOBAL = "/dev/null";
     environment.GIT_ATTR_NOSYSTEM = "1";
@@ -35127,48 +35125,86 @@ var GitRepository = class _GitRepository {
     });
     return environment;
   }
-  static runGitFrom(cwd, env, args, maxStdoutBytes) {
+  static runGitFrom(cwd, env, args, maxStdoutBytes, timeoutMs = GIT_TIMEOUT_MS) {
     return new Promise((resolve, reject) => {
       let child;
       try {
-        child = (0, import_node_child_process.spawn)("git", args, { cwd, env, stdio: ["ignore", "pipe", "ignore"] });
+        child = (0, import_node_child_process.spawn)("git", args, {
+          cwd,
+          env,
+          stdio: ["ignore", "pipe", "ignore"],
+          detached: process.platform !== "win32"
+        });
       } catch {
         reject(new GitCommandError("spawn failed"));
         return;
       }
       const chunks = [];
       let bytes2 = 0;
-      let outputLimited = false;
+      let termination;
       let settled = false;
+      let timeoutHandle;
+      let killHandle;
+      const clearTimers = () => {
+        if (timeoutHandle) clearTimeout(timeoutHandle);
+        if (killHandle) clearTimeout(killHandle);
+      };
+      const sendSignal = (signal) => {
+        if (child.pid === void 0) return;
+        if (process.platform !== "win32") {
+          try {
+            process.kill(-child.pid, signal);
+            return;
+          } catch {
+          }
+        }
+        try {
+          child.kill(signal);
+        } catch {
+        }
+      };
+      const terminate = (reason) => {
+        if (termination || settled) return;
+        termination = reason;
+        sendSignal("SIGTERM");
+        killHandle = setTimeout(() => {
+          if (!settled) sendSignal("SIGKILL");
+        }, TERMINATION_GRACE_MS);
+      };
+      const finish = (error, value) => {
+        if (settled) return;
+        settled = true;
+        clearTimers();
+        if (error) reject(error);
+        else resolve(value ?? Buffer.alloc(0));
+      };
+      timeoutHandle = setTimeout(() => terminate("timeout"), Math.max(1, timeoutMs));
       child.stdout.on("data", (chunk) => {
-        if (outputLimited) return;
+        if (termination) return;
         bytes2 += chunk.length;
         if (maxStdoutBytes !== void 0 && bytes2 > maxStdoutBytes) {
-          outputLimited = true;
-          child.kill("SIGTERM");
+          terminate("output-limit");
           return;
         }
         chunks.push(chunk);
       });
       child.once("error", () => {
         if (!settled) {
-          settled = true;
-          reject(new GitCommandError("git failed"));
+          finish(termination === "timeout" ? new GitCommandError("git timed out") : termination === "output-limit" ? new OutputLimitError("output limit") : new GitCommandError("git failed"));
         }
       });
       child.once("close", (code) => {
         if (settled) return;
-        settled = true;
-        if (outputLimited) {
-          reject(new OutputLimitError("output limit"));
-        } else if (code !== 0) {
-          reject(new GitCommandError("git failed"));
-        } else {
-          resolve(Buffer.concat(chunks));
-        }
+        if (termination === "timeout") finish(new GitCommandError("git timed out"));
+        else if (termination === "output-limit") finish(new OutputLimitError("output limit"));
+        else if (code !== 0) finish(new GitCommandError("git failed"));
+        else finish(void 0, Buffer.concat(chunks));
       });
     });
   }
+  static removeTemporaryDirectory = async (path2) => {
+    await (0, import_promises.rm)(path2, { recursive: true, force: true });
+  };
 };
 
 // node_modules/@typesafe-ai/sdk/dist/index.mjs
@@ -39298,7 +39334,11 @@ async function main() {
   const reportPath = (0, import_node_path2.join)(directory, "report.json");
   await (0, import_promises2.writeFile)(reportPath, JSON.stringify(report, null, 2) + "\n", { mode: 384 });
   for (const [name, value] of Object.entries(actionOutputs(plan, context.testedSha, reportPath))) core.setOutput(name, value);
-  await core.summary.addRaw(summary(report)).write();
+  try {
+    await core.summary.addRaw(summary(report)).write();
+  } catch {
+    core.warning("summary-unavailable");
+  }
   core.info(`jev-ci-selector: ${plan.status}, ${plan.selected.length}/${Object.keys(plan.tasks).length} tasks (${plan.mode})`);
 }
 void main().catch((error) => {

@@ -1,5 +1,7 @@
 # jev-ci-selector
 
+[![Validate action](https://github.com/guilhem/jev-ci-selector/actions/workflows/ci.yml/badge.svg)](https://github.com/guilhem/jev-ci-selector/actions/workflows/ci.yml)
+
 Describe what your CI checks verify. Jev evaluates the pull request diff and returns boolean outputs for your existing jobs.
 
 The action selects tasks; your workflow owns commands, runners and dependencies. Selection is applied by default (`enforce`). Set `mode: shadow` to see proposals while keeping every task.
@@ -47,9 +49,16 @@ jobs:
       - run: go test ./...
 ```
 
-`v0.1.0` is the intended release reference, not a claim that the tag has been published. Use the released commit SHA for immutable pinning.
+`v0.1.0` is the initial release reference. Use the released commit SHA for immutable pinning.
 
 Keep the selection job isolated from project scripts and dependency installation. Keep it required if branch protection relies on this minimal workflow: a skipped test job alone does not prove selection succeeded. For an existing final CI gate, preserve its checks; [advanced static jobs](examples/static-jobs/README.md) demonstrate handling failed planning and skipped selected jobs.
+
+## Runner prerequisites
+
+GitHub-hosted runners support the Node.js 24 runtime used by this action.
+Self-hosted runners must be version 2.328.0 or newer. macOS 13.4 and older
+self-hosted runners and ARM32 runners are not supported by the Node.js 24
+runtime.
 
 ## Define precise tasks
 

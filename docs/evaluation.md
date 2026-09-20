@@ -41,3 +41,7 @@ Reports separate proposed selection from effective policy outputs. Shadow mode
 keeps every task. Synthetic relevance results do not demonstrate runtime savings
 or accuracy on a consuming repository; that needs its own shadow observations and
 actual CI outcomes. See the [shadow guide](shadow-mode.md).
+
+The corpus calibration selected `0.10`, while the action default remains `0.05`.
+The lower production default is intentionally more conservative and is not a
+claim that the synthetic calibration generalizes to every repository.

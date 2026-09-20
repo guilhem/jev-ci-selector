@@ -181,6 +181,21 @@ test('example tasks and workflow job IDs have one stable contract', () => {
   }
 });
 
+test('published examples and action metadata use the initial release contract', () => {
+  const action = parseYaml(readFileSync(resolve(root, 'action.yml'), 'utf8')) as Record<string, any>;
+  assert.deepEqual(action.branding, { icon: 'filter', color: 'purple' });
+  for (const path of [
+    'README.md',
+    'examples/static-jobs/.github/workflows/ci.yml',
+    'examples/matrix/.github/workflows/ci.yml',
+    'examples/shadow/.github/workflows/observe.yml',
+  ]) {
+    const source = readFileSync(resolve(root, path), 'utf8');
+    assert.match(source, /guilhem\/jev-ci-selector@v0\.1\.0/);
+    assert.doesNotMatch(source, /not a claim that the tag has been published/);
+  }
+});
+
 test('static ci-required rejects planner, plan-shape, selected-job, and dependency failures', () => {
   const workflow = readWorkflow('static-jobs');
   const tasks = taskIds(readTasks('static-jobs'));

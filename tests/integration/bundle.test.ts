@@ -92,6 +92,16 @@ test('distributed bundle runs against real Git objects, publishes shadow/enforce
     const defaultMode = await run({ INPUT_MODE: '' });
     assert.equal(defaultMode.result.status, 0);
     assert.equal(defaultMode.outputs.helm, 'false');
+    await mkdir(join(root, 'summary-directory'));
+    const summaryUnavailable = await run({
+      GITHUB_STEP_SUMMARY: join(root, 'summary-directory'),
+      INPUT_MODE: 'shadow',
+      'INPUT_API-KEY': '',
+    });
+    assert.equal(summaryUnavailable.result.status, 0, summaryUnavailable.result.stdout + summaryUnavailable.result.stderr);
+    assert.equal(summaryUnavailable.outputs.status, 'bypassed');
+    assert.equal(summaryUnavailable.outputs.helm, 'true');
+    assert.equal(summaryUnavailable.outputs['has-tasks'], 'true');
     const empty = await run({ INPUT_TASKS: stringify({ helm: tasks.helm }), INPUT_MODE: 'enforce',
       FIXTURE_RESPONSE: JSON.stringify({ model: 'jev-1.13.0', answers: { helm: { type: 'noul', noul: 0 } }, usage: { input_tokens: 10, output_tokens: 1 } }) });
     assert.equal(empty.result.status, 0);

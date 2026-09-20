@@ -70,6 +70,9 @@ const MAX_FILE_BYTES = 1024 * 1024;
 const MAX_METADATA_BYTES = 4 * 1024 * 1024;
 const MAX_BLOB_BYTES = 16 * 1024 * 1024;
 const HISTORY_DEEPEN_STEPS = [32, 128, 512, 2048];
+const GIT_TIMEOUT_MS = 120_000;
+const COMPLETE_HISTORY_TIMEOUT_MS = 300_000;
+const TERMINATION_GRACE_MS = 1_000;
 
 function safeRemoteUrl(remoteUrl: string): boolean {
   try {
@@ -439,11 +442,7 @@ export class GitRepository {
   async dispose(): Promise<void> {
     if (this.disposed) return;
     this.disposed = true;
-    try {
-      await rm(this.workRoot, { recursive: true, force: true });
-    } catch {
-      throw new ChangeError('git-read-failed');
-    }
+    await GitRepository.removeTemporaryDirectory(this.workRoot).catch(() => undefined);
   }
 
   private ensureOpen(): void {
@@ -498,7 +497,7 @@ export class GitRepository {
         this.remoteUrl,
         baseSha,
         headSha,
-      ]);
+      ], undefined, COMPLETE_HISTORY_TIMEOUT_MS);
     } catch { /* Try the exact object IDs with a complete depth below. */ }
     if (!(await this.isShallowRepository())) return;
     try {
@@ -511,7 +510,7 @@ export class GitRepository {
         this.remoteUrl,
         baseSha,
         headSha,
-      ]);
+      ], undefined, COMPLETE_HISTORY_TIMEOUT_MS);
     } catch {
       throw new ChangeError('git-fetch-failed');
     }
@@ -557,7 +556,6 @@ export class GitRepository {
       config.unshift(['http.extraheader', `Authorization: Basic ${basic}`]);
     }
     environment.GIT_CONFIG_NOSYSTEM = '1';
-    environment.GIT_CONFIG_NOGLOBAL = '1';
     environment.GIT_CONFIG_SYSTEM = '/dev/null';
     environment.GIT_CONFIG_GLOBAL = '/dev/null';
     environment.GIT_ATTR_NOSYSTEM = '1';
@@ -580,46 +578,88 @@ export class GitRepository {
     env: NodeJS.ProcessEnv,
     args: string[],
     maxStdoutBytes?: number,
+    timeoutMs = GIT_TIMEOUT_MS,
   ): Promise<Buffer> {
     return new Promise((resolve, reject) => {
       let child;
       try {
-        child = spawn('git', args, { cwd, env, stdio: ['ignore', 'pipe', 'ignore'] });
+        child = spawn('git', args, {
+          cwd,
+          env,
+          stdio: ['ignore', 'pipe', 'ignore'],
+          detached: process.platform !== 'win32',
+        });
       } catch {
         reject(new GitCommandError('spawn failed'));
         return;
       }
       const chunks: Buffer[] = [];
       let bytes = 0;
-      let outputLimited = false;
+      let termination: 'output-limit' | 'timeout' | undefined;
       let settled = false;
+      let timeoutHandle: NodeJS.Timeout | undefined;
+      let killHandle: NodeJS.Timeout | undefined;
+
+      const clearTimers = () => {
+        if (timeoutHandle) clearTimeout(timeoutHandle);
+        if (killHandle) clearTimeout(killHandle);
+      };
+      const sendSignal = (signal: NodeJS.Signals) => {
+        if (child.pid === undefined) return;
+        if (process.platform !== 'win32') {
+          try {
+            process.kill(-child.pid, signal);
+            return;
+          } catch { /* Fall through to the direct child on races or unsupported process groups. */ }
+        }
+        try { child.kill(signal); } catch { /* The child may have exited already. */ }
+      };
+      const terminate = (reason: 'output-limit' | 'timeout') => {
+        if (termination || settled) return;
+        termination = reason;
+        sendSignal('SIGTERM');
+        killHandle = setTimeout(() => {
+          if (!settled) sendSignal('SIGKILL');
+        }, TERMINATION_GRACE_MS);
+      };
+      const finish = (error?: Error, value?: Buffer) => {
+        if (settled) return;
+        settled = true;
+        clearTimers();
+        if (error) reject(error);
+        else resolve(value ?? Buffer.alloc(0));
+      };
+
+      timeoutHandle = setTimeout(() => terminate('timeout'), Math.max(1, timeoutMs));
       child.stdout.on('data', (chunk: Buffer) => {
-        if (outputLimited) return;
+        if (termination) return;
         bytes += chunk.length;
         if (maxStdoutBytes !== undefined && bytes > maxStdoutBytes) {
-          outputLimited = true;
-          child.kill('SIGTERM');
+          terminate('output-limit');
           return;
         }
         chunks.push(chunk);
       });
       child.once('error', () => {
         if (!settled) {
-          settled = true;
-          reject(new GitCommandError('git failed'));
+          finish(termination === 'timeout'
+            ? new GitCommandError('git timed out')
+            : termination === 'output-limit'
+              ? new OutputLimitError('output limit')
+              : new GitCommandError('git failed'));
         }
       });
       child.once('close', (code) => {
         if (settled) return;
-        settled = true;
-        if (outputLimited) {
-          reject(new OutputLimitError('output limit'));
-        } else if (code !== 0) {
-          reject(new GitCommandError('git failed'));
-        } else {
-          resolve(Buffer.concat(chunks));
-        }
+        if (termination === 'timeout') finish(new GitCommandError('git timed out'));
+        else if (termination === 'output-limit') finish(new OutputLimitError('output limit'));
+        else if (code !== 0) finish(new GitCommandError('git failed'));
+        else finish(undefined, Buffer.concat(chunks));
       });
     });
   }
+
+  private static readonly removeTemporaryDirectory = async (path: string): Promise<void> => {
+    await rm(path, { recursive: true, force: true });
+  };
 }

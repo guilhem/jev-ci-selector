@@ -43,7 +43,11 @@ async function main(): Promise<void> {
   await writeFile(reportPath, JSON.stringify(report, null, 2) + '\n', { mode: 0o600 });
   // Publish only after the complete, validated report has been persisted.
   for (const [name, value] of Object.entries(actionOutputs(plan, context.testedSha, reportPath))) core.setOutput(name, value);
-  await core.summary.addRaw(summary(report)).write();
+  try {
+    await core.summary.addRaw(summary(report)).write();
+  } catch {
+    core.warning('summary-unavailable');
+  }
   core.info(`jev-ci-selector: ${plan.status}, ${plan.selected.length}/${Object.keys(plan.tasks).length} tasks (${plan.mode})`);
 }
 void main().catch(error => {

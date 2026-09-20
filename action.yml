@@ -1,5 +1,8 @@
 name: jev-ci-selector
 description: Select CI tasks from their verification scope using deterministic rules and Jev.
+branding:
+  icon: filter
+  color: purple
 inputs:
   tasks:
     description: YAML mapping of task IDs to objects with a description and optional jobs, context_files, always and force_paths.
