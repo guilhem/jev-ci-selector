@@ -2,7 +2,6 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { InputError, actionFailureMessage } from '../../src/input-error.js';
-import { ConfigError } from '../../src/config.js';
 import { resolveJevApi } from '../../src/jev.js';
 import { planChange, type Inputs, type Context } from '../../src/planner.js';
 
@@ -16,12 +15,10 @@ test('public diagnostics use fixed fields and constraints, never raw errors', ()
     new InputError('SECRET-SENTINEL' as never)]) {
     assert.equal(actionFailureMessage(error), 'jev-ci-selector: planner failed; CI must reject this run.');
   }
-  const config = new ConfigError();
-  config.message = 'SECRET-SENTINEL';
-  assert.equal(actionFailureMessage(config), 'jev-ci-selector: catalog unavailable or invalid; no plan published.');
+
 });
 
-test('API input errors preserve the legacy message and distinguish URL and model', () => {
+test('API input errors use a safe code and distinguish URL and model', () => {
   for (const [options, field] of [
     [{ apiBaseUrl: 'https://user:SECRET-SENTINEL@api.test' }, 'api-base-url'],
     [{ apiBaseUrl: 'SECRET-SENTINEL' }, 'api-base-url'],
@@ -38,9 +35,11 @@ test('API input errors preserve the legacy message and distinguish URL and model
 });
 
 test('planner identifies invalid inputs before repository access', async () => {
-  const inputs: Inputs = { config: '.github/task-routing.yaml', mode: 'shadow', githubToken: '', apiKey: '',
+  const inputs: Inputs = { model: 'jev-1.13.0', skip_below: 0.05, tasks: {}, mode: 'shadow', githubToken: '', apiKey: '',
     allowExternalContext: false, forceAll: false, timeoutMs: 1000, maxDiffBytes: 65536 };
   for (const [override, field] of [
+    [{ tasks: { invalid: {} } }, 'tasks'], [{ model: 'SECRET-SENTINEL' }, 'model'],
+    [{ skip_below: NaN }, 'skip-below'], [{ skip_below: -0.1 }, 'skip-below'],
     [{ mode: 'SECRET-SENTINEL' }, 'mode'], [{ testedRef: 'SECRET-SENTINEL' }, 'tested-ref'],
     [{ timeoutMs: 2147483648 }, 'timeout-ms'], [{ timeoutMs: 0 }, 'timeout-ms'],
     [{ maxDiffBytes: Number.MAX_SAFE_INTEGER + 1 }, 'max-diff-bytes'],
@@ -61,14 +60,18 @@ test('planner identifies invalid inputs before repository access', async () => {
   }
 });
 
-test('action prints safe diagnostics for malformed enum, boolean and integer inputs', () => {
-  for (const field of ['mode', 'tested-ref', 'allow-external-context', 'force-all', 'timeout-ms', 'max-diff-bytes']) {
+test('action validates all inputs before manual network access and prints safe diagnostics', () => {
+  for (const field of ['mode', 'tested-ref', 'allow-external-context', 'force-all', 'timeout-ms', 'max-diff-bytes', 'tasks', 'model', 'skip-below']) {
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('INPUT_')));
+    env.INPUT_TASKS = '{}';
+    env.GITHUB_EVENT_NAME = 'workflow_dispatch';
+    env['INPUT_PULL-REQUEST'] = '42';
     env['INPUT_' + field.toUpperCase()] = 'SECRET-SENTINEL';
-    const result = spawnSync(process.execPath, ['--import', 'tsx', 'src/action.ts'], { env, encoding: 'utf8' });
+    const result = spawnSync(process.execPath, ['--import', 'tsx', '--input-type=module', '--eval', `globalThis.fetch = async () => { console.log('NETWORK-ACCESSED'); throw new Error('network forbidden'); }; await import('./src/action.ts');`], { env, encoding: 'utf8' });
     assert.equal(result.status, 1, result.stderr);
     assert.match(result.stdout, new RegExp('invalid input "' + field + '"; expected '));
     assert.ok(!(result.stdout + result.stderr).includes('SECRET-SENTINEL'));
     assert.ok(!result.stdout.includes('::set-output'));
+    assert.ok(!result.stdout.includes('NETWORK-ACCESSED'));
   }
 });

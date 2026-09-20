@@ -25,8 +25,68 @@ jobs:
         id: select
         uses: guilhem/jev-ci-selector@v0.1.0
         with:
-          config: .github/task-routing.yaml
-          mode: shadow
+          tasks: |
+            build:
+              description: Runs the compiled Go package checks.
+              jobs:
+                - workflow: .github/workflows/ci.yml
+                  job: tasks
+              force_paths:
+                - .github/**
+                - ci/**
+                - go.mod
+                - go.sum
+            e2e_network:
+              description: Runs the network end-to-end checks.
+              jobs:
+                - workflow: .github/workflows/ci.yml
+                  job: tasks
+              force_paths:
+                - .github/**
+                - ci/**
+                - go.mod
+                - go.sum
+            e2e_upgrade:
+              description: Runs the upgrade path checks.
+              jobs:
+                - workflow: .github/workflows/ci.yml
+                  job: tasks
+              force_paths:
+                - .github/**
+                - ci/**
+                - go.mod
+                - go.sum
+            helm:
+              description: Runs Helm chart validation.
+              jobs:
+                - workflow: .github/workflows/ci.yml
+                  job: tasks
+              force_paths:
+                - .github/**
+                - ci/**
+                - go.mod
+                - go.sum
+                - charts/**/values.schema.json
+            lint:
+              description: Runs Go static-analysis checks.
+              jobs:
+                - workflow: .github/workflows/ci.yml
+                  job: tasks
+              force_paths:
+                - .github/**
+                - ci/**
+                - go.mod
+                - go.sum
+            unit:
+              description: Runs package behavior tests.
+              jobs:
+                - workflow: .github/workflows/ci.yml
+                  job: tasks
+              force_paths:
+                - .github/**
+                - ci/**
+                - go.mod
+                - go.sum
           github-token: ${{ secrets.GITHUB_TOKEN }}
           api-key: ${{ secrets.JEV_API_KEY }}
           # Explicit authorization to send the diff, paths, and task questions
@@ -43,27 +103,11 @@ jobs:
           retention-days: 14
           if-no-files-found: error
 
-  ci-contract:
-    needs: plan
-    if: ${{ always() && needs.plan.result == 'success' }}
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-        with:
-          persist-credentials: false
-          ref: ${{ needs.plan.outputs.tested-sha }}
-          fetch-depth: 1
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
-        with:
-          node-version: '24'
-      # This check also runs when the proposed task matrix is empty.
-      - run: node .github/ci-selector-validate.cjs .
-
   tasks:
-    needs: [plan, ci-contract]
+    needs: [plan]
     # This condition is evaluated before matrix expansion. Empty selections
     # therefore skip this job cleanly and are accepted by ci-required.
-    if: ${{ always() && needs.plan.result == 'success' && needs.ci-contract.result == 'success' && needs.plan.outputs.has-tasks == 'true' }}
+    if: ${{ always() && needs.plan.result == 'success' && needs.plan.outputs.has-tasks == 'true' }}
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
@@ -93,11 +137,11 @@ jobs:
 
   ci-required:
     if: ${{ always() }}
-    needs: [plan, ci-contract, tasks]
+    needs: [plan, tasks]
     runs-on: ubuntu-latest
     env:
       EXPECTED_TASKS: build,e2e_network,e2e_upgrade,helm,lint,unit
-      EXPECTED_NEEDS: ci-contract,plan,tasks
+      EXPECTED_NEEDS: plan,tasks
       PLAN_RESULT: ${{ needs.plan.result }}
       PLAN_RUN: ${{ needs.plan.outputs.run }}
       PLAN_SELECTED: ${{ needs.plan.outputs.selected }}
@@ -128,7 +172,7 @@ jobs:
           if (!process.env.PLAN_TESTED_SHA || process.env.PLAN_TESTED_SHA !== process.env.EXPECTED_TESTED_SHA) fail('tested-sha is not the event SHA');
           const runKeysValid = runValue !== null && typeof runValue === 'object' && !Array.isArray(runValue) && JSON.stringify(Object.keys(run).sort()) === JSON.stringify(expected);
           const runValuesValid = expected.every((task) => typeof run[task] === 'boolean');
-          if (!runKeysValid || !runValuesValid) fail('run shape diverges from catalog');
+          if (!runKeysValid || !runValuesValid) fail('run shape diverges from tasks');
           const selectedShapeValid = Array.isArray(selectedValue) && selected.every((task) => typeof task === 'string' && expected.includes(task)) && new Set(selected).size === selected.length;
           if (!selectedShapeValid || JSON.stringify(selected) !== JSON.stringify(sorted(selected)) || JSON.stringify(selected) !== JSON.stringify(expected.filter((task) => run[task] === true))) fail('selected is inconsistent with run');
           if (!['true', 'false'].includes(process.env.PLAN_HAS_TASKS ?? '') || (process.env.PLAN_HAS_TASKS === 'true') !== (selected.length > 0)) fail('has-tasks is inconsistent');
@@ -136,8 +180,7 @@ jobs:
           const matrixShapeValid = JSON.stringify(Object.keys(matrix).sort()) === '["include"]' && Array.isArray(matrix.include) && matrixItems.every((item) => item && typeof item === 'object' && !Array.isArray(item) && JSON.stringify(Object.keys(item).sort()) === '["task"]' && typeof item.task === 'string' && expected.includes(item.task)) && new Set(matrixItems.map((item) => item.task)).size === matrixItems.length;
           if (!matrixShapeValid || JSON.stringify(matrixItems.map((item) => item.task)) !== JSON.stringify(selected)) fail('matrix is inconsistent with selected');
           if (['bypassed', 'fallback'].includes(process.env.PLAN_STATUS ?? '') && expected.some((task) => run[task] !== true)) fail('bypassed or fallback plan must select every task');
-          if (JSON.stringify(Object.keys(needs ?? {}).sort()) !== JSON.stringify(['ci-contract', 'plan', 'tasks'])) fail('final needs IDs diverge from declared jobs');
-          if (needs['ci-contract']?.result !== 'success') fail('catalog/workflow validation did not succeed');
+          if (JSON.stringify(Object.keys(needs ?? {}).sort()) !== JSON.stringify(['plan', 'tasks'])) fail('final needs IDs diverge from declared jobs');
           const matrixResult = needs.tasks?.result;
           if (selected.length === 0) {
             if (matrixResult !== 'skipped') fail(`empty matrix result is ${matrixResult ?? 'missing'}`);

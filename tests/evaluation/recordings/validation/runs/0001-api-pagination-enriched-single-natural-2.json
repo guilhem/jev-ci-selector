@@ -3,7 +3,7 @@
   "runId": "api-pagination-enriched-single-natural-2",
   "source": {
     "caseId": "api-pagination",
-    "caseFingerprint": "c990b1e8dc28e44e008c56515605123b904e22b61db5f55fa17b133c2e22fdb3",
+    "caseFingerprint": "b4c863520d61982a24a2e22c3377b2f7e863eddecd79607cce5b37667b60a494",
     "diffSha256": "9ce50d0298cc29d8db6f807d7209c60fa0e1747f754cad6eaf80b0fb65e1fdf5",
     "baseSha": "86d45fa46bdc4425f86649b78c22e631800c45d1",
     "headSha": "ad4325dc1c1be9f43ffae277a30237f482f56563",
@@ -464,7 +464,6 @@
       "tasks": {
         "proposed": {
           "api": {
-            "probability": null,
             "proposed_run": true,
             "run": true,
             "reasons": [
@@ -472,7 +471,6 @@
             ]
           },
           "schema": {
-            "probability": null,
             "proposed_run": true,
             "run": true,
             "reasons": [
@@ -480,7 +478,6 @@
             ]
           },
           "ui": {
-            "probability": null,
             "proposed_run": true,
             "run": true,
             "reasons": [
@@ -488,7 +485,6 @@
             ]
           },
           "unit": {
-            "probability": null,
             "proposed_run": true,
             "run": true,
             "reasons": [
@@ -498,7 +494,6 @@
         },
         "effective": {
           "api": {
-            "probability": null,
             "proposed_run": true,
             "run": true,
             "reasons": [
@@ -507,7 +502,6 @@
             ]
           },
           "schema": {
-            "probability": null,
             "proposed_run": true,
             "run": true,
             "reasons": [
@@ -516,7 +510,6 @@
             ]
           },
           "ui": {
-            "probability": null,
             "proposed_run": true,
             "run": true,
             "reasons": [
@@ -525,7 +518,6 @@
             ]
           },
           "unit": {
-            "probability": null,
             "proposed_run": true,
             "run": true,
             "reasons": [
@@ -596,7 +588,6 @@
       "tasks": {
         "proposed": {
           "api": {
-            "probability": null,
             "proposed_run": true,
             "run": true,
             "reasons": [
@@ -604,7 +595,6 @@
             ]
           },
           "schema": {
-            "probability": null,
             "proposed_run": false,
             "run": false,
             "reasons": [
@@ -612,7 +602,6 @@
             ]
           },
           "ui": {
-            "probability": null,
             "proposed_run": true,
             "run": true,
             "reasons": [
@@ -620,7 +609,6 @@
             ]
           },
           "unit": {
-            "probability": null,
             "proposed_run": false,
             "run": false,
             "reasons": [
@@ -630,7 +618,6 @@
         },
         "effective": {
           "api": {
-            "probability": null,
             "proposed_run": true,
             "run": true,
             "reasons": [
@@ -639,7 +626,6 @@
             ]
           },
           "schema": {
-            "probability": null,
             "proposed_run": false,
             "run": true,
             "reasons": [
@@ -648,7 +634,6 @@
             ]
           },
           "ui": {
-            "probability": null,
             "proposed_run": true,
             "run": true,
             "reasons": [
@@ -657,7 +642,6 @@
             ]
           },
           "unit": {
-            "probability": null,
             "proposed_run": false,
             "run": true,
             "reasons": [
@@ -728,7 +712,6 @@
       "tasks": {
         "proposed": {
           "api": {
-            "probability": null,
             "proposed_run": true,
             "run": true,
             "reasons": [
@@ -736,7 +719,6 @@
             ]
           },
           "schema": {
-            "probability": null,
             "proposed_run": false,
             "run": false,
             "reasons": [
@@ -744,7 +726,6 @@
             ]
           },
           "ui": {
-            "probability": null,
             "proposed_run": false,
             "run": false,
             "reasons": [
@@ -752,7 +733,6 @@
             ]
           },
           "unit": {
-            "probability": null,
             "proposed_run": false,
             "run": false,
             "reasons": [
@@ -762,7 +742,6 @@
         },
         "effective": {
           "api": {
-            "probability": null,
             "proposed_run": true,
             "run": true,
             "reasons": [
@@ -771,7 +750,6 @@
             ]
           },
           "schema": {
-            "probability": null,
             "proposed_run": false,
             "run": true,
             "reasons": [
@@ -780,7 +758,6 @@
             ]
           },
           "ui": {
-            "probability": null,
             "proposed_run": false,
             "run": true,
             "reasons": [
@@ -789,7 +766,6 @@
             ]
           },
           "unit": {
-            "probability": null,
             "proposed_run": false,
             "run": true,
             "reasons": [
@@ -860,7 +836,6 @@
       "tasks": {
         "proposed": {
           "api": {
-            "probability": null,
             "proposed_run": true,
             "run": true,
             "reasons": [
@@ -868,7 +843,6 @@
             ]
           },
           "schema": {
-            "probability": null,
             "proposed_run": false,
             "run": false,
             "reasons": [
@@ -876,7 +850,6 @@
             ]
           },
           "ui": {
-            "probability": null,
             "proposed_run": false,
             "run": false,
             "reasons": [
@@ -884,7 +857,6 @@
             ]
           },
           "unit": {
-            "probability": null,
             "proposed_run": false,
             "run": false,
             "reasons": [
@@ -894,7 +866,6 @@
         },
         "effective": {
           "api": {
-            "probability": null,
             "proposed_run": true,
             "run": true,
             "reasons": [
@@ -903,7 +874,6 @@
             ]
           },
           "schema": {
-            "probability": null,
             "proposed_run": false,
             "run": true,
             "reasons": [
@@ -912,7 +882,6 @@
             ]
           },
           "ui": {
-            "probability": null,
             "proposed_run": false,
             "run": true,
             "reasons": [
@@ -921,7 +890,6 @@
             ]
           },
           "unit": {
-            "probability": null,
             "proposed_run": false,
             "run": true,
             "reasons": [
@@ -992,7 +960,6 @@
       "tasks": {
         "proposed": {
           "api": {
-            "probability": null,
             "proposed_run": true,
             "run": true,
             "reasons": [
@@ -1000,7 +967,6 @@
             ]
           },
           "schema": {
-            "probability": null,
             "proposed_run": false,
             "run": false,
             "reasons": [
@@ -1008,7 +974,6 @@
             ]
           },
           "ui": {
-            "probability": null,
             "proposed_run": false,
             "run": false,
             "reasons": [
@@ -1016,7 +981,6 @@
             ]
           },
           "unit": {
-            "probability": null,
             "proposed_run": false,
             "run": false,
             "reasons": [
@@ -1026,7 +990,6 @@
         },
         "effective": {
           "api": {
-            "probability": null,
             "proposed_run": true,
             "run": true,
             "reasons": [
@@ -1035,7 +998,6 @@
             ]
           },
           "schema": {
-            "probability": null,
             "proposed_run": false,
             "run": true,
             "reasons": [
@@ -1044,7 +1006,6 @@
             ]
           },
           "ui": {
-            "probability": null,
             "proposed_run": false,
             "run": true,
             "reasons": [
@@ -1053,7 +1014,6 @@
             ]
           },
           "unit": {
-            "probability": null,
             "proposed_run": false,
             "run": true,
             "reasons": [

@@ -14,7 +14,17 @@ jobs:
         id: select
         uses: guilhem/jev-ci-selector@v0.1.0
         with:
-          config: .github/task-routing.yaml
+          tasks: |
+            build:
+              description: Runs the compiled Go package checks.
+              jobs:
+                - workflow: .github/workflows/ci.yml
+                  job: build
+            unit:
+              description: Runs package behavior tests.
+              jobs:
+                - workflow: .github/workflows/ci.yml
+                  job: unit
           mode: shadow
           github-token: ${{ secrets.GITHUB_TOKEN }}
           api-key: ${{ secrets.JEV_API_KEY }}

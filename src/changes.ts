@@ -66,7 +66,7 @@ class OutputLimitError extends Error {}
 const SHA_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
 const ZERO_SHA_PATTERN = /^(?:0{40}|0{64})$/;
 const utf8Decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
-const MAX_CONFIG_BYTES = 1024 * 1024;
+const MAX_FILE_BYTES = 1024 * 1024;
 const MAX_METADATA_BYTES = 4 * 1024 * 1024;
 const MAX_BLOB_BYTES = 16 * 1024 * 1024;
 const HISTORY_DEEPEN_STEPS = [32, 128, 512, 2048];
@@ -274,7 +274,7 @@ export class GitRepository {
         this.repoPath,
         this.env,
         ['cat-file', 'blob', `${sha}:${path}`],
-        MAX_CONFIG_BYTES,
+        MAX_FILE_BYTES,
       );
     } catch {
       throw new ChangeError('git-read-failed');
@@ -295,7 +295,7 @@ export class GitRepository {
       throw new ChangeError('sha-incoherent');
     }
 
-    // The caller reads its base configuration before this point. Keeping the
+    // The caller fetches the immutable base before this point. Keeping the
     // base fetch separate means a missing base cannot silently turn into a
     // different remote branch during collection.
     if (!(await this.hasCommit(baseSha))) throw new ChangeError('sha-incoherent');

@@ -33,8 +33,71 @@ jobs:
         id: select
         uses: guilhem/jev-ci-selector@v0.1.0
         with:
-          config: .github/task-routing.yaml
-          mode: shadow
+          tasks: |
+            build:
+              description: Runs the compiled Go package checks.
+              jobs:
+                - workflow: .github/workflows/ci.yml
+                  job: build
+              always: true
+              force_paths:
+                - .github/**
+                - ci/**
+                - go.mod
+                - go.sum
+            e2e_network:
+              description: Runs the network end-to-end checks.
+              jobs:
+                - workflow: .github/workflows/ci.yml
+                  job: e2e_network
+              force_paths:
+                - .github/**
+                - ci/**
+                - go.mod
+                - go.sum
+            e2e_upgrade:
+              description: Runs the upgrade path checks.
+              jobs:
+                - workflow: .github/workflows/ci.yml
+                  job: e2e_upgrade
+              force_paths:
+                - .github/**
+                - ci/**
+                - go.mod
+                - go.sum
+            helm:
+              description: Runs Helm chart validation.
+              jobs:
+                - workflow: .github/workflows/ci.yml
+                  job: helm
+              force_paths:
+                - .github/**
+                - ci/**
+                - go.mod
+                - go.sum
+                - charts/**/values.schema.json
+            lint:
+              description: Runs Go static-analysis checks.
+              jobs:
+                - workflow: .github/workflows/ci.yml
+                  job: lint
+              always: true
+              force_paths:
+                - .github/**
+                - ci/**
+                - go.mod
+                - go.sum
+            unit:
+              description: Runs package behavior tests.
+              jobs:
+                - workflow: .github/workflows/ci.yml
+                  job: unit
+              always: true
+              force_paths:
+                - .github/**
+                - ci/**
+                - go.mod
+                - go.sum
           github-token: ${{ secrets.GITHUB_TOKEN }}
           api-key: ${{ secrets.JEV_API_KEY }}
           # This authorizes sending the diff, paths, and task questions to
@@ -110,12 +173,6 @@ jobs:
           ref: ${{ needs.plan.outputs.tested-sha }}
           fetch-depth: 1
           persist-credentials: false
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
-        with:
-          node-version: '24'
-      # Copy dist/validate.cjs to this path with the catalog and workflow.
-      # lint is mandatory, so ci-required cannot pass if the contract drifts.
-      - run: node .github/ci-selector-validate.cjs .
       - run: go vet ./...
 
   unit:
@@ -170,7 +227,7 @@ jobs:
           if (!process.env.PLAN_TESTED_SHA || process.env.PLAN_TESTED_SHA !== process.env.EXPECTED_TESTED_SHA) fail('tested-sha is not the event SHA');
           const runKeysValid = runValue !== null && typeof runValue === 'object' && !Array.isArray(runValue) && JSON.stringify(Object.keys(run).sort()) === JSON.stringify(expected);
           const runValuesValid = expected.every((task) => typeof run[task] === 'boolean');
-          if (!runKeysValid || !runValuesValid) fail('run shape diverges from catalog');
+          if (!runKeysValid || !runValuesValid) fail('run shape diverges from tasks');
           const named = needs.plan?.outputs ?? {};
           if (expected.some((task) => !['true', 'false'].includes(named[task]))) fail('named task outputs must be exact boolean strings');
           if (expected.some((task) => (named[task] === 'true') !== run[task])) fail('named task outputs diverge from run');

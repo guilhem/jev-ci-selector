@@ -4,12 +4,14 @@ import type { Observation } from './observations.js';
 import type { ExecutionPlan } from './policy.js';
 import type { Usage } from './jev.js';
 
-interface ReportFields {
-  config_sha: string;
+export interface Report {
+  version: 5;
+  metadata_sha: string;
   base_sha: string;
   head_sha: string;
   tested_sha: string;
-  catalog_hash: string;
+  selection_hash: string;
+  skip_below: number;
   diff_hash: string | null;
   diff_bytes: number | null;
   changed_path_count: number | null;
@@ -18,13 +20,13 @@ interface ReportFields {
   durations_ms: { collection: number; jev: number | null; total: number };
   usage: Usage | null;
   tasks: ExecutionPlan['tasks'];
+  tested_ref: 'head' | 'merge';
+  diff_base_sha: string | null;
+  job_metadata: Record<string, unknown>;
+  observation_error: string | null;
+  model: { requested: string; expected: string; returned: string | null };
+  observation: Observation | null;
 }
-export type Report = ReportFields & (
-  { version: 1; model: { requested: string; returned: string | null } } |
-  { version: 2; model: { requested: string; expected: string; returned: string | null } } |
-  { version: 3; model: { requested: string; expected: string; returned: string | null }; observation: Observation | null } |
-  { version: 4; tested_ref: 'head' | 'merge'; diff_base_sha: string | null; job_metadata: Record<string, unknown>; observation_error: string | null; model: { requested: string; expected: string; returned: string | null }; observation: Observation | null }
-);
 const validate = new Ajv({ strict: true }).compile(schema);
 export function validateReport(value: unknown): asserts value is Report {
   if (!validate(value)) throw new Error('invalid-report');
@@ -58,16 +60,16 @@ function observationSummary(observation: Observation | null): string[] {
 }
 
 export function summary(report: Report): string {
-  const rows = Object.entries(report.tasks).map(([id, task]) =>
-    `| ${id} | ${task.probability ?? '—'} | ${task.proposed_run ?? '—'} | ${task.run} | ${task.reasons.join(', ')} |`);
-  const observation = report.version >= 3 && 'observation' in report ? observationSummary(report.observation) : [];
+  const rows = Object.entries(report.tasks).sort(([a], [b]) => a.localeCompare(b)).map(([id, task]) =>
+    `| ${id} | ${task.run ? 'Run' : 'Skip'} | ${task.proposed_run === null ? '—' : task.proposed_run ? 'Run' : 'Skip'} | ${task.reasons.join(', ')} |`);
   return [
     `### jev-ci-selector: ${report.status} (${report.mode})`,
-    `Policy status: ${report.status} (${report.mode})`,
+    '', '| Task | Effective | Proposed | Reasons |',
+    '| --- | --- | --- | --- |', ...rows, '',
+    '<details>', '<summary>Selection details</summary>', '',
     `Tested commit: \`${report.tested_sha}\``, '',
-    '| Task | Policy probability | Proposed | Effective | Reasons |',
-    '| --- | ---: | --- | --- | --- |', ...rows, '',
-    ...observation, '',
-    'Probabilities are experimental selection signals, not guarantees about test outcomes.', '',
+    ...observationSummary(report.observation), '',
+    'Scores are experimental selection signals, not guarantees about test outcomes.', '',
+    '</details>', '',
   ].join('\n');
 }

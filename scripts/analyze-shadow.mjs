@@ -32,7 +32,7 @@ export function analyzeShadow(report, results) {
     }
   }
   return {
-    tested_sha: report.tested_sha, catalog_hash: report.catalog_hash,
+    tested_sha: report.tested_sha, selection_hash: report.selection_hash,
     status: report.status, fallback: report.status === 'fallback',
     tasks_total: ids.length, tasks_would_skip: avoided, duration_ms_would_skip: avoidedDurationMs,
     failures_would_miss: missed, skipped_or_cancelled_would_skip: unobserved,

@@ -10,7 +10,7 @@ import { decisionsFromObservation } from '../../src/observations.js';
 import { selectTasks } from '../../src/policy.js';
 import { chooseSelection, createLiveTransport, createReplayTransport, corpusFingerprint, evaluateRecord, loadCase, readCorpus, replayCampaign, metricsForLabels, replayComparable, writeJson, type EvaluationRecord, type ReplayCall } from '../evaluation/evaluation.js';
 import { compareCampaignData } from '../evaluation/comparison.js';
-import { catalog } from '../fixtures/catalog.js';
+import type { ResolvedSelection } from '../../src/tasks.js';
 import { evaluateJev, JevError } from '../../src/jev.js';
 
 test('replay transport rejects stale serialized SDK bodies before returning a response', async () => {
@@ -31,8 +31,8 @@ test('replay comparison strips replay-only call bookkeeping', () => {
 });
 
 test('replay preserves a recorded timeout as jev-timeout after SDK error conversion', async () => {
-  const value = catalog(); value.tasks = { check: { question: 'check' } };
-  const input = { catalog: value, taskIds: ['check'], apiBaseUrl: 'https://api.typesafe.ai', apiModel: 'jev-1.13.0', apiKey: 'secret', timeoutMs: 20,
+  const value: ResolvedSelection = { model: 'jev-1.13.0', skip_below: 0.05, tasks: { check: { evidence: { description: 'check' } } } };
+  const input = { selection: value, taskIds: ['check'], apiBaseUrl: 'https://api.typesafe.ai', apiModel: 'jev-1.13.0', apiKey: 'secret', timeoutMs: 20,
     state: { base_sha: 'a'.repeat(40), head_sha: 'b'.repeat(40), tested_sha: 'b'.repeat(40), changed_paths: ['source.txt'], diff: '' } };
   const live = createLiveTransport(async () => Response.json({ model: 'jev-1.13.0', answers: { check: { type: 'noul', noul: 0.1 } }, usage: { input_tokens: 1, output_tokens: 1 } }));
   await evaluateJev(input, live.fetch);
@@ -81,13 +81,13 @@ test('campaign comparison reports deltas only for comparable settings', () => {
 });
 
 test('threshold decisions compose raw split probabilities through production plans and outputs', () => {
-  const value = catalog(); value.tasks = { check: { question: 'check' } };
+  const value: ResolvedSelection = { model: 'jev-1.13.0', skip_below: 0.05, tasks: { check: { evidence: { description: 'check' } } } };
   const observation = { strategy: 'chunked-diff' as const, status: 'complete' as const, chunks: [
     { index: 0, start_byte: 0, end_byte: 1, diff_hash: 'a', state_hash: 'b', diff_bytes: 1, status: 'completed' as const, probabilities: { 'check::behavior': 0.01, 'check::verification': 0.02 }, model: 'jev-1.13.0', usage: null, duration_ms: 2, error: null },
     { index: 1, start_byte: 1, end_byte: 2, diff_hash: 'c', state_hash: 'd', diff_bytes: 1, status: 'completed' as const, probabilities: { 'check::behavior': 0.01, 'check::verification': 0.4 }, model: 'jev-1.13.0', usage: null, duration_ms: 2, error: null },
   ] };
   const decisions = decisionsFromObservation(observation, ['check'], 0.3, 'split');
-  const plan = selectTasks({ catalog: value, changedPaths: ['src/check.ts'], decisions, mode: 'enforce' });
+  const plan = selectTasks({ selection: value, changedPaths: ['src/check.ts'], decisions, mode: 'enforce' });
   assert.equal(decisions.check, true); assert.equal(plan.tasks.check!.proposed_run, true); assert.deepEqual(actionOutputs(plan, 'a'.repeat(40), 'evaluation-report.json').check, 'true');
   assert.deepEqual(replayComparable({ version: 1, runId: 'r', source: {} as EvaluationRecord['source'], variant: { context: 'description', questionMode: 'split', grouping: 'natural', maxGroupBytes: 1 }, repeat: 1, date: { started: '', finished: '' }, sdk: { package: '', version: '', model: null, requestedModel: null }, calls: [], observation: null, observationError: null, policy: { bypass: false, reason: null }, thresholds: {}, error: null }), replayComparable({ version: 1, runId: 'r', source: {} as EvaluationRecord['source'], variant: { context: 'description', questionMode: 'split', grouping: 'natural', maxGroupBytes: 1 }, repeat: 1, date: { started: 'different', finished: 'different' }, sdk: { package: '', version: '', model: null, requestedModel: null }, calls: [], observation: null, observationError: null, policy: { bypass: false, reason: null }, thresholds: {}, error: null }));
 });
@@ -99,10 +99,10 @@ test('offline replay reuses a captured SDK body and response through the product
     await mkdir(join(root, 'cases', 'smoke', 'base'), { recursive: true });
     await mkdir(join(root, 'snapshots', 'smoke', 'repository', '.github', 'workflows'), { recursive: true });
     await writeFile(join(root, 'cases', 'smoke', 'diff.patch'), 'diff --git a/source.txt b/source.txt\nnew file mode 100644\n--- /dev/null\n+++ b/source.txt\n@@ -0,0 +1 @@\n+source\n');
-    await writeFile(join(root, 'snapshots', 'smoke', 'repository', '.github', 'task-routing.yaml'), stringify({ model: 'jev-1.13.0', skip_below: 0.05, tasks: {
+    await writeFile(join(root, 'snapshots', 'smoke', 'action-inputs.json'), JSON.stringify({ model: 'jev-1.13.0', 'skip-below': '0.05', tasks: stringify({
       unit: { description: 'Does this change affect unit verification?', jobs: [{ workflow: '.github/workflows/ci.yml', job: 'unit' }] },
       docs: { description: 'Does this change affect documentation?', jobs: [{ workflow: '.github/workflows/ci.yml', job: 'docs' }] },
-    }}));
+    }) }));
     await writeFile(join(root, 'snapshots', 'smoke', 'repository', '.github', 'workflows', 'ci.yml'), 'jobs:\n  unit:\n    steps:\n      - run: npm test\n  docs:\n    steps:\n      - run: npm run docs\n');
     await writeFile(join(root, 'snapshots', 'smoke', 'repository', 'package.json'), JSON.stringify({ scripts: { test: 'node test.js', docs: 'node docs.js' } }));
     await writeFile(join(root, 'snapshots', 'smoke', 'external-actions.json'), '{}');
@@ -133,6 +133,11 @@ test('offline replay reuses a captured SDK body and response through the product
       sdk: { package: '@typesafe-ai/sdk', version: record.sdk.version, model: record.sdk.model }, created: '', updated: '', runs: ['runs/run.json'] });
     globalThis.fetch = async () => { throw new Error('replay must stay offline'); };
     assert.deepEqual(await replayCampaign(root, campaign), { checked: 1, stale: 0 });
+    const inputsPath = join(root, 'snapshots', 'smoke', 'action-inputs.json');
+    const inputs = JSON.parse(await readFile(inputsPath, 'utf8'));
+    inputs.model = 'jev-1.13.1';
+    await writeJson(inputsPath, inputs);
+    await assert.rejects(replayCampaign(root, campaign), /replay-stale-request:corpus/);
   } finally {
     globalThis.fetch = originalFetch;
     await rm(root, { recursive: true, force: true });

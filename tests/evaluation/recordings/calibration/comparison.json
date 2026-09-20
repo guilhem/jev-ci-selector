@@ -11,27 +11,27 @@
     "baseline": null,
     "current": {
       "split": "calibration",
-      "corpusFingerprint": "2d786fdc013e91ccb99cff717ad6894993ddca4a89bff5fa9e3142fecc69eb24",
+      "corpusFingerprint": "8051dd8224ef7389a1cdbdacdc01c059427b4905c3ef7f552217e7f4fbcd7239",
       "cases": [
         {
           "id": "button-keyboard",
           "split": "calibration",
-          "caseFingerprint": "12214fdab770c25bc75cb589ce33a556d1f4d728283f06a2b61e0c130fbc488d"
+          "caseFingerprint": "faf62f0bf53a2256c35ec7954cbcc1f65574605f25a28e2d69941b5363caeb82"
         },
         {
           "id": "library-normalization",
           "split": "calibration",
-          "caseFingerprint": "6fe49201692b87b6f205db528c30c1e55288c63e143f3c7102839279611d997c"
+          "caseFingerprint": "a359a89f1755e48f180bbdb64dfa44648cbceff827e0e5692e8ad8c1dc59cc88"
         },
         {
           "id": "schema-nullability",
           "split": "calibration",
-          "caseFingerprint": "6ed5919804f7f9c0e72906d500371ff3b57f3456b56af8096c6e783ce1ff02ca"
+          "caseFingerprint": "553aaf2e4a6af36c01353214768e77ceafebaba271cd9722f2fe246a0c054480"
         },
         {
           "id": "shared-install",
           "split": "calibration",
-          "caseFingerprint": "f785dc7890c45df6e4d3a0230cf3bcbfa5cbfd1c47c13eece03254cc52ea7452"
+          "caseFingerprint": "1619e73d98913b5b8de1eacfb2d23c0730248bb5682128e8ed5c5cc17bef2c22"
         }
       ],
       "variants": [

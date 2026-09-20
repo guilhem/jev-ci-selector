@@ -5,8 +5,8 @@ import { tmpdir } from 'node:os';
 import { join, relative, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 import { execFile } from 'node:child_process';
-import { parseCatalog, type Catalog, type CatalogV1, type RoutingCatalog } from '../../src/config.js';
-import { resolveCatalog, type CatalogMetadata, type ResolveCatalogResult } from '../../src/metadata.js';
+import { parseSelectionInputs, type SelectionDefinition, type ResolvedSelection } from '../../src/tasks.js';
+import { resolveTasks, type SelectionMetadata, type ResolveTasksResult } from '../../src/metadata.js';
 import { actionOutputs } from '../../src/report.js';
 import { globalPathReason, selectTasks, type ExecutionPlan, type ForceAllReason, type TaskDecision } from '../../src/policy.js';
 import { decisionsFromObservation, observeChange, ObservationSizeError, type Observation } from '../../src/observations.js';
@@ -17,7 +17,6 @@ const execFileAsync = promisify(execFile);
 export const THRESHOLDS = [0.05, 0.1, 0.2, 0.3, 0.5] as const;
 export const NATURAL_GROUP_BYTES = 48 * 1024;
 export const PARTITIONED_GROUP_BYTES = 8 * 1024;
-export const DEFAULT_CATALOG_PATH = '.github/task-routing.yaml';
 export const DEFAULT_REPORT_PATH = 'evaluation-report.json';
 
 export type ContextVariant = 'description' | 'enriched';
@@ -52,6 +51,7 @@ export interface LoadedCase {
   snapshotFingerprint: string;
   caseFingerprint: string;
   repositoryRoot: string;
+  actionInputs: Record<string, string>;
   externalActions: Record<string, ExternalAction>;
   baseSha: string;
   headSha: string;
@@ -304,12 +304,15 @@ export async function loadCase(root: string, definition: CorpusCase): Promise<Lo
     const snapshotFingerprint = sha256(canonicalJson({ repository: await directoryFingerprint(repositoryRoot), external: await directoryFingerprint(snapshotPath) }));
     const caseFingerprint = sha256(canonicalJson({ id: definition.id, split: definition.split, expected: definition.expected,
       provenance: definition.provenance, diff: sha256(diff), base: baseFingerprint, snapshot: snapshotFingerprint }));
+    const actionInputsValue = objectFromJson(await readFile(join(snapshotPath, 'action-inputs.json'), 'utf8'), 'invalid-action-inputs');
+    if (Object.values(actionInputsValue).some(value => typeof value !== 'string')) throw new Error('invalid-action-inputs');
+    const actionInputs = actionInputsValue as Record<string, string>;
     const external = await externalActions(snapshotPath);
     const baseSha = shaFromProvenance(definition.provenance, 'base', caseFingerprint.slice(0, 40));
     const headSha = shaFromProvenance(definition.provenance, 'head', sha256(diff).slice(0, 40));
     const testedSha = shaFromProvenance(definition.provenance, 'tested', headSha);
     const metadataCommit = shaFromProvenance(definition.provenance, 'metadataCommit', baseSha);
-    return { definition, diff, changedPaths, baseFingerprint, snapshotFingerprint, caseFingerprint, repositoryRoot,
+    return { definition, diff, changedPaths, baseFingerprint, snapshotFingerprint, caseFingerprint, repositoryRoot, actionInputs,
       externalActions: external, baseSha, headSha, testedSha, metadataCommit };
   } finally { await rm(temporary, { recursive: true, force: true }); }
 }
@@ -326,26 +329,17 @@ export async function corpusFingerprint(corpus: Corpus, loaded: LoadedCase[]): P
   return sha256(canonicalJson({ version: corpus.version, cases: loaded.map(item => ({ id: item.definition.id, split: item.definition.split, fingerprint: item.caseFingerprint })) }));
 }
 
-function cloneCatalog(catalog: CatalogV1, context: ContextVariant): CatalogV1 {
-  if (context === 'enriched') return structuredClone(catalog);
-  const tasks = Object.fromEntries(Object.entries(catalog.tasks).map(([id, task]) => {
-    if (!task.question) return [id, structuredClone(task)];
-    let description = task.question;
-    try {
-      const parsed: unknown = JSON.parse(task.question);
-      if (isRecord(parsed) && typeof parsed.description === 'string') description = parsed.description;
-      else if (typeof parsed === 'string') description = parsed;
-      else if (isRecord(parsed) && isRecord(parsed.job) && typeof parsed.job.id === 'string') description = `GitHub Actions job ${parsed.job.id}`;
-    } catch { /* v1 plain questions are already descriptions. */ }
-    return [id, { ...structuredClone(task), question: JSON.stringify({ description }) }];
-  }));
-  return { ...structuredClone(catalog), tasks };
+function selectionForContext(selection: ResolvedSelection, context: ContextVariant): ResolvedSelection {
+  const result = structuredClone(selection);
+  if (context === 'description') {
+    for (const task of Object.values(result.tasks)) task.evidence = { description: task.evidence.description };
+  }
+  return result;
 }
 
-export async function resolveEvaluationCatalog(loaded: LoadedCase, context: ContextVariant): Promise<{ configured: RoutingCatalog | Catalog; resolved: ResolveCatalogResult; catalog: CatalogV1 }> {
-  const catalogSource = await readFile(join(loaded.repositoryRoot, DEFAULT_CATALOG_PATH), 'utf8');
-  const configured = parseCatalog(catalogSource);
-  const resolved = await resolveCatalog(configured, {
+export async function resolveEvaluationSelection(loaded: LoadedCase, context: ContextVariant): Promise<{ configured: SelectionDefinition; resolved: ResolveTasksResult; selection: ResolvedSelection }> {
+  const configured = parseSelectionInputs(name => loaded.actionInputs[name] ?? '');
+  const resolved = await resolveTasks(configured, {
     repository: String(loaded.definition.provenance.repository ?? loaded.definition.provenance.repo ?? 'snapshot/repository'),
     commit: loaded.metadataCommit,
     readFile: async (_commit, file) => readFile(safePath(loaded.repositoryRoot, file)),
@@ -355,28 +349,18 @@ export async function resolveEvaluationCatalog(loaded: LoadedCase, context: Cont
     },
   });
   const expectedIds = Object.keys(loaded.definition.expected).sort();
-  const resolvedIds = Object.keys(resolved.catalog.tasks).sort();
+  const resolvedIds = Object.keys(resolved.selection.tasks).sort();
   if (expectedIds.length !== resolvedIds.length || expectedIds.some((id, index) => id !== resolvedIds[index])) {
     throw new Error(`corpus-task-label-mismatch:${loaded.definition.id}`);
   }
-  return { configured, resolved, catalog: cloneCatalog(resolved.catalog, context) };
+  return { configured, resolved, selection: selectionForContext(resolved.selection, context) };
 }
 
-function policyPath(path: string, configPath = DEFAULT_CATALOG_PATH): boolean {
-  return path === configPath || path.startsWith('.github/workflows/');
+function withoutPolicyPaths(paths: string[]): string[] {
+  return paths.filter(path => !path.startsWith('.github/workflows/'));
 }
 
-function withoutPolicyPaths(paths: string[], configPath = DEFAULT_CATALOG_PATH): string[] {
-  return paths.filter(path => !policyPath(path, configPath));
-}
-
-function withoutGlobalPolicy(catalog: CatalogV1): CatalogV1 {
-  const result = structuredClone(catalog);
-  delete result.force_all_paths;
-  return result;
-}
-
-function applyMetadataPolicy(plan: ExecutionPlan, metadata: CatalogMetadata, configured: RoutingCatalog | Catalog): ExecutionPlan {
+function applyMetadataPolicy(plan: ExecutionPlan, metadata: SelectionMetadata, configured: SelectionDefinition): ExecutionPlan {
   for (const [id, info] of Object.entries(metadata.tasks)) {
     if (!info.incomplete || !plan.tasks[id]) continue;
     if (!configured.tasks[id]?.always) plan.tasks[id]!.reasons = plan.tasks[id]!.reasons.filter(reason => reason !== 'always');
@@ -499,22 +483,22 @@ export function createReplayTransport(expected: ReplayCall[]): ReplayTransport {
 async function observationFor(
   loaded: LoadedCase,
   variant: EvaluationVariant,
-  resolved: { configured: RoutingCatalog | Catalog; resolved: ResolveCatalogResult; catalog: CatalogV1 },
+  resolved: { configured: SelectionDefinition; resolved: ResolveTasksResult; selection: ResolvedSelection },
   apiKey: string,
   apiBaseUrl: string | undefined,
   apiModel: string | undefined,
   replayCalls?: ReplayCall[],
 ): Promise<{ result: Awaited<ReturnType<typeof observeChange>> | null; calls: CallRecord[]; stale: ReplayStaleError | null; evaluationError: string | null }> {
   const transport = replayCalls ? createReplayTransport(replayCalls) : createLiveTransport();
-  const taskIds = Object.keys(resolved.catalog.tasks).filter(id => resolved.catalog.tasks[id]!.question).sort();
+  const taskIds = Object.keys(resolved.selection.tasks).sort();
   const evaluate = (input: Parameters<typeof evaluateJev>[0]): Promise<JevResult> => evaluateJev(input, transport.fetch);
   let result: Awaited<ReturnType<typeof observeChange>> | null = null;
   let evaluationError: string | null = null;
   try {
-    const request = { catalog: resolved.catalog, taskIds, workingDirectories: resolved.resolved.workingDirectories,
+    const request = { selection: resolved.selection, taskIds, workingDirectories: resolved.resolved.workingDirectories,
       ...(apiBaseUrl ? { apiBaseUrl } : {}), ...(apiModel ? { apiModel } : {}), apiKey, timeoutMs: 120_000, questionMode: variant.questionMode, maxGroupBytes: variant.maxGroupBytes,
       state: { base_sha: loaded.baseSha, head_sha: loaded.headSha, tested_sha: loaded.testedSha, changed_paths: loaded.changedPaths, diff: loaded.diff } };
-    result = await observeChange(request, true, evaluate);
+    result = await observeChange(request, evaluate);
   } catch (error) {
     if (error instanceof ReplayStaleError) evaluationError = error.detail;
     else if (error instanceof ObservationSizeError) evaluationError = error.code;
@@ -534,19 +518,19 @@ async function observationFor(
 export function thresholdEvaluations(
   loaded: LoadedCase,
   variant: EvaluationVariant,
-  configured: RoutingCatalog | Catalog,
-  resolved: ResolveCatalogResult,
+  configured: SelectionDefinition,
+  resolved: ResolveTasksResult,
   result: Awaited<ReturnType<typeof observeChange>> | null,
 ): Record<string, ThresholdEvaluation> {
-  const taskIds = Object.keys(resolved.catalog.tasks).filter(id => resolved.catalog.tasks[id]!.question).sort();
-  const bypass = globalPathReason(resolved.catalog, loaded.changedPaths, DEFAULT_CATALOG_PATH);
+  const taskIds = Object.keys(resolved.selection.tasks).sort();
+  const bypass = globalPathReason(loaded.changedPaths);
   const semanticPaths = withoutPolicyPaths(loaded.changedPaths);
   const values: Record<string, ThresholdEvaluation> = {};
   for (const threshold of THRESHOLDS) {
     const decisions = result ? decisionsFromObservation(result.observation, taskIds, threshold, variant.questionMode) : {};
-    const semantic = applyMetadataPolicy(selectTasks({ catalog: withoutGlobalPolicy(resolved.catalog), changedPaths: semanticPaths, decisions, observationError: result?.failure as any,
-      mode: 'enforce', configPath: '__evaluation-semantic-policy-disabled__' }), resolved.metadata, configured);
-    const effective = applyMetadataPolicy(selectTasks({ catalog: resolved.catalog, changedPaths: loaded.changedPaths, decisions, observationError: result?.failure as any,
+    const semantic = applyMetadataPolicy(selectTasks({ selection: resolved.selection, changedPaths: semanticPaths, decisions, observationError: result?.failure as any,
+      mode: 'enforce' }), resolved.metadata, configured);
+    const effective = applyMetadataPolicy(selectTasks({ selection: resolved.selection, changedPaths: loaded.changedPaths, decisions, observationError: result?.failure as any,
       mode: 'shadow', ...(bypass ? { forceAllReason: bypass as ForceAllReason } : {}) }), resolved.metadata, configured);
     const proposed = proposedMap(semantic);
     values[String(threshold)] = { threshold, decisions, proposed, effective: effectiveMap(effective),
@@ -630,14 +614,14 @@ export async function evaluateRecord(
   replayCalls?: ReplayCall[],
 ): Promise<EvaluationRecord> {
   const started = new Date().toISOString();
-  const resolved = await resolveEvaluationCatalog(loaded, variant.context);
+  const resolved = await resolveEvaluationSelection(loaded, variant.context);
   const observed = await observationFor(loaded, variant, resolved, apiKey, apiBaseUrl, apiModel, replayCalls);
   if (observed.stale) throw observed.stale;
   const thresholds = thresholdEvaluations(loaded, variant, resolved.configured, resolved.resolved, observed.result);
-  const bypass = globalPathReason(resolved.catalog, loaded.changedPaths, DEFAULT_CATALOG_PATH);
+  const bypass = globalPathReason(loaded.changedPaths);
   return { version: 1, runId: `${loaded.definition.id}-${variant.context}-${variant.questionMode}-${variant.grouping}-${repeat}`,
     source: caseSource(loaded), variant, repeat, date: { started, finished: new Date().toISOString() },
-    sdk: { package: '@typesafe-ai/sdk', version: sdkVersion(), model: observed.result?.model ?? null, requestedModel: apiModel ?? resolved.catalog.model },
+    sdk: { package: '@typesafe-ai/sdk', version: sdkVersion(), model: observed.result?.model ?? null, requestedModel: apiModel ?? resolved.selection.model },
     calls: observed.calls, observation: observed.result?.observation ?? null, observationError: observed.result?.failure ?? observed.evaluationError,
     policy: { bypass: !!bypass, reason: bypass?.code ?? null }, thresholds, error: observed.evaluationError };
 }

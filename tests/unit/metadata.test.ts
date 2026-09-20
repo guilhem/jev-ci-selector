@@ -1,8 +1,10 @@
-import { parseCatalog } from '../../src/config.js';
+import { parseTasks } from '../../src/tasks.js';
+import { parse, stringify } from 'yaml';
+function fixtureSelection(source: string): SelectionDefinition { const value = parse(source); return { model: value.model, skip_below: value.skip_below, tasks: parseTasks(stringify(value.tasks)) }; }
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { validateCatalog, type RoutingCatalog } from '../../src/config.js';
-import { resolveCatalog } from '../../src/metadata.js';
+import { validateResolvedSelection, type SelectionDefinition } from '../../src/tasks.js';
+import { resolveTasks } from '../../src/metadata.js';
 
 const workflow = `name: CI
 defaults:
@@ -73,7 +75,7 @@ function resolverFiles() {
 }
 
 test('resolves workflow, actions, scripts, context, provenance, and same-workflow needs', async () => {
-  const input: RoutingCatalog = {
+  const input: SelectionDefinition = {
     model: 'jev-1.13.0',
     skip_below: 0.05,
     tasks: {
@@ -81,50 +83,48 @@ test('resolves workflow, actions, scripts, context, provenance, and same-workflo
       unit: { description: 'Does this change affect unit behavior?', jobs: [{ workflow: '.github/workflows/ci.yml', job: 'unit' }], context_files: ['vitest.config.mts'] },
     },
   };
-  const result = await resolveCatalog(input, { repository: 'acme/project', commit: 'base-sha', ...resolverFiles() });
-  assert.deepEqual(result.catalog.tasks.prepare!.requires, undefined);
-  assert.deepEqual(result.catalog.tasks.unit!.requires, undefined);
+  const result = await resolveTasks(input, { repository: 'acme/project', commit: 'base-sha', ...resolverFiles() });
   assert.equal(result.metadata.tasks.unit!.incomplete, false);
   assert.equal(result.metadata.tasks.unit!.workflow, '.github/workflows/ci.yml');
   assert.equal(result.metadata.tasks.unit!.job, 'unit');
   assert.deepEqual(result.metadata.tasks.unit!.nativeDependencies, ['deploy', 'prepare']);
   assert.equal(result.metadata.tasks.unit!.warnings.some(item => item.includes('package-script-absent')), false);
   assert.deepEqual(result.workingDirectories, ['app', 'packages/web']);
-  assert.equal(result.catalog.tasks.unit!.question!.includes('matrix.node'), false);
-  assert.equal(result.catalog.tasks.unit!.question!.includes('"if"'), false);
-  assert.match(result.catalog.tasks.unit!.question!, /vitest\.config\.mts/);
-  assert.match(result.catalog.tasks.prepare!.question!, /Checkout source/);
-  assert.match(result.catalog.tasks.unit!.question!, /unit:fast/);
-  assert.equal(result.catalog.tasks.unit!.question!.includes('repository'), false);
-  assert.equal(result.catalog.tasks.unit!.question!.includes('provenance'), false);
-  assert.equal(result.catalog.tasks.unit!.question!.includes('\n'), false);
+  assert.equal(JSON.stringify(result.selection.tasks.unit!.evidence).includes('matrix.node'), false);
+  assert.equal(JSON.stringify(result.selection.tasks.unit!.evidence).includes('"if"'), false);
+  assert.match(JSON.stringify(result.selection.tasks.unit!.evidence), /vitest\.config\.mts/);
+  assert.match(JSON.stringify(result.selection.tasks.prepare!.evidence), /Checkout source/);
+  assert.match(JSON.stringify(result.selection.tasks.unit!.evidence), /unit:fast/);
+  assert.equal(JSON.stringify(result.selection.tasks.unit!.evidence).includes('repository'), false);
+  assert.equal(JSON.stringify(result.selection.tasks.unit!.evidence).includes('provenance'), false);
+  assert.equal(JSON.stringify(result.selection.tasks.unit!.evidence).includes('\n'), false);
   assert.ok(result.metadata.tasks.unit!.provenance.some(item => item.kind === 'workflow-job' && item.locator.location.line > 0));
   assert.ok(result.metadata.tasks.unit!.provenance.some(item => item.kind === 'context-file'));
   assert.ok(Object.keys(result.metadata.tasks.unit!.hashes).every(key => key.startsWith('source:')));
   const provenanceKeys = result.metadata.tasks.unit!.provenance.map(item => `${item.locator.repository}:${item.locator.commit}:${item.locator.file}:${item.locator.location.line}:${item.locator.location.column}`);
   assert.equal(new Set(provenanceKeys).size, provenanceKeys.length);
   assert.equal(JSON.stringify(result.metadata).includes('Checkout source'), false);
-  assert.doesNotThrow(() => validateCatalog(result.catalog));
+  assert.doesNotThrow(() => validateResolvedSelection(result.selection));
 });
 
 test('unresolved metadata is explicit and prevents omission through normalized always', async () => {
-  const input: RoutingCatalog = {
+  const input: SelectionDefinition = {
     model: 'jev-1.13.0',
     skip_below: 0.05,
     tasks: { missing: { description: 'Does this change affect the missing unit job?', jobs: [{ workflow: '.github/workflows/missing.yml', job: 'unit' }], context_files: ['missing.ts'] } },
   };
-  const result = await resolveCatalog(input, {
+  const result = await resolveTasks(input, {
     repository: 'acme/project', commit: 'base-sha',
     readFile: async () => { throw new Error('missing'); },
   });
-  assert.equal(result.catalog.tasks.missing!.always, true);
+  assert.equal(result.selection.tasks.missing!.always, true);
   assert.equal(result.metadata.tasks.missing!.incomplete, true);
   assert.ok(result.metadata.tasks.missing!.warnings.some(item => item.startsWith('workflow-missing:')));
-  assert.doesNotThrow(() => validateCatalog(result.catalog));
+  assert.doesNotThrow(() => validateResolvedSelection(result.selection));
 });
 
 test('aggregates deduplicated job references and expands an omitted job to all workflow jobs', async () => {
-  const input = parseCatalog(`model: jev-1.13.0
+  const input = fixtureSelection(`model: jev-1.13.0
 skip_below: 0.05
 tasks:
   all:
@@ -135,20 +135,19 @@ tasks:
       - workflow: .github/workflows/ci.yml
         job: unit
 `);
-  const result = await resolveCatalog(input, {
+  const result = await resolveTasks(input, {
     repository: 'acme/project', commit: 'base-sha',
     readFile: async (_commit, file) => file === '.github/workflows/ci.yml'
       ? 'jobs:\n  build:\n    name: Build\n    steps: []\n  unit:\n    name: Unit\n    steps: []\n'
       : (() => { throw new Error(`missing:${file}`); })(),
   });
-  const evidence = JSON.parse(result.catalog.tasks.all!.question!);
+  const evidence = JSON.parse(JSON.stringify(result.selection.tasks.all!.evidence));
   assert.deepEqual(evidence.jobs.map((job: { id: string }) => job.id), ['build', 'unit']);
   assert.equal(result.metadata.tasks.all!.incomplete, false);
-  assert.equal(result.catalog.tasks.all!.requires, undefined);
 });
 
 test('composite bodies are opaque and are not expanded into model metadata', async () => {
-  const catalog = parseCatalog(`model: jev-1.13.0
+  const selection = fixtureSelection(`model: jev-1.13.0
 skip_below: 0.05
 tasks:
   unit:
@@ -158,7 +157,7 @@ tasks:
         job: unit
 `);
   const calls: string[] = [];
-  const result = await resolveCatalog(catalog, {
+  const result = await resolveTasks(selection, {
     repository: 'acme/app', commit: 'base-sha',
     readFile: async (commit, file) => {
       calls.push(`${commit}:${file}`);
@@ -174,21 +173,21 @@ tasks:
   });
   assert.equal(result.metadata.tasks.unit!.incomplete, false);
   assert.deepEqual(calls, ['base-sha:.github/workflows/ci.yml']);
-  const evidence = JSON.parse(result.catalog.tasks.unit!.question!);
+  const evidence = JSON.parse(JSON.stringify(result.selection.tasks.unit!.evidence));
   assert.deepEqual(evidence.actions, [{ uses: 'example/tools/composite@v2', name: 'Composite' }]);
-  assert.equal(result.catalog.tasks.unit!.question!.includes('setup-bun'), false);
+  assert.equal(JSON.stringify(result.selection.tasks.unit!.evidence).includes('setup-bun'), false);
 });
 
-test('metadata resolution rejects the abandoned public catalog shape', async () => {
+test('metadata resolution rejects the abandoned public selection shape', async () => {
   const input = { version: 1, model: 'jev-1.13.0', skip_below: 0.05, tasks: { unit: { always: true } } };
-  await assert.rejects(resolveCatalog(input as unknown as RoutingCatalog, {
+  await assert.rejects(resolveTasks(input as unknown as SelectionDefinition, {
     repository: 'acme/project', commit: 'base-sha', readFile: () => { throw new Error('unused'); },
-  }), /invalid-catalog/);
+  }), /invalid-input/);
 });
 
 async function resolveFixture(body: string, files: Record<string, string> = {}) {
-  const input = parseCatalog('model: jev-1.13.0\nskip_below: 0.05\ntasks:\n  unit:\n    description: Does this change affect unit behavior?\n    jobs:\n      - workflow: .github/workflows/ci.yml\n        job: unit\n');
-  return resolveCatalog(input, { repository: 'acme/project', commit: 'trusted', readFile: (_sha, file) => {
+  const input = fixtureSelection('model: jev-1.13.0\nskip_below: 0.05\ntasks:\n  unit:\n    description: Does this change affect unit behavior?\n    jobs:\n      - workflow: .github/workflows/ci.yml\n        job: unit\n');
+  return resolveTasks(input, { repository: 'acme/project', commit: 'trusted', readFile: (_sha, file) => {
     if (file === '.github/workflows/ci.yml') return body;
     if (files[file] === undefined) throw new Error('missing');
     return files[file]!;
@@ -202,20 +201,20 @@ test('does not attribute switched-directory or workspace scripts to the root man
       'server/package.json': JSON.stringify({ scripts: { unit: 'backend-check' } }),
     });
     assert.equal(result.metadata.tasks.unit!.incomplete, true, command);
-    assert.equal(result.catalog.tasks.unit!.always, true);
-    assert.deepEqual(JSON.parse(result.catalog.tasks.unit!.question!).packageScripts, []);
+    assert.equal(result.selection.tasks.unit!.always, true);
+    assert.deepEqual(JSON.parse(JSON.stringify(result.selection.tasks.unit!.evidence)).packageScripts, []);
     assert.ok(result.metadata.tasks.unit!.missing.includes('package-script-execution-context-unresolved'));
   }
   const nested = await resolveFixture('jobs:\n  unit:\n    steps:\n      - run: npm run test\n', {
     'package.json': JSON.stringify({ scripts: { test: 'cd server && npm run unit', unit: 'wrong-root-script' } }),
   });
   assert.equal(nested.metadata.tasks.unit!.incomplete, true);
-  assert.deepEqual(JSON.parse(nested.catalog.tasks.unit!.question!).packageScripts.map((s: {name: string}) => s.name), ['test']);
+  assert.deepEqual(JSON.parse(JSON.stringify(nested.selection.tasks.unit!.evidence)).packageScripts.map((s: {name: string}) => s.name), ['test']);
 });
 
 test('retains workflow defaults for non-package commands with exact provenance', async () => {
   const result = await resolveFixture('defaults:\n  run:\n    working-directory: server\n    shell: bash\njobs:\n  unit:\n    steps:\n      - run: python -m unittest discover\n');
-  const evidence = JSON.parse(result.catalog.tasks.unit!.question!);
+  const evidence = JSON.parse(JSON.stringify(result.selection.tasks.unit!.evidence));
   assert.equal(evidence.jobs[0].steps[0].working_directory, 'server');
   assert.equal(evidence.jobs[0].steps[0].shell, 'bash');
   assert.equal(result.metadata.tasks.unit!.incomplete, false);
@@ -228,7 +227,7 @@ test('does not resolve package scripts from opaque composite action bodies', asy
     'package.json': JSON.stringify({ scripts: { root: 'node root-check.js' } }),
     'server/package.json': JSON.stringify({ scripts: { unit: 'npm run nested', nested: 'node server-check.js' } }),
   });
-  const evidence = JSON.parse(result.catalog.tasks.unit!.question!);
+  const evidence = JSON.parse(JSON.stringify(result.selection.tasks.unit!.evidence));
   assert.equal(result.metadata.tasks.unit!.incomplete, false);
   assert.deepEqual(evidence.packageScripts, []);
   assert.equal(result.metadata.tasks.unit!.provenance.some(source => source.kind === 'action-step'), false);
@@ -238,7 +237,7 @@ test('does not resolve package scripts from opaque composite action bodies', asy
 test('unresolved reusable workflows retain the job explicitly', async () => {
   const result = await resolveFixture('jobs:\n  unit:\n    uses: ./.github/workflows/reusable.yml\n');
   assert.equal(result.metadata.tasks.unit!.incomplete, true);
-  assert.equal(result.catalog.tasks.unit!.always, true);
+  assert.equal(result.selection.tasks.unit!.always, true);
   assert.ok(result.metadata.tasks.unit!.missing.some(reason => reason.startsWith('reusable-workflow-unresolved:')));
 });
 
@@ -268,13 +267,25 @@ runs:
   main: index.js
 `,
   };
-  const result = await resolveCatalog({ model: 'jev-1.13.0', skip_below: 0.1, tasks: {
+  const result = await resolveTasks({ model: 'jev-1.13.0', skip_below: 0.1, tasks: {
     check: { description: 'Shared checks', jobs: [{ workflow: '.github/workflows/ci.yml' }] },
   } }, { repository: 'acme/project', commit: 'trusted', readFile: async (_commit, path) => {
     if (!(path in files)) throw new Error('missing');
     return files[path]!;
   } });
   assert.equal(result.metadata.tasks.check!.incomplete, false);
-  assert.match(result.catalog.tasks.check!.question!, /First verification parameter/);
-  assert.match(result.catalog.tasks.check!.question!, /Second verification parameter/);
+  assert.match(JSON.stringify(result.selection.tasks.check!.evidence), /First verification parameter/);
+  assert.match(JSON.stringify(result.selection.tasks.check!.evidence), /Second verification parameter/);
+});
+
+
+test('description-only tasks are complete and resolve without file access', async () => {
+  let reads = 0;
+  const result = await resolveTasks({ model: 'jev-1.13.0', skip_below: 0.05, tasks: { unit: { description: 'Checks business rules.' } } }, {
+    repository: 'acme/project', commit: 'trusted', readFile: async () => { reads++; throw new Error('unexpected'); },
+  });
+  assert.equal(reads, 0);
+  assert.equal(result.metadata.tasks.unit!.incomplete, false);
+  assert.equal(result.selection.tasks.unit!.evidence.description, 'Checks business rules.');
+  assert.notEqual(result.selection.tasks.unit!.always, true);
 });

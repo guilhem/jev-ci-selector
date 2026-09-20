@@ -6872,16 +6872,16 @@ import { pathToFileURL } from "node:url";
 // schemas/report.schema.json
 var report_schema_default = {
   $schema: "http://json-schema.org/draft-07/schema#",
-  title: "jev-ci-selector source-free reports v1 through v4",
+  title: "jev-ci-selector source-free report v5",
   type: "object",
   additionalProperties: false,
   required: [
     "version",
-    "config_sha",
+    "metadata_sha",
     "base_sha",
     "head_sha",
     "tested_sha",
-    "catalog_hash",
+    "selection_hash",
     "diff_hash",
     "diff_bytes",
     "changed_path_count",
@@ -6890,19 +6890,17 @@ var report_schema_default = {
     "model",
     "durations_ms",
     "usage",
-    "tasks"
+    "tasks",
+    "skip_below",
+    "tested_ref",
+    "diff_base_sha",
+    "job_metadata",
+    "observation_error",
+    "observation"
   ],
   properties: {
     version: {
-      enum: [
-        1,
-        2,
-        3,
-        4
-      ]
-    },
-    config_sha: {
-      $ref: "#/definitions/sha"
+      const: 5
     },
     base_sha: {
       $ref: "#/definitions/sha"
@@ -6912,10 +6910,6 @@ var report_schema_default = {
     },
     tested_sha: {
       $ref: "#/definitions/sha"
-    },
-    catalog_hash: {
-      type: "string",
-      pattern: "^[a-f0-9]{64}$"
     },
     diff_hash: {
       type: [
@@ -6956,11 +6950,13 @@ var report_schema_default = {
       additionalProperties: false,
       required: [
         "requested",
+        "expected",
         "returned"
       ],
       properties: {
         requested: {
-          type: "string"
+          type: "string",
+          pattern: "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}(?![\\s\\S])"
         },
         expected: {
           type: "string",
@@ -7013,20 +7009,11 @@ var report_schema_default = {
         type: "object",
         additionalProperties: false,
         required: [
-          "probability",
           "proposed_run",
           "run",
           "reasons"
         ],
         properties: {
-          probability: {
-            type: [
-              "number",
-              "null"
-            ],
-            minimum: 0,
-            maximum: 1
-          },
           proposed_run: {
             type: [
               "boolean",
@@ -7044,13 +7031,11 @@ var report_schema_default = {
               enum: [
                 "always",
                 "path-match",
-                "dependency",
                 "jev-below-threshold",
                 "jev-at-or-above-threshold",
                 "shadow-mode",
                 "force-all",
                 "protected-path",
-                "configured-force-path",
                 "fork",
                 "missing-api-key",
                 "external-context-disabled",
@@ -7118,133 +7103,20 @@ var report_schema_default = {
         "unrepresentable-change",
         null
       ]
+    },
+    metadata_sha: {
+      $ref: "#/definitions/sha"
+    },
+    selection_hash: {
+      type: "string",
+      pattern: "^[a-f0-9]{64}$"
+    },
+    skip_below: {
+      type: "number",
+      minimum: 0,
+      maximum: 1
     }
   },
-  allOf: [
-    {
-      if: {
-        properties: {
-          version: {
-            const: 1
-          }
-        }
-      },
-      then: {
-        properties: {
-          model: {
-            type: "object",
-            properties: {
-              requested: {
-                type: "string",
-                pattern: "^jev-[0-9]+\\.[0-9]+\\.[0-9]+$"
-              },
-              expected: false
-            }
-          },
-          observation: false
-        }
-      }
-    },
-    {
-      if: {
-        properties: {
-          version: {
-            const: 2
-          }
-        }
-      },
-      then: {
-        properties: {
-          observation: false,
-          model: {
-            type: "object",
-            properties: {
-              requested: {
-                type: "string",
-                pattern: "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}(?![\\s\\S])"
-              },
-              expected: {}
-            },
-            required: [
-              "expected"
-            ]
-          }
-        },
-        required: [
-          "version",
-          "model"
-        ]
-      }
-    },
-    {
-      if: {
-        properties: {
-          version: {
-            const: 3
-          }
-        }
-      },
-      then: {
-        properties: {
-          model: {
-            type: "object",
-            required: [
-              "expected"
-            ],
-            properties: {
-              requested: {
-                type: "string",
-                pattern: "^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}(?![\\s\\S])"
-              },
-              expected: {
-                type: "string",
-                pattern: "^jev-[0-9]+\\.[0-9]+\\.[0-9]+$"
-              }
-            }
-          }
-        },
-        required: [
-          "version",
-          "model",
-          "observation"
-        ]
-      }
-    },
-    {
-      if: {
-        properties: {
-          version: {
-            const: 4
-          }
-        }
-      },
-      then: {
-        required: [
-          "tested_ref",
-          "diff_base_sha",
-          "job_metadata",
-          "observation_error",
-          "observation"
-        ],
-        properties: {
-          model: {
-            type: "object",
-            required: [
-              "expected"
-            ],
-            properties: {
-              expected: {}
-            }
-          },
-          tested_ref: {},
-          diff_base_sha: {},
-          job_metadata: {},
-          observation_error: {},
-          observation: {}
-        }
-      }
-    }
-  ],
   definitions: {
     sha: {
       type: "string",
@@ -7634,7 +7506,7 @@ function analyzeShadow(report, results) {
   }
   return {
     tested_sha: report.tested_sha,
-    catalog_hash: report.catalog_hash,
+    selection_hash: report.selection_hash,
     status: report.status,
     fallback: report.status === "fallback",
     tasks_total: ids.length,

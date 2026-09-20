@@ -62,9 +62,9 @@ async function withRepository<T>(fixtureValue: Fixture, callback: (repository: G
   }
 }
 
-test('collects a tested merge tree, reads the base catalog, and preserves special paths', async () => {
+test('collects a tested merge tree, reads base metadata, and preserves special paths', async () => {
   const value = await fixture(async (work) => {
-    await writeFile(join(work, '.github-ci catalog.yml'), 'model: jev-1.13.0\nskip_below: 0.05\ntasks: {}\n');
+    await writeFile(join(work, 'verification scope.md'), 'Unit verification scope.\n');
     await writeFile(join(work, 'old name [x].txt'), 'same content\n');
     await writeFile(join(work, '-\t-\told.txt'), 'unique tab rename\n');
     await writeFile(join(work, 'delete me.txt'), 'gone\n');
@@ -78,7 +78,7 @@ test('collects a tested merge tree, reads the base catalog, and preserves specia
     git(work, 'mv', 'old name [x].txt', 'new name $(x)\n.txt');
     git(work, 'mv', '--', '-\t-\told.txt', '-\t-\tnew.txt');
     git(work, 'rm', '--quiet', 'delete me.txt');
-    await writeFile(join(work, '.github-ci catalog.yml'), 'model: jev-1.13.0\nskip_below: 0.05\ntasks: {}\n');
+    await writeFile(join(work, 'verification scope.md'), 'Unit verification scope.\n');
     await writeFile(join(work, '\uFEFFunicodé.txt'), 'BOM in filename\n');
     await writeFile(join(work, '$(touch CANARY); x.txt'), 'not executable\n');
     await chmod(join(work, 'run me.sh'), 0o755);
@@ -99,7 +99,7 @@ test('collects a tested merge tree, reads the base catalog, and preserves specia
     const adjusted = { ...value, head, tested };
     await withRepository(adjusted, async (repository) => {
       await repository.fetchCommit(adjusted.base);
-      assert.equal((await repository.readFile(adjusted.base, '.github-ci catalog.yml')).toString(), 'model: jev-1.13.0\nskip_below: 0.05\ntasks: {}\n');
+      assert.equal((await repository.readFile(adjusted.base, 'verification scope.md')).toString(), 'Unit verification scope.\n');
       const changes = await repository.collect({ baseSha: adjusted.base, headSha: adjusted.head, testedSha: adjusted.tested, maxDiffBytes: 100_000 });
       assert.ok(changes.changedPaths.includes('new name $(x)\n.txt'));
       assert.ok(changes.changedPaths.includes('old name [x].txt'));
@@ -110,7 +110,7 @@ test('collects a tested merge tree, reads the base catalog, and preserves specia
       assert.ok(changes.changedPaths.includes('-\t-\told.txt'));
       assert.ok(changes.changedPaths.includes('-\t-\tnew.txt'));
       assert.match(changes.diff, /old mode 100644\nnew mode 100755/);
-      assert.equal((await repository.readFile(adjusted.tested, '.github-ci catalog.yml')).toString(), 'model: jev-1.13.0\nskip_below: 0.05\ntasks: {}\n');
+      assert.equal((await repository.readFile(adjusted.tested, 'verification scope.md')).toString(), 'Unit verification scope.\n');
       await assert.rejects(access(join(work, 'CANARY')));
       assert.equal(changes.diffBytes, Buffer.byteLength(changes.diff));
       assert.equal(changes.diffHash.length, 64);

@@ -3,7 +3,8 @@ import { readFile, mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { InputError, actionFailureMessage } from './input-error.js';
-import { eventContext, planChange, type Inputs } from './planner.js';
+import { eventContext, planChange, validateInputs, type Inputs } from './planner.js';
+import { parseSelectionInputs } from './tasks.js';
 import { actionOutputs, summary } from './report.js';
 import { manualContext } from './manual.js';
 
@@ -18,17 +19,18 @@ function integerInput(name: 'timeout-ms' | 'max-diff-bytes', defaultValue: numbe
   return Number(value);
 }
 async function main(): Promise<void> {
-  const mode = core.getInput('mode') || 'shadow';
+  const mode = core.getInput('mode') || 'enforce';
   if (mode !== 'shadow' && mode !== 'enforce') throw new InputError('mode');
   const testedRef = core.getInput('tested-ref') || 'merge';
   if (testedRef !== 'head' && testedRef !== 'merge') throw new InputError('tested-ref');
   const inputs: Inputs = {
-    config: core.getInput('config') || '.github/task-routing.yaml', mode, testedRef,
+    ...parseSelectionInputs(core.getInput), mode, testedRef,
     githubToken: core.getInput('github-token'), apiKey: core.getInput('api-key'),
     apiBaseUrl: core.getInput('api-base-url'), apiModel: core.getInput('api-model'),
     allowExternalContext: booleanInput('allow-external-context'), forceAll: booleanInput('force-all'),
     timeoutMs: integerInput('timeout-ms', 10000), maxDiffBytes: integerInput('max-diff-bytes', 65536),
   };
+  validateInputs(inputs);
   const event: unknown = JSON.parse(await readFile(process.env.GITHUB_EVENT_PATH!, 'utf8'));
   const pullRequest = core.getInput('pull-request');
   const context = pullRequest

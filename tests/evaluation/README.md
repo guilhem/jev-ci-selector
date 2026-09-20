@@ -26,10 +26,11 @@ The corpus has this shape:
 }
 ```
 
-Each snapshot contains `repository/` and `external-actions.json`. The repository
-must contain `.github/task-routing.yaml`, its referenced workflows, action
-metadata, package manifests, and any context files. The runner resolves these
-files through `parseCatalog` and `resolveCatalog`; it does not execute them.
+Each snapshot contains `repository/`, `external-actions.json`, and
+`action-inputs.json`. The latter stores raw action input strings: `tasks` as YAML,
+`model`, and `skip-below`. The repository contains referenced workflows, action
+metadata, package manifests, and context files. The runner uses the production
+`parseSelectionInputs` and `resolveTasks` functions; it does not execute files.
 Expected relevance labels are annotations made by code inspection before Jev
 evaluation. They are qualification data for this experiment, not independent
 human validation or evidence of test outcomes.
@@ -48,6 +49,14 @@ before returning the stored structured response. A changed corpus, source
 fingerprint, request, response, or derived observation fails explicitly as a
 stale replay. Measured durations are ignored only in the final deterministic
 comparison.
+
+The inline-input migration changed fixture fingerprints and removed obsolete
+null task probability fields from derived policy results. It did not rerun the
+provider. `recordings/migration-proof.json` contains SHA-256 digests of each
+campaign's original calls (including serialized bodies and responses), complete
+observations, SDK/model metadata, and dates. The integration test checks these
+digests as well as replaying every request through the current production code.
+The replay source, request, and output equality guards remain strict.
 
 Live evaluation requires an explicit API key in `JEV_API_KEY`, `JEV_KEY_API`, or
 `TYPESAFE_API_KEY`; it does not load `.env`. Calibration evaluates description

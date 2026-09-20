@@ -4,18 +4,19 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtemp, writeFile, rm, copyFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { selectTasks } from '../../src/policy.js';
 import { validateReport } from '../../src/report.js';
-import { catalog } from '../fixtures/catalog.js';
 
 test('shadow measurement joins by exact SHA and distinguishes regressions, flaky tests, infra and manual relevance', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'jev-shadow-test-'));
   try {
-    const plan = selectTasks({ catalog: catalog(), changedPaths: [], probabilities: { helm: 0, e2e: 0, build: 0, prepare: 0 }, mode: 'shadow' });
-    const report = { version: 1, config_sha: 'a'.repeat(40), base_sha: 'a'.repeat(40), head_sha: 'b'.repeat(40), tested_sha: 'c'.repeat(40),
-      catalog_hash: 'd'.repeat(64), diff_hash: 'e'.repeat(64), diff_bytes: 1, changed_path_count: 1, mode: 'shadow', status: 'planned',
-      model: { requested: 'jev-1.13.0', returned: 'jev-1.13.0' }, durations_ms: { collection: 1, jev: 1, total: 2 },
-      usage: { input_tokens: 1, output_tokens: 1 }, tasks: plan.tasks };
+    const tasks = Object.fromEntries(['build', 'e2e', 'helm', 'prepare', 'unit'].map(id => [id, {
+      proposed_run: id === 'unit', run: true, reasons: [id === 'unit' ? 'always' : 'jev-below-threshold', 'shadow-mode'],
+    }]));
+    const report = { version: 5, metadata_sha: 'a'.repeat(40), base_sha: 'a'.repeat(40), head_sha: 'b'.repeat(40), tested_sha: 'c'.repeat(40),
+      tested_ref: 'merge', diff_base_sha: 'a'.repeat(40), job_metadata: {}, observation: null, observation_error: null,
+      selection_hash: 'd'.repeat(64), skip_below: 0.05, diff_hash: 'e'.repeat(64), diff_bytes: 1, changed_path_count: 1, mode: 'shadow', status: 'planned',
+      model: { requested: 'provider/alias', expected: 'jev-1.13.0', returned: 'jev-1.13.0' }, durations_ms: { collection: 1, jev: 1, total: 2 },
+      usage: { input_tokens: 1, output_tokens: 1 }, tasks };
     validateReport(report);
     const results = { tested_sha: report.tested_sha, relevant_tasks: ['helm'], tasks: {
       build: { result: 'failure', classification: 'infrastructure', duration_ms: 30 },
@@ -36,9 +37,14 @@ test('shadow measurement joins by exact SHA and distinguishes regressions, flaky
     assert.equal(analysis.duration_ms_would_skip, 100);
     assert.deepEqual(analysis.failures_would_miss, { regression: ['e2e'], flaky: ['prepare'], infrastructure: ['build'], unknown: [] });
     assert.deepEqual(analysis.manually_relevant_would_skip, ['helm']);
-    await writeFile(reportFile, JSON.stringify({ ...report, version: 2,
-      model: { requested: 'jev-1.13-free', expected: 'jev-1.13.0', returned: 'jev-1.13.0' } }));
-    assert.deepEqual(JSON.parse(execFileSync(process.execPath, args, { encoding: 'utf8' })), analysis);
+    assert.equal(analysis.selection_hash, report.selection_hash);
+    assert.equal(Object.hasOwn(analysis, 'catalog_hash'), false);
+    for (const version of [1, 2, 3, 4]) {
+      await writeFile(reportFile, JSON.stringify({ ...report, version }));
+      assert.equal(spawnSync(process.execPath, args).status, 1);
+      assert.equal(spawnSync(process.execPath, [standalone, reportFile, resultsFile]).status, 1);
+    }
+    await writeFile(reportFile, JSON.stringify(report));
     await writeFile(resultsFile, JSON.stringify({ ...results, tested_sha: 'f'.repeat(40) }));
     assert.equal(spawnSync(process.execPath, args).status, 1);
     await writeFile(resultsFile, JSON.stringify({ ...results, tasks: { unit: results.tasks.unit } }));

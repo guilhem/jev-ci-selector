@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "description": "Inline-input fixture migration; original provider calls, observations, model metadata and dates preserved. No new live evaluation.",
+  "campaigns": {
+    "calibration": {
+      "records": 96,
+      "immutable_sha256": "db0b4dcd0de6370d264dbb94de17a780260ec88f642ba4716adfc8179b45dc60"
+    },
+    "validation": {
+      "records": 24,
+      "immutable_sha256": "35cf0a2e9f4e5cff45246d07978139ab886d9d839e953e042f6f0d8598ad9b5d"
+    }
+  }
+}

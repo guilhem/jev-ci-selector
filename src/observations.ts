@@ -49,7 +49,7 @@ export const REQUEST_BYTES = 128 * 1024;
 const MAX_CHUNKS = 64;
 
 function prepareStates(request: ObservationRequest) {
-  const questions = buildQuestions(request.catalog, request.taskIds, request.questionMode);
+  const questions = buildQuestions(request.selection, request.taskIds, request.questionMode);
   const longestQuestion = Math.max(0, ...Object.values(questions).map(bytes));
   const { diff, changed_paths: _allPaths, ...shared } = request.state;
   // Prefer ~20 KiB groups; reduce them when a job's real metadata needs more room.
@@ -97,7 +97,7 @@ const singleModel = (models: Array<string | null>): string | null => {
   return unique.length === 1 ? unique[0]! : null;
 };
 
-export async function observeChange(request: ObservationRequest, _shadow: boolean, evaluate: typeof evaluateJev) {
+export async function observeChange(request: ObservationRequest, evaluate: typeof evaluateJev) {
   const { states, questions } = prepareStates(request);
   const observation: Observation = { strategy: states.length === 1 ? 'whole-diff' : 'chunked-diff', status: 'incomplete',
     chunks: states.map((part, index) => ({ index, start_byte: part.startByte, end_byte: part.endByte, paths: part.paths,
@@ -149,7 +149,7 @@ export async function observeChange(request: ObservationRequest, _shadow: boolea
   observation.status = observation.chunks.every(chunk => chunk.status === 'completed') ? 'complete' : 'incomplete';
   // Compose boolean decisions, never a synthetic global probability. A failed batch
   // does not erase complete evidence for other jobs sharing the same group.
-  const decisions = decisionsFromObservation(observation, request.taskIds, request.catalog.skip_below, request.questionMode);
+  const decisions = decisionsFromObservation(observation, request.taskIds, request.selection.skip_below, request.questionMode);
   return { observation, decisions, failure, model: singleModel(calls.map(({ call }) => call.model)),
     usage: addUsage(calls.map(({ call }) => call.usage)) };
 }

@@ -20,7 +20,7 @@ export async function manualContext(env: NodeJS.ProcessEnv, number: string, mode
     typeof pull.head.sha === 'string' ? pull.head.sha : undefined : pull.merge_commit_sha;
   if (typeof testedSha !== 'string') throw new Error('merge-unavailable');
   const context = eventContext({ ...env, GITHUB_EVENT_NAME: 'pull_request', GITHUB_SHA: testedSha }, { pull_request: pull }, testedRef);
-  // The manual operator selected this workflow revision. Its catalog is trusted;
+  // The manual operator selected this workflow revision. Its metadata revision is trusted;
   // the target PR still supplies only immutable Git data, never executable code.
-  return { ...context, testedSha: testedRef === 'head' ? context.headSha : context.testedSha, configSha: workflow.testedSha };
+  return { ...context, testedSha: testedRef === 'head' ? context.headSha : context.testedSha, metadataSha: workflow.testedSha };
 }

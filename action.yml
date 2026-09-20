@@ -1,17 +1,23 @@
 name: jev-ci-selector
-description: Produce a conservative CI task selection plan using deterministic rules and Jev.
+description: Select CI tasks from their verification scope using deterministic rules and Jev.
 inputs:
-  config:
-    description: Catalog path at the PR base commit, or the selected workflow commit for a manual observation.
-    default: .github/task-routing.yaml
+  tasks:
+    description: YAML mapping of task IDs to objects with a description and optional jobs, context_files, always and force_paths.
+    required: true
+  model:
+    description: Canonical Jev model version expected in the response.
+    default: jev-1.13.0
+  skip-below:
+    description: Strict exclusion threshold between 0 and 1; equality retains the task.
+    default: '0.05'
   mode:
     description: shadow preserves all effective tasks; enforce applies the proposal.
-    default: shadow
+    default: enforce
   tested-ref:
     description: Commit tested by the consumer; merge uses the tested merge commit and head uses the PR head with a verified merge-base diff.
     default: merge
   pull-request:
-    description: For workflow_dispatch, observe this open PR using the selected workflow commit's catalog in shadow or enforce mode. Requires pull-requests read permission.
+    description: For workflow_dispatch, evaluate this open PR using metadata at the selected workflow commit. Requires pull-requests read permission.
     default: ''
   github-token:
     description: Read-only GitHub token for fetching immutable Git objects.
@@ -23,7 +29,7 @@ inputs:
     description: HTTPS API root before /v1/systemone, without credentials, query or fragment.
     default: https://api.typesafe.ai
   api-model:
-    description: Model identifier sent to the API; defaults to the catalog's expected model version.
+    description: Model identifier sent to the API; defaults to the canonical model input. The response must still identify the canonical version.
     default: ''
   allow-external-context:
     description: Explicit permission to send the diff and metadata to the configured API.
@@ -37,11 +43,11 @@ inputs:
   max-diff-bytes:
     description: Maximum complete UTF-8 diff size; not a token count.
     default: '65536'
-# Every catalog task also publishes a dynamic output named after its ID.
+# Every task also publishes a dynamic output named after its ID.
 # Values are the effective 'true'/'false' strings (all true in shadow/bypass/fallback).
 outputs:
   run:
-    description: JSON map from every catalog task ID to its effective boolean.
+    description: JSON map from every task ID to its effective boolean.
   selected:
     description: JSON array of effective task IDs in stable order.
   matrix:

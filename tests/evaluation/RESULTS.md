@@ -7,6 +7,13 @@ base/head hashes identify locally generated fixture commits. Relevance labels
 were fixed by code inspection before the API calls; they are not independently
 human-validated ground truth.
 
+The fixtures now use raw inline action inputs. This format migration preserved
+all 120 original provider recordings and their model requests, responses, scores,
+usage, durations and dates; it is not a new live qualification. Immutable evidence
+digests are recorded in `recordings/migration-proof.json` and checked alongside
+offline replay. Only fixture fingerprints and obsolete null task probability
+fields in derived policy results changed.
+
 The new campaign contains 96 calibration runs and 24 validation runs, all using
 `jev-1.13.0`. Calibration selected **enriched context, one question, threshold
 0.10**: no relevant omissions among 42 relevant decisions and 54/54 correct

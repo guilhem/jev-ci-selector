@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { LineCounter, parseDocument } from 'yaml';
-import { ConfigError, validateCatalog, validateRoutingCatalog, type CatalogV1, type JobReference, type RoutingCatalog, type Task } from './config.js';
+import { validateResolvedSelection, validateSelection, type ResolvedSelection, type JobReference, type SelectionDefinition, type ResolvedTask, type TaskEvidence } from './tasks.js';
+import { InputError } from './input-error.js';
 
 export interface SourceLocation {
   line: number;
@@ -34,8 +35,7 @@ export interface TaskMetadata {
   nativeDependencies: string[];
 }
 
-export interface CatalogMetadata {
-  version: 1;
+export interface SelectionMetadata {
   repository: string;
   commit: string;
   tasks: Record<string, TaskMetadata>;
@@ -57,16 +57,16 @@ export interface ExternalResolution {
   sha: string;
 }
 
-export interface ResolveCatalogOptions {
+export interface ResolveTasksOptions {
   repository: string;
   commit: string;
   readFile: (commit: string, file: string) => Promise<string | Uint8Array> | string | Uint8Array;
   resolveExternal?: (request: ExternalResolutionRequest) => Promise<ExternalResolution | null> | ExternalResolution | null;
 }
 
-export interface ResolveCatalogResult {
-  catalog: CatalogV1;
-  metadata: CatalogMetadata;
+export interface ResolveTasksResult {
+  selection: ResolvedSelection;
+  metadata: SelectionMetadata;
   workingDirectories: string[];
 }
 
@@ -90,14 +90,10 @@ function stable(value: unknown): unknown {
   return value;
 }
 
-function serialize(value: unknown): string {
-  return JSON.stringify(stable(value));
-}
-
 function normalizePath(path: string): string {
   const normalized = path.replace(/^\.\//, '');
   if (!normalized || normalized.startsWith('/') || normalized.includes('\\') || normalized.includes('\0') ||
-    normalized.split('/').some(part => !part || part === '..')) throw new ConfigError();
+    normalized.split('/').some(part => !part || part === '..')) throw new InputError('tasks');
   return normalized;
 }
 
@@ -262,7 +258,7 @@ function actionReference(uses: string): { external: boolean; repository?: string
   return { external: true, repository, path, ref: uses.slice(at + 1) };
 }
 
-async function readLocal(options: ResolveCatalogOptions, cache: Map<string, FileSource | null>, repository: string, commit: string, file: string): Promise<FileSource | null> {
+async function readLocal(options: ResolveTasksOptions, cache: Map<string, FileSource | null>, repository: string, commit: string, file: string): Promise<FileSource | null> {
   const normalized = normalizePath(file);
   const key = `${repository}\0${commit}\0${normalized}`;
   if (cache.has(key)) return cache.get(key)!;
@@ -277,7 +273,7 @@ async function readLocal(options: ResolveCatalogOptions, cache: Map<string, File
   }
 }
 
-async function readAction(options: ResolveCatalogOptions, cache: Map<string, FileSource | null>, uses: string, metadata: TaskMetadata, summaries: ActionSummary[], suppliedInputs: AnyRecord = {}): Promise<ActionSummary | null> {
+async function readAction(options: ResolveTasksOptions, cache: Map<string, FileSource | null>, uses: string, metadata: TaskMetadata, summaries: ActionSummary[], suppliedInputs: AnyRecord = {}): Promise<ActionSummary | null> {
   const reference = actionReference(uses);
   if (!reference) {
     warning(metadata, `action-metadata-unavailable:${uses}`);
@@ -337,7 +333,7 @@ async function readAction(options: ResolveCatalogOptions, cache: Map<string, Fil
   return summary;
 }
 
-async function readPackageScripts(options: ResolveCatalogOptions, cache: Map<string, FileSource | null>, metadata: TaskMetadata, commands: PackageCommand[]): Promise<unknown[]> {
+async function readPackageScripts(options: ResolveTasksOptions, cache: Map<string, FileSource | null>, metadata: TaskMetadata, commands: PackageCommand[]): Promise<unknown[]> {
   const resolved: unknown[] = [];
   const visited = new Set<string>();
   const references = (command: string): string[] => {
@@ -411,12 +407,12 @@ function compactJob(jobId: string, job: AnyRecord, workflow: AnyRecord): Record<
   return result;
 }
 
-export async function resolveCatalog(catalog: RoutingCatalog, options: ResolveCatalogOptions): Promise<ResolveCatalogResult> {
-  const metadata: CatalogMetadata = { version: 1, repository: options.repository, commit: options.commit, tasks: {} };
-  validateRoutingCatalog(catalog);
+export async function resolveTasks(selection: SelectionDefinition, options: ResolveTasksOptions): Promise<ResolveTasksResult> {
+  const metadata: SelectionMetadata = { repository: options.repository, commit: options.commit, tasks: {} };
+  validateSelection(selection);
   const cache = new Map<string, FileSource | null>();
   const workflows = new Map<string, WorkflowEntry>();
-  const selected = Object.entries(catalog.tasks).map(([id, task]) => ({ id, task }));
+  const selected = Object.entries(selection.tasks).map(([id, task]) => ({ id, task }));
   const records = new Map<string, JobRecord[]>();
   const workingDirectories: string[] = [];
   const addWorkingDirectories = (values: string[]) => values.forEach(value => { if (!workingDirectories.includes(value)) workingDirectories.push(value); });
@@ -438,13 +434,13 @@ export async function resolveCatalog(catalog: RoutingCatalog, options: ResolveCa
   for (const { id, task } of selected) {
     const taskMetadata = newTaskMetadata();
     const uniqueReferences = new Map<string, JobReference>();
-    for (const reference of task.jobs) uniqueReferences.set(`${reference.workflow}\0${reference.job ?? ''}`, reference);
+    for (const reference of task.jobs ?? []) uniqueReferences.set(`${reference.workflow}\0${reference.job ?? ''}`, reference);
     const taskRecords: JobRecord[] = [];
     const seenJobs = new Set<string>();
     for (const reference of uniqueReferences.values()) {
       if (metadata.tasks[id] === undefined) metadata.tasks[id] = taskMetadata;
       taskMetadata.workflow ??= reference.workflow;
-      if (task.jobs.length === 1 && reference.job) taskMetadata.job = reference.job;
+      if (task.jobs?.length === 1 && reference.job) taskMetadata.job = reference.job;
       const entry = await workflowFor(reference);
       if (!entry.source || !entry.parsed || !isRecord(entry.parsed.value)) {
         warning(taskMetadata, entry.source ? `workflow-invalid:${reference.workflow}` : `workflow-missing:${reference.workflow}`);
@@ -478,7 +474,7 @@ export async function resolveCatalog(catalog: RoutingCatalog, options: ResolveCa
     metadata.tasks[id] = taskMetadata;
   }
 
-  const resolvedTasks: Record<string, Task> = {};
+  const resolvedTasks: Record<string, ResolvedTask> = {};
   for (const { id, task } of selected) {
     const taskMetadata = metadata.tasks[id]!;
     const taskRecords = records.get(id) ?? [];
@@ -539,11 +535,10 @@ export async function resolveCatalog(catalog: RoutingCatalog, options: ResolveCa
     resolvedTasks[id] = {
       ...(task.always || taskMetadata.incomplete ? { always: true } : {}),
       ...(task.force_paths ? { force_paths: [...task.force_paths] } : {}),
-      question: serialize(evidence),
+      evidence: stable(evidence) as TaskEvidence,
     };
   }
-  const resolved: CatalogV1 = { version: 1, model: catalog.model, skip_below: catalog.skip_below, tasks: resolvedTasks };
-  if (catalog.force_all_paths) resolved.force_all_paths = [...catalog.force_all_paths];
-  validateCatalog(resolved);
-  return { catalog: resolved, metadata, workingDirectories };
+  const resolved: ResolvedSelection = { model: selection.model, skip_below: selection.skip_below, tasks: resolvedTasks };
+  validateResolvedSelection(resolved);
+  return { selection: resolved, metadata, workingDirectories };
 }
