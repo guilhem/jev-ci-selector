@@ -79,10 +79,10 @@ test('planner uses only base metadata, tested merge SHA, source-free report and 
   assert.equal(outputs.status, 'planned'); assert.equal(outputs['has-tasks'], 'true');
   assert.deepEqual(Object.keys(JSON.parse(outputs.run!)), ['build', 'e2e', 'helm', 'prepare', 'unit']);
 });
-test('default context resolution feeds the final evaluation and reports all inference usage', async () => {
+test('opt-in context resolution feeds the final evaluation and reports all inference usage', async () => {
   const f = fixture();
   const definition: SelectionDefinition = { model: 'jev-1.13.0', skip_below: 0.05, tasks: {
-    helm: { description: 'Renders charts', jobs: [{ workflow: '.github/workflows/ci.yml', job: 'helm' }] },
+    helm: { resolve_context_files: true, description: 'Renders charts', jobs: [{ workflow: '.github/workflows/ci.yml', job: 'helm' }] },
   } };
   const create = f.dependencies.createRepository!;
   let finalBudget = 0;
@@ -118,7 +118,7 @@ test('context reports preserve literal Git paths whether ignored or retained and
     const f = fixture();
     const create = f.dependencies.createRepository!;
     const reads: string[] = [];
-    const { plan, report } = await planChange({ ...inputs, tasks: { check: { description: 'Checks configuration.' } } }, context, {
+    const { plan, report } = await planChange({ ...inputs, tasks: { check: { resolve_context_files: true, description: 'Checks configuration.' } } }, context, {
       ...f.dependencies,
       createRepository: async options => ({ ...await create(options), listFiles: async () => [path],
         readFile: async (sha, file) => {
@@ -159,7 +159,7 @@ test('context reports preserve literal Git paths whether ignored or retained and
 test('a preparation failure keeps its job while an explicitly configured unrelated task may still skip', async () => {
   const f = fixture();
   const definition: SelectionDefinition = { model: 'jev-1.13.0', skip_below: 0.05, tasks: {
-    helm: { description: 'Renders charts', jobs: [{ workflow: '.github/workflows/ci.yml', job: 'helm' }] },
+    helm: { resolve_context_files: true, description: 'Renders charts', jobs: [{ workflow: '.github/workflows/ci.yml', job: 'helm' }] },
     build: { description: 'Builds', resolve_context_files: false },
   } };
   const create = f.dependencies.createRepository!;

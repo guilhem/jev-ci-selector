@@ -69,7 +69,7 @@ export function parseTasks(source: string): TaskDefinitions {
     const value: unknown = document.toJS({ maxAliasCount: 0 });
     validateTasks(value);
     return Object.fromEntries(Object.entries(value).map(([id, task]) => [id, { ...task, always: task.always ?? false,
-      resolve_context_files: task.resolve_context_files ?? true }]));
+      resolve_context_files: task.resolve_context_files ?? false }]));
   } catch { throw new InputError('tasks'); }
 }
 
@@ -90,6 +90,6 @@ function canonical(value: unknown): unknown {
 
 export function selectionHash(selection: SelectionDefinition): string {
   const tasks = Object.fromEntries(Object.entries(selection.tasks).map(([id, task]) => [id, { ...task, always: task.always ?? false,
-    resolve_context_files: task.resolve_context_files ?? true }]));
+    resolve_context_files: task.resolve_context_files ?? false }]));
   return createHash('sha256').update(JSON.stringify(canonical({ model: selection.model, skip_below: selection.skip_below, tasks }))).digest('hex');
 }

@@ -100,7 +100,7 @@ export async function planChange(inputs: Inputs, context: Context, dependencies:
       }
       if (change && repository) {
         let metadataAvailable = true;
-        if (metadataSha !== context.baseSha && Object.values(inputs.tasks).some(task => task.jobs?.length || task.context_files?.length || task.resolve_context_files !== false)) {
+        if (metadataSha !== context.baseSha && Object.values(inputs.tasks).some(task => task.jobs?.length || task.context_files?.length || task.resolve_context_files === true)) {
           try { await repository.fetchCommit(metadataSha); }
           catch (error) {
             if (!(error instanceof ChangeError)) throw error;

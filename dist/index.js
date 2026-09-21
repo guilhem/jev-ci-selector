@@ -36243,7 +36243,7 @@ var tasks_schema_default = {
         },
         resolve_context_files: {
           type: "boolean",
-          default: true,
+          default: false,
           description: "Discover additional context files for the job with Jev. Explicit context_files are always retained."
         },
         always: {
@@ -36319,7 +36319,7 @@ function parseTasks(source) {
     return Object.fromEntries(Object.entries(value).map(([id, task]) => [id, {
       ...task,
       always: task.always ?? false,
-      resolve_context_files: task.resolve_context_files ?? true
+      resolve_context_files: task.resolve_context_files ?? false
     }]));
   } catch {
     throw new InputError("tasks");
@@ -36342,7 +36342,7 @@ function selectionHash(selection) {
   const tasks = Object.fromEntries(Object.entries(selection.tasks).map(([id, task]) => [id, {
     ...task,
     always: task.always ?? false,
-    resolve_context_files: task.resolve_context_files ?? true
+    resolve_context_files: task.resolve_context_files ?? false
   }]));
   return (0, import_node_crypto.createHash)("sha256").update(JSON.stringify(canonical({ model: selection.model, skip_below: selection.skip_below, tasks }))).digest("hex");
 }
@@ -41796,7 +41796,7 @@ function preparePass(paths, evidence, selected, model) {
 async function resolveContextFiles(request, evaluate = evaluateChoices, passCount = 2) {
   if (![1, 2, 3].includes(passCount)) throw new Error("invalid-context-pass-count");
   const { configured, resolved, repository, commit } = request;
-  const active = new Set(Object.keys(configured.tasks).filter((id) => configured.tasks[id].resolve_context_files !== false && !resolved.metadata.tasks[id]?.incomplete));
+  const active = new Set(Object.keys(configured.tasks).filter((id) => configured.tasks[id].resolve_context_files === true && !resolved.metadata.tasks[id]?.incomplete));
   const originalEvidence = new Map([...active].map((id) => [id, structuredClone(resolved.selection.tasks[id].evidence)]));
   const anchors = Object.entries(resolved.jobContexts ?? {}).map(([id, job]) => ({ id, evidence: job.evidence, taskIds: job.taskIds.filter((id2) => active.has(id2)) }));
   for (const id of [...active].sort()) {
@@ -42021,7 +42021,7 @@ async function planChange(inputs, context, dependencies = {}) {
       }
       if (change && repository) {
         let metadataAvailable = true;
-        if (metadataSha !== context.baseSha && Object.values(inputs.tasks).some((task) => task.jobs?.length || task.context_files?.length || task.resolve_context_files !== false)) {
+        if (metadataSha !== context.baseSha && Object.values(inputs.tasks).some((task) => task.jobs?.length || task.context_files?.length || task.resolve_context_files === true)) {
           try {
             await repository.fetchCommit(metadataSha);
           } catch (error) {

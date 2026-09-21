@@ -29,7 +29,6 @@ jobs:
         with:
           api-key: ${{ secrets.JEV_API_KEY }}
           allow-external-context: 'true'
-          timeout-ms: '60000'
           tasks: |
             unit:
               description: >
@@ -81,11 +80,11 @@ with:
       always: true
 ```
 
-Job references and context files are optional enrichment. Explicit `context_files` are always retained; `resolve_context_files: false` disables only additional context discovery, while job evidence remains available. The default is `true`. Context preparation reads trusted Git metadata and tracked files without executing repository code. It uses two preparation passes over all tracked paths, with no lexical or language filter, then evaluates the diff.
+Job references and context files are optional enrichment. Explicit `context_files` are always retained; `resolve_context_files: false` disables only additional context discovery, while job evidence remains available. Discovery is experimental and opt-in: the default is `false`; set `resolve_context_files: true` to enable it. Context preparation reads trusted Git metadata and tracked files without executing repository code. It uses two preparation passes over all tracked paths, with no lexical or language filter, then evaluates the diff.
 
 If preparation is incomplete, affected tasks run and the report records `context-resolution-incomplete` with status `fallback`. Independently evaluated tasks may still skip. An incomplete final observation retains the existing full-CI fallback. Forks, missing credentials or consent, and events outside PR evaluation retain all tasks without a Jev call.
 
-The quickstart gives preparation and evaluation a shared 60-second budget. The input default remains 10 seconds; larger trees can need a longer `timeout-ms`, or explicit context with `resolve_context_files: false`.
+When opting into discovery, consider `timeout-ms: '60000'` for the shared preparation and evaluation budget. The input default remains 10 seconds; larger trees can need a longer budget. Without opt-in, only job metadata and explicit context are used.
 
 A `false` output is a policy decision, not a guarantee that the task cannot detect a regression. The default threshold `0.05` is experimental. Changes to workflows retain all declared tasks. An invalid task definition fails selection without publishing a plan.
 

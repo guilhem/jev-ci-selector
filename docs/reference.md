@@ -60,7 +60,7 @@ tasks: |
 | `description` | Required nonblank string describing verification scope |
 | `jobs` | Optional nonempty list of workflow/job references |
 | `context_files` | Optional list of repository-relative paths; explicitly requested files are always retained |
-| `resolve_context_files` | Boolean, default `true`; `false` disables additional discovery only, while job evidence remains |
+| `resolve_context_files` | Boolean, default `false`; `true` opts into experimental discovery, while job evidence and explicit files remain available in both modes |
 | `always` | Boolean, default `false`; forces execution |
 | `force_paths` | Optional list of positive globs; a match forces execution |
 

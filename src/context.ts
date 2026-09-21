@@ -118,7 +118,7 @@ function preparePass(paths: string[], evidence: Record<string, unknown>, selecte
 export async function resolveContextFiles(request: Request, evaluate = evaluateChoices, passCount: 1 | 2 | 3 = 2): Promise<ContextResolutionReport> {
   if (![1, 2, 3].includes(passCount)) throw new Error('invalid-context-pass-count');
   const { configured, resolved, repository, commit } = request;
-  const active = new Set(Object.keys(configured.tasks).filter(id => configured.tasks[id]!.resolve_context_files !== false && !resolved.metadata.tasks[id]?.incomplete));
+  const active = new Set(Object.keys(configured.tasks).filter(id => configured.tasks[id]!.resolve_context_files === true && !resolved.metadata.tasks[id]?.incomplete));
   const originalEvidence = new Map([...active].map(id => [id, structuredClone(resolved.selection.tasks[id]!.evidence)]));
   const anchors = Object.entries(resolved.jobContexts ?? {}).map(([id, job]) => ({ id, evidence: job.evidence, taskIds: job.taskIds.filter(id => active.has(id)) }));
   for (const id of [...active].sort()) {

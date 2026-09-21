@@ -27,8 +27,8 @@ test('distributed bundle runs against real Git objects, publishes shadow/enforce
   try {
     git('init', '-b', 'main'); await mkdir(join(remote, '.github'));
     const tasks = {
-      unit: { description: 'Does this change affect backend behavior?', jobs: [{ workflow: '.github/workflows/ci.yml', job: 'unit' }], always: true },
-      helm: { description: 'Does this change affect rendering?', jobs: [{ workflow: '.github/workflows/ci.yml', job: 'helm' }] },
+      unit: { resolve_context_files: true, description: 'Does this change affect backend behavior?', jobs: [{ workflow: '.github/workflows/ci.yml', job: 'unit' }], always: true },
+      helm: { resolve_context_files: true, description: 'Does this change affect rendering?', jobs: [{ workflow: '.github/workflows/ci.yml', job: 'helm' }] },
     };
     await mkdir(join(remote, '.github/workflows'), { recursive: true });
     await writeFile(join(remote, '.github/workflows/ci.yml'), 'jobs:\n  unit:\n    steps:\n      - run: bash check.sh\n  helm:\n    steps: []\n');

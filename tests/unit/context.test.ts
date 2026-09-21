@@ -27,7 +27,7 @@ function response(request: ChoiceRequest, decide: (path: string, request: Choice
 async function setup(options: { tasks?: SelectionDefinition['tasks']; contents?: Record<string, string>; commit?: string } = {}) {
   const contents: Record<string, string> = options.contents ?? files;
   const configured: SelectionDefinition = { model: 'jev-1.13.0', skip_below: 0.05, tasks: options.tasks ?? {
-    unit: { description: 'Checks behavior', jobs: [{ workflow, job: 'check' }], context_files: ['explicit.md'] },
+    unit: { resolve_context_files: true, description: 'Checks behavior', jobs: [{ workflow, job: 'check' }], context_files: ['explicit.md'] },
   } };
   const commit = options.commit ?? 'a'.repeat(40);
   const reads: string[] = [];
@@ -70,20 +70,22 @@ test('two read waves discover indirect configuration and always preserve explici
   assert.ok(f.resolved.metadata.tasks.unit!.provenance.some(item => item.kind === 'resolved-context-file' && item.locator.commit === f.commit));
 });
 
-test('disabled task makes no preparation call or inventory and keeps its original evidence', async () => {
-  const f = await setup({ tasks: { explicit: { description: 'Checks behavior', jobs: [{ workflow, job: 'check' }], context_files: ['explicit.md'], resolve_context_files: false } } });
-  const before = structuredClone(f.resolved.selection);
-  assert.deepEqual(Object.keys(await resolveContextFiles(f, async () => { throw new Error('unexpected-call'); })), []);
-  assert.equal(f.inventories(), 0);
-  assert.deepEqual(f.resolved.selection, before);
+test('omitted or false opt-in makes no preparation call or inventory and keeps its original evidence', async () => {
+  for (const option of [{}, { resolve_context_files: false }]) {
+    const f = await setup({ tasks: { explicit: { description: 'Checks behavior', jobs: [{ workflow, job: 'check' }], context_files: ['explicit.md'], ...option } } });
+    const before = structuredClone(f.resolved.selection);
+    assert.deepEqual(Object.keys(await resolveContextFiles(f, async () => { throw new Error('unexpected-call'); })), []);
+    assert.equal(f.inventories(), 0);
+    assert.deepEqual(f.resolved.selection, before);
+  }
 });
 
 test('job context is prepared once, shared only with enabled tasks, and multi-job tasks receive the union', async () => {
   const f = await setup({ tasks: {
-    unit: { description: 'first task', jobs: [{ workflow, job: 'check' }] },
-    shared: { description: 'different task wording', jobs: [{ workflow, job: 'check' }] },
+    unit: { resolve_context_files: true, description: 'first task', jobs: [{ workflow, job: 'check' }] },
+    shared: { resolve_context_files: true, description: 'different task wording', jobs: [{ workflow, job: 'check' }] },
     disabled: { description: 'explicit only', jobs: [{ workflow, job: 'check' }], resolve_context_files: false },
-    both: { description: 'both jobs', jobs: [{ workflow, job: 'check' }, { workflow, job: 'docs' }] },
+    both: { resolve_context_files: true, description: 'both jobs', jobs: [{ workflow, job: 'check' }, { workflow, job: 'docs' }] },
   } });
   const report = await resolveContextFiles(f, async request => {
     f.requests.push(request);
@@ -101,7 +103,7 @@ test('job context is prepared once, shared only with enabled tasks, and multi-jo
 
 test('same job, inventory and relevant contents produce identical requests across commits and task descriptions', async () => {
   const a = await setup();
-  const b = await setup({ commit: 'b'.repeat(40), tasks: { renamed: { description: 'Other description', jobs: [{ workflow, job: 'check' }] } } });
+  const b = await setup({ commit: 'b'.repeat(40), tasks: { renamed: { resolve_context_files: true, description: 'Other description', jobs: [{ workflow, job: 'check' }] } } });
   const first = await resolveContextFiles(a, a.evaluate);
   const second = await resolveContextFiles(b, b.evaluate);
   assert.deepEqual(first[`${workflow}#check`]!.passes.map(pass => pass.calls.map(call => call.request_hash)), second[`${workflow}#check`]!.passes.map(pass => pass.calls.map(call => call.request_hash)));
@@ -112,7 +114,7 @@ test('same job, inventory and relevant contents produce identical requests acros
 });
 
 test('a task without jobs uses its description; uncertain files remain available', async () => {
-  const f = await setup({ tasks: { go: { description: 'Runs the Go tests' } }, contents: { 'go.mod': 'module sample', 'internal/parser.go': 'package parser' } });
+  const f = await setup({ tasks: { go: { resolve_context_files: true, description: 'Runs the Go tests' } }, contents: { 'go.mod': 'module sample', 'internal/parser.go': 'package parser' } });
   const report = await resolveContextFiles(f, async request => {
     assert.equal((request.state as { description: string }).description, 'Runs the Go tests');
     return response(request, () => 'uncertain');
@@ -143,7 +145,7 @@ test('failed, unreadable, oversized and invalid resolutions retain affected task
 
 test('all paths are covered by bounded batches with at most three concurrent calls', async () => {
   const contents = Object.fromEntries(Array.from({ length: 350 }, (_, i) => [`nested/file-${i}.anything`, 'data']));
-  const f = await setup({ contents, tasks: { check: { description: 'Checks project configuration' } } });
+  const f = await setup({ contents, tasks: { check: { resolve_context_files: true, description: 'Checks project configuration' } } });
   let active = 0;
   let peak = 0;
   const visited: string[] = [];
@@ -161,7 +163,7 @@ test('all paths are covered by bounded batches with at most three concurrent cal
 test('second-pass source batches preserve full files and retain discoveries from any batch', async () => {
   const a = 'config=c.ini\n' + 'a'.repeat(45000);
   const b = 'unrelated guide\n' + 'b'.repeat(45000);
-  const f = await setup({ tasks: { check: { description: 'Runs a configured check' } }, contents: { 'a.md': a, 'b.md': b, 'c.ini': 'scope=src/' } });
+  const f = await setup({ tasks: { check: { resolve_context_files: true, description: 'Runs a configured check' } }, contents: { 'a.md': a, 'b.md': b, 'c.ini': 'scope=src/' } });
   const states: Array<{ sources: Array<{ path: string; content: string }> }> = [];
   const report = await resolveContextFiles(f, async request => {
     const state = request.state as { sources: Array<{ path: string; content: string }> };
@@ -182,8 +184,8 @@ test('second-pass source batches preserve full files and retain discoveries from
 
 test('an oversized multi-job union retains only its affected task without dropping explicit files', async () => {
   const f = await setup({ contents: { [workflow]: files[workflow], 'a.txt': 'a'.repeat(34000), 'b.txt': 'b'.repeat(34000), 'explicit.md': 'declared' }, tasks: {
-    first: { description: 'First job', jobs: [{ workflow, job: 'check' }] },
-    both: { description: 'Both jobs', jobs: [{ workflow, job: 'check' }, { workflow, job: 'docs' }], context_files: ['explicit.md'] },
+    first: { resolve_context_files: true, description: 'First job', jobs: [{ workflow, job: 'check' }] },
+    both: { resolve_context_files: true, description: 'Both jobs', jobs: [{ workflow, job: 'check' }, { workflow, job: 'docs' }], context_files: ['explicit.md'] },
   } });
   await resolveContextFiles(f, async request => {
     const state = request.state as { job: { id: string }; sources: Array<{ path: string }> };
