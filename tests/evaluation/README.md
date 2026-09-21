@@ -85,3 +85,38 @@ selection maximizes correctly omitted irrelevant tasks while requiring zero
 relevant misses across all calibration repeats and groupings; ties use the
 lowest threshold and stable context/question ordering. If no variant qualifies,
 the best exploratory choice is recorded with `qualified: false`.
+
+## Context-resolution comparison
+
+`eval:context` is a separate bounded harness for the accepted context
+resolution feature. It uses three manually authored synthetic cases: Python
+wrapper to TOML scope, Go wrapper to YAML scope, and a generic Node wrapper to
+JSON scope. Each case includes an unrelated documentation task. These are
+experiment annotations, not real pull requests, and no case source is
+executed.
+
+The harness runs one, two, and three preparation waves on a fresh selection for
+each case, then uses the existing `observeChange` Noul evaluator on the same
+annotated diff. Offline mode supplies deterministic evaluators; live mode calls
+the Jev API. Results report file recall and final incorrect skips, with no model
+score or CI savings metric.
+
+Offline probabilities are fixture-wiring signals only: they verify that context
+availability reaches the existing final evaluator and are never a measurement
+of model quality.
+
+Each run requires a new output directory and writes `manifest.json`,
+`summary.json`, `comparison.json`, and sanitized records under `records/`.
+Records contain deterministic request hashes, decisions, stage reports, usage,
+timings, and completeness. They do not contain headers, API keys, or raw source
+text. A failed or unavailable stage is marked `incomplete` and is not counted
+as a successful evaluation.
+
+```sh
+npm run eval:context -- offline --output /tmp/jev-context-offline
+npm run eval:context -- live --output /tmp/jev-context-live
+```
+
+Live mode reads only `JEV_API_KEY`, `JEV_KEY_API`, or `TYPESAFE_API_KEY`; it does
+not load `.env`. Load a dotenv file explicitly with Node's `--env-file` if
+needed. Optional `--api-base-url` and `--api-model` follow the existing runner.

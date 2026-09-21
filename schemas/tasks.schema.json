@@ -85,6 +85,11 @@
         "context_files": {
           "$ref": "#/definitions/files"
         },
+        "resolve_context_files": {
+          "type": "boolean",
+          "default": true,
+          "description": "Discover additional context files for the job with Jev. Explicit context_files are always retained."
+        },
         "always": {
           "type": "boolean"
         },

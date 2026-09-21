@@ -99,8 +99,15 @@ test('collects a tested merge tree, reads base metadata, and preserves special p
     const adjusted = { ...value, head, tested };
     await withRepository(adjusted, async (repository) => {
       await repository.fetchCommit(adjusted.base);
+      const basePaths = await repository.listFiles(adjusted.base);
+      assert.ok(basePaths.includes('verification scope.md'));
+      assert.ok(basePaths.includes('-\t-\told.txt'));
+      assert.ok(!basePaths.includes('feature marker.txt'));
       assert.equal((await repository.readFile(adjusted.base, 'verification scope.md')).toString(), 'Unit verification scope.\n');
       const changes = await repository.collect({ baseSha: adjusted.base, headSha: adjusted.head, testedSha: adjusted.tested, maxDiffBytes: 100_000 });
+      const testedPaths = await repository.listFiles(adjusted.tested);
+      assert.ok(testedPaths.includes('new name $(x)\n.txt'));
+      assert.ok(testedPaths.includes('$(touch CANARY); x.txt'));
       assert.ok(changes.changedPaths.includes('new name $(x)\n.txt'));
       assert.ok(changes.changedPaths.includes('old name [x].txt'));
       assert.ok(changes.changedPaths.includes('delete me.txt'));

@@ -29,7 +29,7 @@ Prepare actual results manually from the CI run that executed the same tasks:
 }
 ```
 
-Use exactly the report's task IDs. The standalone Node.js 24 analyzer accepts report v5:
+Use exactly the report's task IDs. The standalone Node.js 24 analyzer accepts report v6:
 
 ```sh
 node dist/analyze-shadow.mjs shadow-report/report.json results.json

@@ -68,6 +68,7 @@ export interface ResolveTasksResult {
   selection: ResolvedSelection;
   metadata: SelectionMetadata;
   workingDirectories: string[];
+  jobContexts?: Record<string, { taskIds: string[]; evidence: Record<string, unknown> }>;
 }
 
 type AnyRecord = Record<string, any>;
@@ -475,6 +476,7 @@ export async function resolveTasks(selection: SelectionDefinition, options: Reso
   }
 
   const resolvedTasks: Record<string, ResolvedTask> = {};
+  const jobContexts: NonNullable<ResolveTasksResult['jobContexts']> = Object.create(null);
   for (const { id, task } of selected) {
     const taskMetadata = metadata.tasks[id]!;
     const taskRecords = records.get(id) ?? [];
@@ -515,6 +517,21 @@ export async function resolveTasks(selection: SelectionDefinition, options: Reso
     }
     taskMetadata.nativeDependencies = [...nativeDependencies].sort();
     const scripts = await readPackageScripts(options, cache, taskMetadata, packageCommands);
+    for (const record of taskRecords) {
+      const key = `${record.reference.workflow}#${record.jobId}`;
+      if (jobContexts[key]) { jobContexts[key]!.taskIds.push(id); continue; }
+      const steps = Array.isArray(record.job.steps) ? record.job.steps.filter(isRecord) : [];
+      const jobActions = actions.filter(action => steps.some(step => step.uses === action.uses)).map(action => {
+        const inputNames = new Set(steps.filter(step => step.uses === action.uses).flatMap(step => Object.keys(isRecord(step.with) ? step.with : {})));
+        const { inputs: descriptions, ...summary } = action;
+        const inputs = Object.fromEntries(Object.entries(descriptions ?? {}).filter(([name]) => inputNames.has(name)));
+        return { ...summary, ...(Object.keys(inputs).length ? { inputs } : {}) };
+      }).sort((a, b) => a.uses < b.uses ? -1 : a.uses > b.uses ? 1 : 0);
+      jobContexts[key] = { taskIds: [id], evidence: stable({
+        job: { workflow: record.reference.workflow, ...compactJob(record.jobId, record.job, record.parsed.value as AnyRecord) },
+        actions: jobActions,
+      }) as Record<string, unknown> };
+    }
     addWorkingDirectories(packageCommands.map(item => item.workingDirectory).filter(directory => directory !== '.'));
     for (const path of task.context_files ?? []) {
       const normalized = contextFilePath(path);
@@ -540,5 +557,5 @@ export async function resolveTasks(selection: SelectionDefinition, options: Reso
   }
   const resolved: ResolvedSelection = { model: selection.model, skip_below: selection.skip_below, tasks: resolvedTasks };
   validateResolvedSelection(resolved);
-  return { selection: resolved, metadata, workingDirectories };
+  return { selection: resolved, metadata, workingDirectories, jobContexts };
 }

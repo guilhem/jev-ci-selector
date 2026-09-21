@@ -1,11 +1,16 @@
 import { InputError } from './input-error.js';
-import { APITimeoutError, noul, TypeSafeClient, type EntryType } from '@typesafe-ai/sdk';
+import { APITimeoutError, choice, noul, TypeSafeClient, type EntryType } from '@typesafe-ai/sdk';
 import type { ResolvedSelection } from './tasks.js';
 
 export interface Usage { input_tokens: number; output_tokens: number }
 export interface JevMetadata { model: string | null; usage: Usage | null }
 export interface JevResult extends JevMetadata { probabilities: Record<string, number> }
 export interface JevApiOptions { apiBaseUrl?: string; apiModel?: string }
+export interface ChoiceJudgment {
+  choice: string;
+  probabilities: Record<string, number>;
+  confidence: number;
+}
 
 export function resolveJevApi(options: JevApiOptions) {
   const baseURL = options.apiBaseUrl || 'https://api.typesafe.ai';
@@ -26,8 +31,12 @@ export class JevError extends Error {
 }
 const record = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
-
-export function validateJevResponse(value: unknown, taskIds: string[], expectedModel: string): JevResult {
+const sameKeys = (value: Record<string, unknown>, expected: string[]) => {
+  const actual = Object.keys(value).sort();
+  const sortedExpected = [...expected].sort();
+  return actual.length === sortedExpected.length && actual.every((key, index) => key === sortedExpected[index]);
+};
+const metadataFor = (value: unknown): JevMetadata => {
   const model = record(value) && typeof value.model === 'string' && /^jev-\d+\.\d+\.\d+$/.test(value.model) ? value.model : null;
   let usage: Usage | null = null;
   if (record(value) && record(value.usage)) {
@@ -37,8 +46,12 @@ export function validateJevResponse(value: unknown, taskIds: string[], expectedM
       usage = { input_tokens: input_tokens as number, output_tokens: output_tokens as number };
     }
   }
-  const metadata = { model, usage };
-  if (!record(value) || model !== expectedModel || !usage || !record(value.answers) ||
+  return { model, usage };
+};
+
+export function validateJevResponse(value: unknown, taskIds: string[], expectedModel: string): JevResult {
+  const metadata = metadataFor(value);
+  if (!record(value) || metadata.model !== expectedModel || !metadata.usage || !record(value.answers) ||
     Object.keys(value.answers).sort().join('\0') !== [...taskIds].sort().join('\0')) throw new JevError('invalid-response', metadata);
   const probabilities: Record<string, number> = {};
   for (const id of [...taskIds].sort()) {
@@ -48,6 +61,49 @@ export function validateJevResponse(value: unknown, taskIds: string[], expectedM
     probabilities[id] = answer.noul;
   }
   return { probabilities, ...metadata };
+}
+
+export function validateChoicesResponse(value: unknown, questions: Record<string, ReturnType<typeof choice>>, expectedModel: string): JevMetadata & { answers: Record<string, ChoiceJudgment> } {
+  const metadata = metadataFor(value);
+  const questionIds = Object.keys(questions);
+  if (!record(value) || metadata.model !== expectedModel || !metadata.usage || !record(value.answers) ||
+    !sameKeys(value.answers, questionIds)) throw new JevError('invalid-response', metadata);
+
+  const answers: Record<string, ChoiceJudgment> = {};
+  for (const id of [...questionIds].sort()) {
+    const question = questions[id];
+    if (!record(question) || question.type !== 'choice' || !record(question.criteria)) {
+      throw new JevError('invalid-response', metadata);
+    }
+    const criteria = question.criteria;
+    const answer = value.answers[id];
+    if (!record(answer) || answer.type !== 'choice' || typeof answer.choice !== 'string' ||
+      !Object.prototype.hasOwnProperty.call(criteria, answer.choice) || typeof answer.confidence !== 'number' ||
+      !Number.isFinite(answer.confidence) || answer.confidence < 0 || answer.confidence > 1 ||
+      !record(answer.probabilities) || !sameKeys(answer.probabilities, Object.keys(criteria))) {
+      throw new JevError('invalid-response', metadata);
+    }
+
+    const probabilities: Record<string, number> = {};
+    let total = 0;
+    for (const option of Object.keys(criteria)) {
+      const probability = answer.probabilities[option];
+      if (typeof probability !== 'number' || !Number.isFinite(probability) || probability < 0 || probability > 1) {
+        throw new JevError('invalid-response', metadata);
+      }
+      probabilities[option] = probability;
+      total += probability;
+    }
+    // Jev has been observed to round three-option probabilities to two decimals (for example, 0.99).
+    // Keep the provider's selected option: live near-ties can disagree with the
+    // largest rounded probability. The choice must be an allowed option, not a
+    // locally reconstructed argmax.
+    if (Math.abs(total - 1) > 0.01 + 1e-9) {
+      throw new JevError('invalid-response', metadata);
+    }
+    answers[id] = { choice: answer.choice, probabilities, confidence: answer.confidence };
+  }
+  return { answers, ...metadata };
 }
 
 export type QuestionMode = 'single' | 'split';
@@ -75,6 +131,15 @@ export function buildQuestions(selection: ResolvedSelection, taskIds: string[], 
   })])));
 }
 
+type JevFetch = (url: string, init?: RequestInit) => Promise<Response>;
+function createJevClient(api: ReturnType<typeof resolveJevApi>, apiKey: string, requestedModel: string,
+  timeoutMs: number, fetchImpl?: JevFetch) {
+  // Explicit settings prevent SDK environment variables from redirecting data or enabling body logs.
+  return new TypeSafeClient({ apiKey, baseURL: api.baseURL,
+    defaultModel: requestedModel, logLevel: 'off', retry: { maxRetries: 0 }, timeout: timeoutMs,
+    fetch: (url, init) => (fetchImpl ?? globalThis.fetch)(url, { ...init, redirect: 'error' }) });
+}
+
 export async function evaluateJev(input: JevApiOptions & {
   selection: ResolvedSelection; taskIds: string[]; state: EntryType; apiKey: string; timeoutMs: number; questionMode?: QuestionMode;
 }, fetchImpl?: (url: string, init?: RequestInit) => Promise<Response>): Promise<JevResult> {
@@ -83,15 +148,31 @@ export async function evaluateJev(input: JevApiOptions & {
   const requestedModel = api.model ?? selection.model;
   if (!taskIds.length) throw new Error('empty-jev-request');
   const questions = buildQuestions(selection, taskIds, input.questionMode);
-  // Explicit settings prevent SDK environment variables from redirecting data or enabling body logs.
-  const client = new TypeSafeClient({ apiKey, baseURL: api.baseURL,
-    defaultModel: requestedModel, logLevel: 'off', retry: { maxRetries: 0 }, timeout: timeoutMs,
-    fetch: (url, init) => (fetchImpl ?? globalThis.fetch)(url, { ...init, redirect: 'error' }) });
+  const client = createJevClient(api, apiKey, requestedModel, timeoutMs, fetchImpl);
   const signal = AbortSignal.timeout(timeoutMs);
   try {
     const response: unknown = await client.systemOne({ model: requestedModel, state, questions },
       { signal, timeout: timeoutMs, retry: { maxRetries: 0 } });
     return validateJevResponse(response, Object.keys(questions), selection.model);
+  } catch (error) {
+    if (error instanceof JevError) throw error;
+    throw new JevError(error instanceof APITimeoutError || signal.aborted ? 'jev-timeout' : 'jev-error');
+  }
+}
+
+export async function evaluateChoices(input: JevApiOptions & {
+  model: string; state: EntryType; questions: Record<string, ReturnType<typeof choice>>; apiKey: string; timeoutMs: number;
+}, fetchImpl?: JevFetch): Promise<JevMetadata & { answers: Record<string, ChoiceJudgment> }> {
+  const { model, state, questions, apiKey, timeoutMs } = input;
+  const api = resolveJevApi(input);
+  if (!Object.keys(questions).length) throw new Error('empty-jev-request');
+  const requestedModel = api.model ?? model;
+  const client = createJevClient(api, apiKey, requestedModel, timeoutMs, fetchImpl);
+  const signal = AbortSignal.timeout(timeoutMs);
+  try {
+    const response: unknown = await client.systemOne({ model: requestedModel, state, questions },
+      { signal, timeout: timeoutMs, retry: { maxRetries: 0 } });
+    return validateChoicesResponse(response, questions, model);
   } catch (error) {
     if (error instanceof JevError) throw error;
     throw new JevError(error instanceof APITimeoutError || signal.aborted ? 'jev-timeout' : 'jev-error');

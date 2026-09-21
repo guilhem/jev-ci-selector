@@ -5,7 +5,7 @@ branding:
   color: purple
 inputs:
   tasks:
-    description: YAML mapping of task IDs to objects with a description and optional jobs, context_files, always and force_paths.
+    description: YAML mapping of task IDs to objects with a description and optional jobs, context_files, resolve_context_files, always and force_paths.
     required: true
   model:
     description: Canonical Jev model version expected in the response.
@@ -41,7 +41,7 @@ inputs:
     description: Bypass optimization immediately.
     default: 'false'
   timeout-ms:
-    description: Total Jev evaluation budget, with at most 3 concurrent requests and 10 seconds per request, without retries.
+    description: Total context-preparation and final Jev evaluation budget, with at most 3 concurrent requests and 10 seconds per request, without retries.
     default: '10000'
   max-diff-bytes:
     description: Maximum complete UTF-8 diff size; not a token count.

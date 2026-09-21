@@ -6,7 +6,7 @@ import { planChange, eventContext, type Inputs, type Context, type PlannerDepend
 import { type SelectionDefinition } from '../../src/tasks.js';
 import { ChangeError } from '../../src/changes.js';
 import { evaluateJev, JevError } from '../../src/jev.js';
-import { actionOutputs } from '../../src/report.js';
+import { actionOutputs, summary } from '../../src/report.js';
 import { patch } from '../fixtures/diff.js';
 
 const inputs: Inputs = { ...routingSelection(), mode: 'enforce', githubToken: 'github-private', apiKey: 'typesafe-private',
@@ -15,13 +15,15 @@ const context: Context = { eventName: 'pull_request', repository: 'acme/example'
   baseSha: 'a'.repeat(40), headSha: 'b'.repeat(40), testedSha: 'c'.repeat(40), fork: false };
 const customApi = { apiBaseUrl: 'https://opencode.ai/zen/', apiModel: 'jev-1.13-free' };
 function routingSelection(): SelectionDefinition {
-  return { model: 'jev-1.13.0', skip_below: 0.05, tasks: {
+  const result: SelectionDefinition = { model: 'jev-1.13.0', skip_below: 0.05, tasks: {
     unit: { description: 'Does this change affect unit checks?', jobs: [{ workflow: '.github/workflows/ci.yml', job: 'unit' }], always: true },
     helm: { description: 'Does this change affect chart rendering?', jobs: [{ workflow: '.github/workflows/ci.yml', job: 'helm' }], force_paths: ['charts/**'] },
     e2e: { description: 'Does this change affect network routing?', jobs: [{ workflow: '.github/workflows/ci.yml', job: 'e2e' }] },
     build: { description: 'Does this change affect compilation?', jobs: [{ workflow: '.github/workflows/ci.yml', job: 'build' }] },
     prepare: { description: 'Does this change affect generated files?', jobs: [{ workflow: '.github/workflows/ci.yml', job: 'prepare' }] },
   } };
+  for (const task of Object.values(result.tasks)) task.resolve_context_files = false;
+  return result;
 }
 const routingWorkflow = `jobs:
   prepare:
@@ -40,6 +42,7 @@ function fixture(options: { paths?: string[]; diff?: string; failure?: Error; je
   const dependencies: PlannerDependencies = {
     createRepository: async () => ({
       fetchCommit: async sha => { calls.fetch.push(sha); },
+      listFiles: async () => [],
       readFile: async (sha, path) => {
         calls.read.push(`${sha}:${path}`);
         if (path === '.github/workflows/ci.yml') return Buffer.from(routingWorkflow);
@@ -67,7 +70,7 @@ test('planner uses only base metadata, tested merge SHA, source-free report and 
   const { plan, report } = await planChange({ ...inputs, mode: 'shadow' }, context, dependencies);
   assert.deepEqual(calls, { fetch: [context.baseSha], read: [`${context.baseSha}:.github/workflows/ci.yml`], collect: 1, evaluate: 1, dispose: 1 });
   assert.equal(report.tested_sha, context.testedSha); assert.equal(report.metadata_sha, context.baseSha);
-  assert.equal(report.version, 5); assert.ok(report.observation);
+  assert.equal(report.version, 6); assert.ok(report.observation);
   assert.deepEqual(report.model, { requested: 'jev-1.13.0', expected: 'jev-1.13.0', returned: 'jev-1.13.0' });
   assert.equal(report.tasks.helm!.proposed_run, false); assert.equal(report.tasks.helm!.run, true);
   assert.ok(!JSON.stringify(report).includes('SENTINEL'));
@@ -75,6 +78,102 @@ test('planner uses only base metadata, tested merge SHA, source-free report and 
   const outputs = actionOutputs(plan, context.testedSha, '/tmp/report.json');
   assert.equal(outputs.status, 'planned'); assert.equal(outputs['has-tasks'], 'true');
   assert.deepEqual(Object.keys(JSON.parse(outputs.run!)), ['build', 'e2e', 'helm', 'prepare', 'unit']);
+});
+test('default context resolution feeds the final evaluation and reports all inference usage', async () => {
+  const f = fixture();
+  const definition: SelectionDefinition = { model: 'jev-1.13.0', skip_below: 0.05, tasks: {
+    helm: { description: 'Renders charts', jobs: [{ workflow: '.github/workflows/ci.yml', job: 'helm' }] },
+  } };
+  const create = f.dependencies.createRepository!;
+  let finalBudget = 0;
+  const { plan, report } = await planChange({ ...inputs, ...definition }, context, {
+    ...f.dependencies,
+    createRepository: async options => {
+      const repository = await create(options);
+      return { ...repository, listFiles: async sha => { assert.equal(sha, context.baseSha); return ['charts/config.yml']; },
+        readFile: async (sha, path) => path === 'charts/config.yml' ? Buffer.from('PRIVATE-CONFIG-SENTINEL') : repository.readFile(sha, path) };
+    },
+    evaluateContext: async request => {
+      assert.ok(!JSON.stringify(request.state).includes(context.headSha));
+      return { model: 'jev-1.13.0', usage: { input_tokens: 10, output_tokens: 2 }, answers: Object.fromEntries(Object.entries(request.questions).map(([id, question]) => {
+        const selected = Object.hasOwn(question.criteria, 'keep') ? 'keep' : 'inspect';
+        return [id, { choice: selected, confidence: 1, probabilities: Object.fromEntries(Object.keys(question.criteria).map(option => [option, option === selected ? 1 : 0])) }];
+      })) };
+    },
+    evaluate: async request => {
+      finalBudget = request.timeoutMs;
+      assert.ok(JSON.stringify(request.selection.tasks.helm!.evidence).includes('PRIVATE-CONFIG-SENTINEL'));
+      return { model: 'jev-1.13.0', usage: { input_tokens: 30, output_tokens: 3 }, probabilities: { helm: 0.9 } };
+    },
+  });
+  assert.equal(plan.tasks.helm!.run, true);
+  assert.equal(report.context_resolution['.github/workflows/ci.yml#helm']!.passes.length, 2);
+  assert.deepEqual(report.usage, { input_tokens: 50, output_tokens: 7 });
+  assert.ok(finalBudget > 0 && finalBudget < inputs.timeoutMs);
+  assert.ok(!JSON.stringify(report).includes('PRIVATE-CONFIG-SENTINEL'));
+});
+test('context reports preserve literal Git paths whether ignored or retained and escape their display', async () => {
+  for (const separator of ['\n', '\r']) for (const retained of [false, true]) {
+    const path = `config/line${separator}|\`scope.cfg`;
+    const f = fixture();
+    const create = f.dependencies.createRepository!;
+    const reads: string[] = [];
+    const { plan, report } = await planChange({ ...inputs, tasks: { check: { description: 'Checks configuration.' } } }, context, {
+      ...f.dependencies,
+      createRepository: async options => ({ ...await create(options), listFiles: async () => [path],
+        readFile: async (sha, file) => {
+          assert.equal(sha, context.baseSha);
+          reads.push(file);
+          assert.equal(file, path);
+          return Buffer.from('PRIVATE-CONFIG-SENTINEL');
+        },
+      }),
+      evaluateContext: async request => ({ model: 'jev-1.13.0', usage: { input_tokens: 10, output_tokens: 2 },
+        answers: Object.fromEntries(Object.entries(request.questions).map(([id, question]) => {
+          const selected = retained ? Object.hasOwn(question.criteria, 'keep') ? 'keep' : 'inspect' : 'ignore';
+          return [id, { choice: selected, confidence: 1,
+            probabilities: Object.fromEntries(Object.keys(question.criteria).map(option => [option, option === selected ? 1 : 0])) }];
+        })),
+      }),
+      evaluate: async request => {
+        const files = request.selection.tasks.check!.evidence.contextFiles as Array<{ path: string }>;
+        assert.deepEqual(files.map(file => file.path), retained ? [path] : []);
+        return { model: 'jev-1.13.0', usage: null, probabilities: { check: 0 } };
+      },
+    });
+    assert.equal(plan.status, 'planned');
+    assert.equal(actionOutputs(plan, context.testedSha, '/tmp/report.json').check, 'false');
+    assert.deepEqual(reads, retained ? [path] : []);
+    const resolution = JSON.parse(JSON.stringify(report)).context_resolution['task:check'];
+    for (const pass of resolution.passes) {
+      assert.deepEqual(pass.calls[0].paths, [path]);
+      assert.deepEqual(Object.keys(pass.calls[0].judgments), [path]);
+    }
+    assert.deepEqual(resolution.sources.map((source: { path: string }) => source.path), retained ? [path] : []);
+    const display = summary(report);
+    assert.ok(!display.includes(path));
+    if (retained) assert.ok(display.includes('config/line \\|\\`scope.cfg'));
+    assert.ok(!JSON.stringify(report).includes('PRIVATE-CONFIG-SENTINEL'));
+  }
+});
+test('a preparation failure keeps its job while an explicitly configured unrelated task may still skip', async () => {
+  const f = fixture();
+  const definition: SelectionDefinition = { model: 'jev-1.13.0', skip_below: 0.05, tasks: {
+    helm: { description: 'Renders charts', jobs: [{ workflow: '.github/workflows/ci.yml', job: 'helm' }] },
+    build: { description: 'Builds', resolve_context_files: false },
+  } };
+  const create = f.dependencies.createRepository!;
+  const { plan, report } = await planChange({ ...inputs, ...definition }, context, {
+    ...f.dependencies,
+    createRepository: async options => ({ ...await create(options), listFiles: async () => ['config.ini'] }),
+    evaluateContext: async () => { throw new JevError('jev-error', { model: 'jev-1.13.0', usage: { input_tokens: 7, output_tokens: 1 } }); },
+  });
+  assert.equal(plan.tasks.helm!.run, true);
+  assert.equal(plan.tasks.build!.run, false);
+  assert.equal(plan.status, 'fallback');
+  assert.ok(plan.tasks.helm!.reasons.includes('context-resolution-incomplete'));
+  assert.equal(report.context_resolution['.github/workflows/ci.yml#helm']!.status, 'incomplete');
+  assert.deepEqual(report.usage, { input_tokens: 107, output_tokens: 21 });
 });
 test('custom API selection reports the sent alias and pinned version and falls back on a version change', async () => {
   for (const mode of ['shadow', 'enforce'] as const) for (const returnedModel of ['jev-1.13.0', 'jev-1.13.1']) {
@@ -249,7 +348,7 @@ test('routing jobs keep native workflow dependencies out of selector policy and 
   });
   assert.equal(plan.run.compile, false);
   assert.equal(plan.run.verify, true);
-  assert.equal(report.version, 5);
+  assert.equal(report.version, 6);
   assert.match(JSON.stringify(report.job_metadata), /workflow-job/);
   assert.ok(!JSON.stringify(report).includes('PRIVATE-CONFIG-SENTINEL'));
 });

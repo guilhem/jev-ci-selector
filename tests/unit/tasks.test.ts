@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { stringify, parse } from 'yaml';
 import { readFileSync } from 'node:fs';
-import { parseTasks, validateSelection, validateResolvedSelection, parseSelectionInputs } from '../../src/tasks.js';
+import { parseTasks, validateSelection, validateResolvedSelection, parseSelectionInputs, selectionHash } from '../../src/tasks.js';
 import { selection } from '../fixtures/selection.js';
 
 const task = { description: 'Checks unit behavior.' };
@@ -14,12 +14,21 @@ test('tasks are required but explicit empty tasks are valid', () => {
   assert.deepEqual(inputs({ tasks: '{}' }), { model: 'jev-1.13.0', skip_below: 0.05, tasks: {} });
 });
 test('descriptions suffice; job metadata is optional and strict when supplied', () => {
-  assert.deepEqual(parseTasks(stringify({ unit: task })), { unit: { ...task, always: false } });
+  assert.deepEqual(parseTasks(stringify({ unit: task })), { unit: { ...task, always: false, resolve_context_files: true } });
   assert.doesNotThrow(() => parseTasks(stringify({ unit: { ...task, jobs: [{ workflow: '.github/workflows/ci.yml' }] } })));
   for (const invalid of ['description', {}, { description: ' ' }, { ...task, jobs: [] }, { ...task, jobs: [{ job: 'unit' }] },
     { ...task, question: 'unsupported' }, { ...task, requires: ['build'] }, { ...task, always: 'true' }, { ...task, unknown: true }]) {
     assert.throws(() => parseTasks(stringify({ unit: invalid })));
   }
+});
+test('context resolution defaults on, validates booleans, and is part of the selection identity', () => {
+  const implicit = inputs({ tasks: stringify({ unit: task }) });
+  const enabled = inputs({ tasks: stringify({ unit: { ...task, resolve_context_files: true } }) });
+  const disabled = inputs({ tasks: stringify({ unit: { ...task, resolve_context_files: false } }) });
+  assert.equal(disabled.tasks.unit!.resolve_context_files, false);
+  assert.equal(selectionHash(implicit), selectionHash(enabled));
+  assert.notEqual(selectionHash(implicit), selectionHash(disabled));
+  for (const value of ['false', 0, null]) assert.throws(() => parseTasks(stringify({ unit: { ...task, resolve_context_files: value } })));
 });
 test('models and decimal thresholds are strict; zero is preserved', () => {
   assert.equal(inputs({ tasks: '{}', 'skip-below': '0' }).skip_below, 0);

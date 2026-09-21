@@ -27,12 +27,12 @@ GitHub passes strings. Validation and normalization precede Git or HTTP access, 
 | `api-base-url` | `https://api.typesafe.ai` | HTTPS Jev System One root |
 | `api-model` | `model` | Provider identifier, possibly an alias |
 | `api-key` | Empty | Provider Bearer key; absent means no call and all tasks |
-| `allow-external-context` | `'false'` | Explicit authorization to send diff and metadata |
+| `allow-external-context` | `'false'` | Explicit authorization to send diff, job metadata and context files |
 | `github-token` | `${{ github.token }}` | GitHub token; ordinarily `contents: read` |
 | `tested-ref` | `merge` | `merge` or `head` |
 | `pull-request` | Empty | Open PR number for `workflow_dispatch`; add `pull-requests: read` |
 | `force-all` | `'false'` | All tasks, no Jev request |
-| `timeout-ms` | `10000` | Integer from 1 to 2147483647; total evaluation deadline |
+| `timeout-ms` | `10000` | Integer from 1 to 2147483647; shared context-preparation and final evaluation deadline |
 | `max-diff-bytes` | `65536` | Positive safe integer; complete UTF-8 diff limit |
 
 Boolean inputs accept only `true` and `false`; quote them in YAML. Integers use decimal integer syntax, without permissive suffix parsing. The threshold accepts decimal syntax, not NaN, infinity or suffixes. Zero is a valid threshold and prevents model-based exclusion.
@@ -59,11 +59,18 @@ tasks: |
 | --- | --- |
 | `description` | Required nonblank string describing verification scope |
 | `jobs` | Optional nonempty list of workflow/job references |
-| `context_files` | Optional list of repository-relative paths |
+| `context_files` | Optional list of repository-relative paths; explicitly requested files are always retained |
+| `resolve_context_files` | Boolean, default `true`; `false` disables additional discovery only, while job evidence remains |
 | `always` | Boolean, default `false`; forces execution |
 | `force_paths` | Optional list of positive globs; a match forces execution |
 
-A job reference has required `workflow` and optional `job`. Omitting `job` includes every job of that workflow. No other reference fields are accepted. Metadata includes job and step names, commands, action references and their declared inputs, relevant package scripts and explicitly requested context files. A description alone is complete; optional metadata enriches the same evaluation pipeline.
+A job reference has required `workflow` and optional `job`. Omitting `job` includes every job of that workflow. No other reference fields are accepted. Metadata includes job and step names, commands, action references and their declared inputs, relevant package scripts and explicitly requested context files. A description alone is complete; when no job is declared, it supplies the context anchor. Optional metadata enriches the same evaluation pipeline.
+
+When `resolve_context_files` is enabled, context is prepared per real workflow/job. Tasks sharing several jobs receive the union of their job context. Preparation has two passes over all tracked Git paths without a lexical or language filter: the first discovers paths, and the second reads and qualifies those paths while discovering additional paths before reading them. The current Noul diff evaluation follows preparation. Explicit `context_files` are always retained in the prepared context, whether discovery is enabled or disabled.
+
+Requests batch candidate paths and full source files within the existing byte limits. Unread paths are considered against each source batch; a positive or uncertain judgment retains the candidate. Files are not silently truncated. The questions seek operational evidence for the specific job, not every file it processes or general documentation on the same topic.
+
+Preparation uses the trusted metadata SHA for every read and never executes repository code. It has no persistent cache. A stable preparation request body excludes pull-request, diff and global commit metadata; changing relevant file content changes the corresponding body. The shared `timeout-ms` budget covers preparation and final evaluation, with at most three concurrent requests, a ten-second limit per request and no retries. Budgets are not expanded automatically. Context resolution is generic and does not infer TypeScript-specific semantics.
 
 IDs match `^[A-Za-z_][A-Za-z0-9_-]{0,63}$` and are unique ignoring case. Standard output names and dangerous JavaScript property names are reserved by the [schema](../schemas/tasks.schema.json). Job names such as `plan` and `ci-contract` are not reserved task IDs.
 
@@ -89,7 +96,7 @@ A `workflow_dispatch` with `pull-request` evaluates that open PR using the same 
 
 An optional task is excluded only when all required observations are complete and their scores are strictly below `skip-below`. Equality retains the task. `always`, matching task paths and workflow changes impose execution. Workflow `needs` remains the only execution dependency mechanism: keep prerequisites mandatory where necessary.
 
-Forks, missing key or consent, and `force-all` bypass Jev and keep all tasks. Unusable diffs, deadlines and incompatible or incomplete responses retain tasks conservatively. A requested but unavailable metadata reference retains the affected task; omitting references deliberately is valid. Shadow mode keeps all effective outputs true while recording proposals.
+Forks, missing key or consent, and `force-all` bypass Jev and keep all tasks. Unusable diffs, deadlines and incompatible or incomplete responses retain tasks conservatively. Sources that are too large, unreadable or incomplete retain affected tasks; deterministic policy remains authoritative. Preparation failure is scoped to the affected resolved task: it is marked to run, its synthetic `always` reason is removed, `context-resolution-incomplete` is added, and the plan becomes `fallback` unless an existing bypass already controls it. Complete or explicitly unrelated tasks may still be skipped. Final observation incompleteness keeps the existing global fallback behavior. A requested but unavailable metadata reference retains the affected task; omitting references deliberately is valid. Shadow mode keeps all effective outputs true while recording proposals, and enforce mode applies the same conservative policy decisions.
 
 Invalid inputs fail without a plan, even with `force-all`. Unexpected internal failures remain failures. Error diagnostics name a known field and fixed constraint, never supplied values or raw YAML/provider errors.
 
@@ -108,17 +115,17 @@ All values are strings. JSON structures use stable task identifier order.
 | `tested-sha` | Immutable tested commit |
 | `report-path` | Runner-local JSON report path |
 
-Named and aggregate outputs agree. Shadow, bypass and fallback retain all declared tasks. For `{}`, `run` is `{}`, `selected` is `[]`, `matrix` has an empty `include`, and `has-tasks` is `false`.
+Named and aggregate outputs agree. Shadow and bypass retain all declared tasks. Fallback retains affected tasks; a global fallback retains every task. For `{}`, `run` is `{}`, `selected` is `[]`, `matrix` has an empty `include`, and `has-tasks` is `false`.
 
 Use `steps.select.outputs.unit == 'true'` within a job, or forward it through job outputs for `needs.selection.outputs.unit == 'true'`. Check `has-tasks` before matrix expansion. Keep existing CI failure gates; the action does not make a skipped consumer job prove that planning succeeded. [Static](../examples/static-jobs/README.md) and [matrix](../examples/matrix/README.md) examples include advanced final gates.
 
-## Report v5
+## Report v6
 
-The report is persisted and validated before outputs are published. The [strict schema](../schemas/report.schema.json) is authoritative; the current analyzer accepts only v5.
+The report is persisted and validated before outputs are published. The [strict schema](../schemas/report.schema.json) is authoritative; historical report versions are rejected and the current analyzer accepts only v6. Version 6 adds generic context-resolution evidence while keeping the report source-free.
 
 | Group | Fields |
 | --- | --- |
-| Version | `version: 5` |
+| Version | `version: 6` |
 | Commits | `base_sha`, `head_sha`, `tested_sha`, `tested_ref`, `diff_base_sha` |
 | Metadata | `metadata_sha`, `job_metadata` |
 | Definition | `selection_hash`, `skip_below` |
@@ -127,10 +134,13 @@ The report is persisted and validated before outputs are published. The [strict 
 | Model | `model.requested`, `model.expected`, `model.returned` |
 | Decisions | `tasks` |
 | Observations | `observation`, `observation_error` |
+| Context resolution | `context_resolution` |
 
 `metadata_sha` is the reference revision for metadata even when no task requests it. `selection_hash` is SHA-256 of canonical JSON `{ model, skip_below, tasks }` after normalization and defaults: recursively sorted object keys, preserved array order. YAML formatting does not change it.
 
-Each task decision contains `proposed_run`, `run` and `reasons`. Scores live in observations by group, not in a synthetic global task probability. Observations include groups, requests, scores, errors, models, usages and durations. Reports omit descriptions, file bodies, diffs, keys and provider error bodies.
+Each task decision contains `proposed_run`, `run` and `reasons`. Scores live in observations by group, not in a synthetic global task probability. Observations include groups, requests, scores, errors, models, usages and durations. `context_resolution` records task IDs, complete or incomplete status, context errors, trusted source paths with SHA-256 hashes and preparation passes. Calls record paths, request hashes, status, judgments, model, usage, duration and a fixed error code. It contains no file contents, raw source, diffs, secrets or provider error text. An empty object represents disabled or bypassed context resolution.
+
+Context judgments use the `inspect`/`ignore`/`uncertain` or `keep`/`discard`/`uncertain` option sets, with bounded numeric probabilities and confidence. Preparation sources that are too large, unreadable or incomplete do not authorize skipping. The root `usage` includes preparation and final evaluation usage. Stable preparation bodies and request hashes make externally managed caching possible, but the action has no persistent cache and does not claim a performance result.
 
 The summary leads with mode, status, actual decisions, shadow proposals and fallback reasons. Detailed observations are secondary; reports and artifacts are optional for normal use.
 

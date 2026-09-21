@@ -6885,7 +6885,7 @@ import { pathToFileURL } from "node:url";
 // schemas/report.schema.json
 var report_schema_default = {
   $schema: "http://json-schema.org/draft-07/schema#",
-  title: "jev-ci-selector source-free report v5",
+  title: "jev-ci-selector source-free report v6",
   type: "object",
   additionalProperties: false,
   required: [
@@ -6909,11 +6909,12 @@ var report_schema_default = {
     "diff_base_sha",
     "job_metadata",
     "observation_error",
-    "observation"
+    "observation",
+    "context_resolution"
   ],
   properties: {
     version: {
-      const: 5
+      const: 6
     },
     base_sha: {
       $ref: "#/definitions/sha"
@@ -7067,7 +7068,8 @@ var report_schema_default = {
                 "chunked-observation",
                 "observation-only",
                 "metadata-unavailable",
-                "observation-incomplete"
+                "observation-incomplete",
+                "context-resolution-incomplete"
               ]
             }
           }
@@ -7083,6 +7085,15 @@ var report_schema_default = {
           $ref: "#/definitions/observation"
         }
       ]
+    },
+    context_resolution: {
+      type: "object",
+      propertyNames: {
+        pattern: "^[^\\r\\n\\u0000]+$"
+      },
+      additionalProperties: {
+        $ref: "#/definitions/jobContextResolution"
+      }
     },
     tested_ref: {
       enum: [
@@ -7484,6 +7495,297 @@ var report_schema_default = {
           items: {
             type: "string",
             pattern: "^[A-Za-z_][A-Za-z0-9_-]{0,63}$"
+          }
+        }
+      }
+    },
+    contextError: {
+      enum: [
+        "jev-timeout",
+        "jev-error",
+        "invalid-response",
+        "git-read-failed",
+        "context-too-large"
+      ]
+    },
+    choiceJudgment: {
+      anyOf: [
+        {
+          $ref: "#/definitions/inspectChoiceJudgment"
+        },
+        {
+          $ref: "#/definitions/keepChoiceJudgment"
+        }
+      ]
+    },
+    inspectChoiceJudgment: {
+      type: "object",
+      additionalProperties: false,
+      required: [
+        "choice",
+        "probabilities",
+        "confidence"
+      ],
+      properties: {
+        choice: {
+          enum: [
+            "inspect",
+            "ignore",
+            "uncertain"
+          ]
+        },
+        probabilities: {
+          $ref: "#/definitions/inspectProbabilities"
+        },
+        confidence: {
+          type: "number",
+          minimum: 0,
+          maximum: 1
+        }
+      }
+    },
+    keepChoiceJudgment: {
+      type: "object",
+      additionalProperties: false,
+      required: [
+        "choice",
+        "probabilities",
+        "confidence"
+      ],
+      properties: {
+        choice: {
+          enum: [
+            "keep",
+            "discard",
+            "uncertain"
+          ]
+        },
+        probabilities: {
+          $ref: "#/definitions/keepProbabilities"
+        },
+        confidence: {
+          type: "number",
+          minimum: 0,
+          maximum: 1
+        }
+      }
+    },
+    inspectProbabilities: {
+      type: "object",
+      required: [
+        "inspect",
+        "ignore",
+        "uncertain"
+      ],
+      propertyNames: {
+        enum: [
+          "inspect",
+          "ignore",
+          "uncertain"
+        ]
+      },
+      properties: {
+        inspect: { type: "number", minimum: 0, maximum: 1 },
+        ignore: { type: "number", minimum: 0, maximum: 1 },
+        uncertain: { type: "number", minimum: 0, maximum: 1 }
+      },
+      additionalProperties: {
+        type: "number",
+        minimum: 0,
+        maximum: 1
+      }
+    },
+    keepProbabilities: {
+      type: "object",
+      required: [
+        "keep",
+        "discard",
+        "uncertain"
+      ],
+      propertyNames: {
+        enum: [
+          "keep",
+          "discard",
+          "uncertain"
+        ]
+      },
+      properties: {
+        keep: { type: "number", minimum: 0, maximum: 1 },
+        discard: { type: "number", minimum: 0, maximum: 1 },
+        uncertain: { type: "number", minimum: 0, maximum: 1 }
+      },
+      additionalProperties: {
+        type: "number",
+        minimum: 0,
+        maximum: 1
+      }
+    },
+    contextCall: {
+      type: "object",
+      additionalProperties: false,
+      required: [
+        "paths",
+        "request_hash",
+        "status",
+        "judgments",
+        "model",
+        "usage",
+        "duration_ms",
+        "error"
+      ],
+      properties: {
+        paths: {
+          type: "array",
+          items: {
+            type: "string",
+            pattern: "^[^\\u0000]+$"
+          }
+        },
+        request_hash: {
+          type: "string",
+          pattern: "^[a-f0-9]{64}$"
+        },
+        status: {
+          enum: [
+            "completed",
+            "failed",
+            "not-started"
+          ]
+        },
+        judgments: {
+          anyOf: [
+            {
+              type: "null"
+            },
+            {
+              type: "object",
+              propertyNames: {
+                pattern: "^[^\\u0000]+$"
+              },
+              additionalProperties: {
+                $ref: "#/definitions/choiceJudgment"
+              }
+            }
+          ]
+        },
+        model: {
+          type: [
+            "string",
+            "null"
+          ],
+          pattern: "^[^\\r\\n\\u0000]*$"
+        },
+        usage: {
+          $ref: "#/definitions/usageOrNull"
+        },
+        duration_ms: {
+          type: [
+            "number",
+            "null"
+          ],
+          minimum: 0
+        },
+        error: {
+          anyOf: [
+            {
+              $ref: "#/definitions/contextError"
+            },
+            {
+              type: "null"
+            }
+          ]
+        }
+      }
+    },
+    contextPass: {
+      type: "object",
+      additionalProperties: false,
+      required: [
+        "index",
+        "calls"
+      ],
+      properties: {
+        index: {
+          type: "integer",
+          minimum: 1,
+          maximum: 3
+        },
+        calls: {
+          type: "array",
+          items: {
+            $ref: "#/definitions/contextCall"
+          }
+        }
+      }
+    },
+    contextSource: {
+      type: "object",
+      additionalProperties: false,
+      required: [
+        "path",
+        "sha256",
+        "pass"
+      ],
+      properties: {
+        path: {
+          type: "string",
+          pattern: "^[^\\u0000]+$"
+        },
+        sha256: {
+          type: "string",
+          pattern: "^[a-f0-9]{64}$"
+        },
+        pass: {
+          type: "integer",
+          minimum: 1,
+          maximum: 3
+        }
+      }
+    },
+    jobContextResolution: {
+      type: "object",
+      additionalProperties: false,
+      required: [
+        "task_ids",
+        "status",
+        "error",
+        "sources",
+        "passes"
+      ],
+      properties: {
+        task_ids: {
+          type: "array",
+          items: {
+            type: "string",
+            pattern: "^[^\\r\\n\\u0000]*$"
+          }
+        },
+        status: {
+          enum: [
+            "complete",
+            "incomplete"
+          ]
+        },
+        error: {
+          anyOf: [
+            {
+              $ref: "#/definitions/contextError"
+            },
+            {
+              type: "null"
+            }
+          ]
+        },
+        sources: {
+          type: "array",
+          items: {
+            $ref: "#/definitions/contextSource"
+          }
+        },
+        passes: {
+          type: "array",
+          items: {
+            $ref: "#/definitions/contextPass"
           }
         }
       }

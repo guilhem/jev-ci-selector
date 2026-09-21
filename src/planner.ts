@@ -7,6 +7,8 @@ import { evaluateJev, resolveJevApi, type JevMetadata, type JevApiOptions } from
 import { globalPathReason, selectTasks, type ForceAllReason, type Mode } from './policy.js';
 import { validateReport, type Report } from './report.js';
 import { observeChange, ObservationSizeError, type Observation } from './observations.js';
+import { resolveContextFiles, type ContextResolutionReport } from './context.js';
+import { evaluateChoices } from './jev.js';
 
 export interface Inputs extends JevApiOptions, SelectionDefinition {
   testedRef?: 'head' | 'merge';
@@ -37,10 +39,11 @@ export function eventContext(env: NodeJS.ProcessEnv, event: unknown, testedRef: 
   return { eventName, repository, serverUrl: url.origin, testedSha: testedRef === 'head' ? head.sha : testedSha, baseSha: base.sha, headSha: head.sha, fork };
 }
 
-type Repository = Pick<GitRepository, 'fetchCommit' | 'readFile' | 'collect' | 'dispose'>;
+type Repository = Pick<GitRepository, 'fetchCommit' | 'readFile' | 'listFiles' | 'collect' | 'dispose'>;
 export interface PlannerDependencies {
   createRepository?: (options: { remoteUrl: string; token?: string }) => Promise<Repository>;
   evaluate?: typeof evaluateJev;
+  evaluateContext?: typeof evaluateChoices;
   resolveExternal?: ResolveTasksOptions['resolveExternal'];
 }
 
@@ -97,7 +100,7 @@ export async function planChange(inputs: Inputs, context: Context, dependencies:
       }
       if (change && repository) {
         let metadataAvailable = true;
-        if (metadataSha !== context.baseSha && Object.values(inputs.tasks).some(task => task.jobs?.length || task.context_files?.length)) {
+        if (metadataSha !== context.baseSha && Object.values(inputs.tasks).some(task => task.jobs?.length || task.context_files?.length || task.resolve_context_files !== false)) {
           try { await repository.fetchCommit(metadataSha); }
           catch (error) {
             if (!(error instanceof ChangeError)) throw error;
@@ -123,14 +126,18 @@ export async function planChange(inputs: Inputs, context: Context, dependencies:
     let metadata: JevMetadata = { model: null, usage: null };
     let jevMs: number | null = null;
     let observation: Observation | null = null;
+    let contextResolution: ContextResolutionReport = {};
     const candidates = Object.keys(selection.tasks).sort();
     // Workflow protection keeps full CI while still allowing an authorized observation.
     if (change && candidates.length) {
       const callStarted = performance.now();
+      const deadline = callStarted + inputs.timeoutMs;
       try {
+        if (repository) contextResolution = await resolveContextFiles({ configured, resolved, repository, commit: metadataSha,
+          apiKey: inputs.apiKey, deadline, apiBaseUrl: api.baseURL, apiModel: requestedModel }, dependencies.evaluateContext ?? evaluateChoices);
         const result = await observeChange({ selection, taskIds: candidates, workingDirectories: resolved.workingDirectories,
           apiBaseUrl: api.baseURL, apiModel: requestedModel,
-          apiKey: inputs.apiKey, timeoutMs: inputs.timeoutMs,
+          apiKey: inputs.apiKey, timeoutMs: Math.max(0, deadline - performance.now()),
           state: { base_sha: change.diffBaseSha ?? context.baseSha, head_sha: context.headSha, tested_sha: context.testedSha,
             changed_paths: change.changedPaths, diff: change.diff } }, dependencies.evaluate ?? evaluateJev);
         observation = result.observation;
@@ -141,14 +148,23 @@ export async function planChange(inputs: Inputs, context: Context, dependencies:
         if (!(error instanceof ObservationSizeError)) throw error;
         observationError = error.code;
         forced ??= { status: 'fallback', code: error.code };
-      } finally { jevMs = performance.now() - callStarted; }
+      } finally {
+        jevMs = performance.now() - callStarted;
+        const calls = Object.values(contextResolution).flatMap(job => job.passes.flatMap(pass => pass.calls));
+        const usages = [metadata.usage, ...calls.map(call => call.usage)].filter(value => value !== null);
+        metadata.usage = usages.length ? usages.reduce((total, usage) => ({ input_tokens: total.input_tokens + usage.input_tokens,
+          output_tokens: total.output_tokens + usage.output_tokens }), { input_tokens: 0, output_tokens: 0 }) : null;
+        metadata.model ??= calls.find(call => call.model !== null)?.model ?? null;
+      }
     }
     const plan = selectTasks({ selection, changedPaths: change?.changedPaths ?? [], ...(decisions ? { decisions } : {}),
       ...(observationError ? { observationError } : {}), mode: inputs.mode, ...(forced ? { forceAllReason: forced } : {}) });
     for (const [id, info] of Object.entries(resolved.metadata.tasks)) {
       if (!info.incomplete) continue;
       if (!configured.tasks[id]?.always) plan.tasks[id]!.reasons = plan.tasks[id]!.reasons.filter(reason => reason !== 'always');
-      plan.tasks[id]!.reasons.push('metadata-unavailable');
+      const contextIncomplete = info.missing.some(item => item.startsWith('context-resolution:'));
+      plan.tasks[id]!.reasons.push(contextIncomplete ? 'context-resolution-incomplete' : 'metadata-unavailable');
+      if (contextIncomplete && plan.status === 'planned') plan.status = 'fallback';
     }
     if (observation?.strategy === 'chunked-diff') {
       for (const id of candidates) plan.tasks[id]!.reasons.push('chunked-observation');
@@ -157,7 +173,7 @@ export async function planChange(inputs: Inputs, context: Context, dependencies:
       for (const id of candidates) plan.tasks[id]!.reasons.push('observation-only');
     }
     const report: Report = {
-      version: 5, tested_ref: inputs.testedRef ?? 'merge',
+      version: 6, tested_ref: inputs.testedRef ?? 'merge', context_resolution: contextResolution,
       diff_base_sha: change?.diffBaseSha ?? (inputs.testedRef === 'head' ? null : context.baseSha),
       job_metadata: resolved.metadata.tasks, observation_error: observationError ?? null,
       metadata_sha: metadataSha, base_sha: context.baseSha, head_sha: context.headSha, tested_sha: context.testedSha,

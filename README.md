@@ -29,6 +29,7 @@ jobs:
         with:
           api-key: ${{ secrets.JEV_API_KEY }}
           allow-external-context: 'true'
+          timeout-ms: '60000'
           tasks: |
             unit:
               description: >
@@ -73,13 +74,18 @@ with:
         - workflow: .github/workflows/ci.yml
           job: integration
       context_files: [tests/integration/setup.ts]
+      resolve_context_files: true
       force_paths: [migrations/**]
     lint:
       description: Verifies TypeScript ESLint rules.
       always: true
 ```
 
-Job references and context files are optional enrichment. They do not execute commands or create dependencies. `always` and matching `force_paths` impose execution. Missing required observations, unavailable metadata and provider errors retain the affected tasks conservatively. Forks, missing credentials or consent, and events outside PR evaluation retain all tasks without a Jev call.
+Job references and context files are optional enrichment. Explicit `context_files` are always retained; `resolve_context_files: false` disables only additional context discovery, while job evidence remains available. The default is `true`. Context preparation reads trusted Git metadata and tracked files without executing repository code. It uses two preparation passes over all tracked paths, with no lexical or language filter, then evaluates the diff.
+
+If preparation is incomplete, affected tasks run and the report records `context-resolution-incomplete` with status `fallback`. Independently evaluated tasks may still skip. An incomplete final observation retains the existing full-CI fallback. Forks, missing credentials or consent, and events outside PR evaluation retain all tasks without a Jev call.
+
+The quickstart gives preparation and evaluation a shared 60-second budget. The input default remains 10 seconds; larger trees can need a longer `timeout-ms`, or explicit context with `resolve_context_files: false`.
 
 A `false` output is a policy decision, not a guarantee that the task cannot detect a regression. The default threshold `0.05` is experimental. Changes to workflows retain all declared tasks. An invalid task definition fails selection without publishing a plan.
 
@@ -121,4 +127,4 @@ Tests use temporary Git repositories, mocked HTTP and the shipped bundles. Repla
 
 Commit regenerated bundles with their sources. `npm run check:dist` checks reproducibility. The action and standalone analyzer include their dependency license notices.
 
-This API is a breaking update: existing integrations must supply inline `tasks`; explicitly set `mode: shadow` to retain observation-only behavior. The current analyzer accepts report v5 only.
+This API is a breaking update: existing integrations must supply inline `tasks`; explicitly set `mode: shadow` to retain observation-only behavior. The current analyzer accepts report v6 only.

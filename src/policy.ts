@@ -11,6 +11,7 @@ export const REASONS = [
   'binary-change', 'submodule-change', 'unrepresentable-change',
   'jev-timeout', 'jev-error', 'invalid-response',
   'context-too-large', 'chunked-observation', 'observation-only', 'metadata-unavailable', 'observation-incomplete',
+  'context-resolution-incomplete',
 ] as const;
 export type Reason = typeof REASONS[number];
 export interface ForceAllReason { status: 'bypassed' | 'fallback'; code: Reason }

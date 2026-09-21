@@ -268,6 +268,18 @@ export class GitRepository {
     }
   }
 
+  async listFiles(sha: string): Promise<string[]> {
+    this.ensureOpen();
+    if (!validSha(sha)) throw new ChangeError('git-read-failed');
+    try {
+      const output = await GitRepository.runGitFrom(this.repoPath, this.env,
+        ['ls-tree', '-r', '--name-only', '-z', sha], MAX_METADATA_BYTES);
+      const paths = utf8Decoder.decode(output).split('\0');
+      if (paths.pop() !== '' || paths.some(path => !validLiteralPath(path))) throw new Error('invalid-tree');
+      return paths.sort();
+    } catch { throw new ChangeError('git-read-failed'); }
+  }
+
   async readFile(sha: string, path: string): Promise<Buffer> {
     this.ensureOpen();
     if (!validSha(sha) || !validLiteralPath(path)) throw new ChangeError('git-read-failed');
