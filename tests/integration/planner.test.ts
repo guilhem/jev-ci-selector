@@ -4,14 +4,15 @@ import { stringify, parse } from 'yaml';
 import { createHash } from 'node:crypto';
 import { planChange, eventContext, type Inputs, type Context, type PlannerDependencies } from '../../src/planner.js';
 import { type SelectionDefinition } from '../../src/tasks.js';
-import { ChangeError } from '../../src/changes.js';
+import { ChangeError, type ChangeEntry, type EntryIssueCode, type VerifiedComparison } from '../../src/changes.js';
 import { evaluateJev, JevError } from '../../src/jev.js';
 import { actionOutputs, summary } from '../../src/report.js';
 import { judgment } from '../fixtures/selection.js';
 import { patch } from '../fixtures/diff.js';
 
 const inputs: Inputs = { ...routingSelection(), mode: 'enforce', githubToken: 'github-private', apiKey: 'typesafe-private',
-  allowExternalContext: true, forceAll: false, timeoutMs: 1000, maxDiffBytes: 65536 };
+  allowExternalContext: true, forceAll: false, timeoutMs: 1000,
+  maxCollectedPatchBytes: 1024 * 1024, maxAnalysisBytes: 512 * 1024, maxJevCalls: 16 };
 const context: Context = { eventName: 'pull_request', repository: 'acme/example', serverUrl: 'https://github.com',
   baseSha: 'a'.repeat(40), headSha: 'b'.repeat(40), testedSha: 'c'.repeat(40), fork: false };
 const customApi = { apiBaseUrl: 'https://opencode.ai/zen/', apiModel: 'jev-1.13-free' };
@@ -38,8 +39,17 @@ const routingWorkflow = `jobs:
   unit:
     steps: []
 `;
-function fixture(options: { paths?: string[]; diff?: string; failure?: Error; jevFailure?: Error } = {}) {
-  const calls = { fetch: [] as string[], read: [] as string[], collect: 0, evaluate: 0, dispose: 0 };
+function entriesFor(paths: string[]): ChangeEntry[] {
+  return paths.map((path, index) => ({ id: `c${index}`, oldPath: null, newPath: path, oldOid: null,
+    newOid: 'a'.repeat(40), oldMode: null, newMode: '100644', status: 'A', issue: null }));
+}
+
+function fixture(options: {
+  paths?: string[]; diff?: string; failure?: Error; jevFailure?: Error;
+  patchIssue?: EntryIssueCode; manifestIncomplete?: boolean;
+} = {}) {
+  const calls = { fetch: [] as string[], read: [] as string[], collect: 0, evaluate: 0, dispose: 0, patches: 0 };
+  const paths = options.paths ?? ['source.txt'];
   const dependencies: PlannerDependencies = {
     createRepository: async () => ({
       fetchCommit: async sha => { calls.fetch.push(sha); },
@@ -49,11 +59,26 @@ function fixture(options: { paths?: string[]; diff?: string; failure?: Error; je
         if (path === '.github/workflows/ci.yml') return Buffer.from(routingWorkflow);
         throw new Error(`missing:${path}`);
       },
-      collect: async params => {
+      verifyComparison: async params => {
         calls.collect++; assert.equal(params.testedSha, context.testedSha);
         if (options.failure) throw options.failure;
-        const diff = options.diff ?? patch();
-        return { changedPaths: options.paths ?? ['source.txt'], diff, diffBytes: Buffer.byteLength(diff), diffHash: createHash('sha256').update(diff).digest('hex') };
+        return { baseSha: params.baseSha, headSha: params.headSha, diffBaseSha: params.baseSha,
+          testedSha: params.testedSha, testedRef: params.testedRef ?? 'merge' } satisfies VerifiedComparison;
+      },
+      collectManifest: async comparison => {
+        const entries = options.manifestIncomplete ? [] : entriesFor(paths);
+        return { comparison, entries, changedPaths: options.manifestIncomplete ? [] : [...paths].sort(),
+          complete: options.manifestIncomplete !== true,
+          manifestHash: options.manifestIncomplete ? null : 'f'.repeat(64) };
+      },
+      readPatch: async (_comparison, entries) => {
+        calls.patches++;
+        const changeIds = entries.map(entry => entry.id);
+        const unitPaths = entries.map(entry => entry.newPath!).filter(Boolean);
+        if (options.patchIssue) return { changeIds, paths: unitPaths, diff: '', bytes: 0, issue: options.patchIssue };
+        // The whole fixture diff belongs to the first unit; later units are empty.
+        const diff = calls.patches === 1 ? options.diff ?? patch() : '';
+        return { changeIds, paths: unitPaths, diff, bytes: Buffer.byteLength(diff), issue: null };
       },
       dispose: async () => { calls.dispose++; },
     }),
@@ -69,9 +94,10 @@ function fixture(options: { paths?: string[]; diff?: string; failure?: Error; je
 test('planner uses only base metadata, tested merge SHA, source-free report and stable effective outputs', async () => {
   const { calls, dependencies } = fixture();
   const { plan, report } = await planChange({ ...inputs, mode: 'shadow' }, context, dependencies);
-  assert.deepEqual(calls, { fetch: [context.baseSha], read: [`${context.baseSha}:.github/workflows/ci.yml`], collect: 1, evaluate: 1, dispose: 1 });
+  assert.deepEqual(calls, { fetch: [context.baseSha], read: [`${context.baseSha}:.github/workflows/ci.yml`],
+    collect: 1, evaluate: 1, dispose: 1, patches: 1 });
   assert.equal(report.tested_sha, context.testedSha); assert.equal(report.metadata_sha, context.baseSha);
-  assert.equal(report.version, 7); assert.ok(report.observation);
+  assert.equal(report.version, 8); assert.ok(report.observation);
   assert.deepEqual(report.model, { requested: 'jev-1.13.0', expected: 'jev-1.13.0', returned: 'jev-1.13.0' });
   assert.equal(report.tasks.helm!.proposed_run, false); assert.equal(report.tasks.helm!.run, true);
   assert.ok(!JSON.stringify(report).includes('SENTINEL'));
@@ -294,12 +320,33 @@ test('collection and Jev failures globally fall back; internal failures block', 
   await assert.rejects(planChange(inputs, context, fixture({ failure: new Error('internal defect') }).dependencies));
   await assert.rejects(planChange(inputs, context, fixture({ jevFailure: new Error('internal defect') }).dependencies));
 });
-test('fully deterministic selection keeps its mandatory task and observes its description', async () => {
+test('a fully deterministic selection costs nothing in enforce and is still observed in shadow', async () => {
   const value = routingSelection(); value.tasks = { unit: { ...value.tasks.unit!, always: true } };
-  const f = fixture();
-  const { plan, report } = await planChange({ ...inputs, ...value }, context, f.dependencies);
-  assert.equal(plan.status, 'planned'); assert.equal(f.calls.evaluate, 1);
- assert.equal(report.tasks.unit!.proposed_run, true);
+
+  // Every task is already required, so enforce reads no patch, resolves no
+  // metadata or context, and calls Jev zero times. Only the inventory is built.
+  const enforce = fixture();
+  const enforced = await planChange({ ...inputs, ...value }, context, enforce.dependencies);
+  assert.equal(enforced.plan.status, 'planned');
+  assert.equal(enforced.plan.run.unit, true);
+  assert.equal(enforce.calls.evaluate, 0);
+  assert.equal(enforce.calls.patches, 0);
+  assert.deepEqual(enforce.calls.read, []);
+  assert.equal(enforce.calls.collect, 1);
+  assert.equal(enforced.report.observation, null);
+  assert.equal(enforced.report.analysis.jev_calls, 0);
+  assert.equal(enforced.report.analysis.collected_patch_bytes, 0);
+  assert.deepEqual(enforced.report.analysis.analysed_tasks, []);
+  assert.deepEqual(enforced.report.analysis.required_without_analysis, ['unit']);
+  assert.equal(enforced.report.manifest.complete, true);
+  assert.equal(enforced.report.diff_hash, null);
+  assert.equal(enforced.report.diff_bytes, null);
+
+  // Shadow keeps proposing, so evaluation campaigns still see a judgment.
+  const shadow = fixture();
+  const observed = await planChange({ ...inputs, ...value, mode: 'shadow' }, context, shadow.dependencies);
+  assert.equal(shadow.calls.evaluate, 1);
+  assert.equal(observed.report.tasks.unit!.proposed_run, true);
 });
 test('event snapshots are immutable, strict and conservatively identify forks', () => {
   const env = { GITHUB_EVENT_NAME: 'pull_request', GITHUB_REPOSITORY: context.repository, GITHUB_SHA: context.testedSha };
@@ -392,7 +439,7 @@ test('routing jobs keep native workflow dependencies out of selector policy and 
   });
   assert.equal(plan.run.compile, false);
   assert.equal(plan.run.verify, true);
-  assert.equal(report.version, 7);
+  assert.equal(report.version, 8);
   assert.match(JSON.stringify(report.job_metadata), /workflow-job/);
   assert.ok(!JSON.stringify(report).includes('PRIVATE-CONFIG-SENTINEL'));
 });
@@ -413,15 +460,27 @@ test('missing job metadata keeps the affected task and records the evidence gap'
   assert.match(JSON.stringify(report.job_metadata), /workflow-missing/);
 });
 
-test('a failed observation preserves deterministic global policy and per-task reasons', async () => {
+test('a protected path costs nothing in enforce and still records its reasons', async () => {
   const f = fixture({ paths: ['.github/workflows/ci.yml', 'charts/values.yml'], jevFailure: new JevError('jev-timeout') });
   const { plan, report } = await planChange(inputs, context, f.dependencies);
   assert.equal(plan.status, 'bypassed');
-  assert.equal(report.observation_error, 'jev-timeout');
+  assert.equal(f.calls.evaluate, 0);
+  assert.equal(f.calls.patches, 0);
+  assert.equal(report.observation, null);
+  assert.equal(report.observation_error, null);
   assert.ok(plan.tasks.helm!.reasons.includes('protected-path'));
   assert.ok(plan.tasks.helm!.reasons.includes('path-match'));
   assert.ok(plan.tasks.unit!.reasons.includes('always'));
+});
+
+test('a protected path is still observed in shadow, without changing effective outputs', async () => {
+  const f = fixture({ paths: ['.github/workflows/ci.yml', 'charts/values.yml'], jevFailure: new JevError('jev-timeout') });
+  const { plan, report } = await planChange({ ...inputs, mode: 'shadow' }, context, f.dependencies);
+  assert.equal(plan.status, 'bypassed');
+  assert.ok(Object.values(plan.run).every(Boolean));
+  assert.equal(report.observation_error, 'jev-timeout');
   assert.equal(report.observation?.status, 'incomplete');
+  assert.ok(plan.tasks.helm!.reasons.includes('observation-only'));
 });
 
 
@@ -457,5 +516,235 @@ test('repository creation and base fetch failures retain every task', async () =
     assert.equal(f.calls.collect, 0); assert.equal(f.calls.evaluate, 0);
     assert.deepEqual(f.calls.read, []);
     assert.equal(f.calls.dispose, stage === 'create' ? 0 : 1);
+  }
+});
+
+test('an acquired execution removes a task from every request that has not started', async () => {
+  // Many groups: the first answers `required`. Only the calls already in flight
+  // may complete; no later group is ever dispatched.
+  const f = fixture({ diff: patch(2400) });
+  const asked: string[][] = [];
+  const { plan, report } = await planChange({ ...inputs, tasks: { check: { description: 'Checks backend rules.' } } }, context, {
+    ...f.dependencies,
+    evaluate: async request => {
+      asked.push([...request.taskIds]);
+      return { answers: Object.fromEntries(request.taskIds.map(id => [id, judgment('required')])),
+        model: 'jev-1.13.0', usage: { input_tokens: 5, output_tokens: 1 } };
+    },
+  });
+  const groups = report.observation!.chunks.length;
+  assert.ok(groups > 3, `expected several groups, got ${groups}`);
+  assert.ok(asked.length <= 3, `at most the concurrency bound was in flight, got ${asked.length}`);
+  assert.ok(asked.length < groups, 'later groups were never dispatched');
+  assert.ok(asked.every(ids => ids.length === 1));
+  assert.equal(plan.run.check, true);
+  assert.equal(plan.status, 'planned', 'an early stop is a decision, not a failure');
+  assert.deepEqual(plan.tasks.check!.reasons.filter(reason => reason !== 'chunked-observation'), ['jev-not-independent']);
+  assert.equal(report.analysis.task_states.check, 'settled-run');
+  assert.equal(report.analysis.coverage.check, false, 'no coverage is claimed for an acquired execution');
+  assert.equal(report.observation_error, null);
+  assert.equal(report.analysis.jev_calls, asked.length);
+  assert.ok(report.observation!.chunks.some(chunk => chunk.status === 'not-needed'));
+  assert.ok(report.observation!.chunks.every(chunk => chunk.error === null));
+  assert.equal(report.observation!.status, 'stopped-early');
+});
+
+test('an unresolved judgment acquires execution and stops just like required', async () => {
+  const f = fixture({ diff: patch(2400) });
+  let calls = 0;
+  const { plan, report } = await planChange({ ...inputs, tasks: { check: { description: 'Checks backend rules.' } } }, context, {
+    ...f.dependencies,
+    evaluate: async request => {
+      calls++;
+      return { answers: Object.fromEntries(request.taskIds.map(id => [id, judgment('unresolved')])),
+        model: 'jev-1.13.0', usage: { input_tokens: 5, output_tokens: 1 } };
+    },
+  });
+  assert.ok(calls <= 3 && calls < report.observation!.chunks.length);
+  assert.equal(plan.run.check, true);
+  assert.equal(report.analysis.task_states.check, 'settled-run');
+});
+
+test('a task decided independently keeps its exclusion when another task fails', async () => {
+  const f = fixture();
+  const definition = { model: 'jev-1.13.0', tasks: {
+    alpha: { description: 'Checks alpha behaviour.' },
+    beta: { description: 'Checks beta behaviour.' },
+  } };
+  const { plan, report } = await planChange({ ...inputs, ...definition }, context, {
+    ...f.dependencies,
+    evaluate: async request => {
+      if (request.taskIds.includes('beta')) throw new JevError('jev-error');
+      return { answers: Object.fromEntries(request.taskIds.map(id => [id, judgment()])),
+        model: 'jev-1.13.0', usage: { input_tokens: 5, output_tokens: 1 } };
+    },
+  });
+  // Both tasks share one request here, so the failure legitimately covers both.
+  assert.equal(plan.run.beta, true);
+  assert.equal(report.analysis.task_states.beta, 'fallback-run');
+  assert.equal(report.analysis.fallback_scope, 'partial');
+  assert.deepEqual(report.analysis.fallback_tasks, ['alpha', 'beta']);
+});
+
+test('an unreadable change retains every task that still needed it', async () => {
+  for (const [issue, reason] of [['binary', 'binary-change'], ['too-large', 'diff-too-large'],
+    ['git-read-failed', 'git-read-failed'], ['submodule', 'submodule-change']] as const) {
+    const f = fixture({ patchIssue: issue });
+    const { plan, report } = await planChange({ ...inputs, tasks: { check: { description: 'Checks backend rules.' } } }, context, f.dependencies);
+    assert.equal(plan.run.check, true, issue);
+    assert.equal(plan.status, 'fallback', issue);
+    assert.deepEqual(plan.tasks.check!.reasons, [reason], issue);
+    assert.equal(report.analysis.task_states.check, 'fallback-run', issue);
+    assert.equal(report.analysis.coverage.check, false, issue);
+    assert.equal(f.calls.evaluate, 0, issue);
+  }
+});
+
+test('an exhausted collection budget retains the tasks it could not cover', async () => {
+  const f = fixture({ diff: patch(40) });
+  const { plan, report } = await planChange(
+    { ...inputs, maxCollectedPatchBytes: 1, tasks: { check: { description: 'Checks backend rules.' } } },
+    context, f.dependencies);
+  assert.equal(plan.run.check, true);
+  assert.equal(plan.status, 'fallback');
+  assert.deepEqual(plan.tasks.check!.reasons, ['analysis-budget-exceeded']);
+  assert.equal(f.calls.evaluate, 0);
+  assert.equal(report.analysis.collected_patch_bytes, 0);
+  assert.deepEqual(report.analysis.limits_reached, ['collected-patch-bytes']);
+});
+
+test('an exhausted call budget never dispatches beyond its ceiling', async () => {
+  const f = fixture({ diff: patch(2400) });
+  let dispatched = 0;
+  const { plan, report } = await planChange(
+    { ...inputs, maxJevCalls: 2, tasks: { check: { description: 'Checks backend rules.' } } },
+    context, {
+      ...f.dependencies,
+      evaluate: async request => {
+        dispatched++;
+        return { answers: Object.fromEntries(request.taskIds.map(id => [id, judgment()])),
+          model: 'jev-1.13.0', usage: { input_tokens: 5, output_tokens: 1 } };
+      },
+    });
+  assert.equal(dispatched, 2, 'exactly the ceiling, never more');
+  assert.equal(report.analysis.jev_calls, 2);
+  // Groups remained unanswered, so the exclusion is refused and the task kept.
+  assert.equal(plan.run.check, true);
+  assert.equal(report.analysis.task_states.check, 'fallback-run');
+  assert.ok(report.analysis.limits_reached.includes('jev-calls'));
+});
+
+test('an incomplete manifest authorises no new exclusion', async () => {
+  const f = fixture({ manifestIncomplete: true });
+  const { plan, report } = await planChange(inputs, context, f.dependencies);
+  assert.equal(plan.status, 'fallback');
+  assert.ok(Object.values(plan.run).every(Boolean));
+  assert.ok(plan.tasks.helm!.reasons.includes('manifest-incomplete'));
+  assert.equal(f.calls.evaluate, 0);
+  assert.equal(f.calls.patches, 0);
+  assert.equal(report.manifest.complete, false);
+  assert.equal(report.manifest.hash, null);
+  assert.equal(report.analysis.fallback_scope, 'global');
+});
+
+test('a complete independent decision excludes the task and reports its coverage', async () => {
+  const f = fixture();
+  const { plan, report } = await planChange({ ...inputs, tasks: { check: { description: 'Checks backend rules.' } } }, context, f.dependencies);
+  assert.equal(plan.run.check, false);
+  assert.equal(plan.status, 'planned');
+  assert.equal(report.analysis.task_states.check, 'settled-skip');
+  assert.equal(report.analysis.coverage.check, true);
+  assert.equal(report.analysis.fallback_scope, 'none');
+  assert.deepEqual(report.analysis.fallback_tasks, []);
+  assert.ok(report.analysis.observation_bytes > 0);
+  assert.equal(report.analysis.patches_read, 1);
+});
+
+test('preparation draws on a sub-limit and keeps its own job without starving the decision', async () => {
+  const f = fixture();
+  const definition: SelectionDefinition = { model: 'jev-1.13.0', tasks: {
+    helm: { resolve_context_files: true, description: 'Renders charts', jobs: [{ workflow: '.github/workflows/ci.yml', job: 'helm' }] },
+    build: { description: 'Builds', resolve_context_files: false },
+  } };
+  const create = f.dependencies.createRepository!;
+  let preparation = 0;
+  let observation = 0;
+  const { plan, report } = await planChange({ ...inputs, ...definition, maxAnalysisBytes: 32768 }, context, {
+    ...f.dependencies,
+    createRepository: async options => ({ ...await create(options), listFiles: async () => ['config.ini'] }),
+    evaluateContext: async () => {
+      preparation++;
+      throw new JevError('jev-error', { model: 'jev-1.13.0', usage: { input_tokens: 1, output_tokens: 1 } });
+    },
+    evaluate: async request => {
+      observation++;
+      return { answers: Object.fromEntries(request.taskIds.map(id => [id, judgment()])),
+        model: 'jev-1.13.0', usage: { input_tokens: 1, output_tokens: 1 } };
+    },
+  });
+  // Preparation failed for `helm` only: it is retained while `build`, which
+  // never depended on that preparation, keeps its complete decision.
+  assert.equal(plan.tasks.helm!.run, true);
+  assert.equal(plan.tasks.build!.run, false);
+  assert.ok(plan.tasks.helm!.reasons.includes('context-resolution-incomplete'));
+  assert.ok(preparation >= 1 && observation >= 1, 'preparation never consumed the decision budget');
+  assert.ok(report.analysis.preparation_bytes <= report.analysis.analysis_bytes / 2 + 1);
+  assert.ok(report.analysis.observation_calls >= 1);
+});
+
+test('an exhausted preparation sub-limit retains its job instead of sending a partial context', async () => {
+  const f = fixture();
+  const definition: SelectionDefinition = { model: 'jev-1.13.0', tasks: {
+    helm: { resolve_context_files: true, description: 'Renders charts', jobs: [{ workflow: '.github/workflows/ci.yml', job: 'helm' }] },
+  } };
+  const create = f.dependencies.createRepository!;
+  let preparation = 0;
+  const { plan, report } = await planChange({ ...inputs, ...definition, maxAnalysisBytes: 64 }, context, {
+    ...f.dependencies,
+    createRepository: async options => ({ ...await create(options), listFiles: async () => ['config.ini'] }),
+    evaluateContext: async () => { preparation++; throw new Error('preparation must not be dispatched'); },
+  });
+  assert.equal(preparation, 0, 'a request that cannot fit is never sent');
+  assert.equal(plan.tasks.helm!.run, true);
+  assert.equal(plan.status, 'fallback');
+  assert.ok(plan.tasks.helm!.reasons.includes('context-resolution-incomplete'));
+  assert.equal(report.context_resolution['.github/workflows/ci.yml#helm']!.error, 'analysis-budget-exceeded');
+  assert.ok(report.analysis.limits_reached.includes('analysis-bytes'));
+});
+
+test('reducing any budget never produces a new exclusion', async () => {
+  // Same judgments, same ordering: only the ceilings move. A tighter budget may
+  // only retain more tasks, never fewer.
+  const definition: SelectionDefinition = { model: 'jev-1.13.0', tasks: {
+    alpha: { description: 'Checks alpha behaviour.' },
+    beta: { description: 'Checks beta behaviour.' },
+    gamma: { description: 'Checks gamma behaviour.' },
+  } };
+  const evaluate: NonNullable<PlannerDependencies['evaluate']> = async request => ({
+    answers: Object.fromEntries(request.taskIds.map(id => [id, judgment(id === 'gamma' ? 'required' : 'independent')])),
+    model: 'jev-1.13.0', usage: { input_tokens: 5, output_tokens: 1 } });
+
+  const run = async (overrides: Partial<Inputs>) => {
+    const f = fixture({ diff: patch(1200) });
+    const { plan } = await planChange({ ...inputs, ...definition, ...overrides }, context, { ...f.dependencies, evaluate });
+    return plan.run;
+  };
+
+  const generous = await run({});
+  assert.equal(generous.alpha, false);
+  assert.equal(generous.beta, false);
+  assert.equal(generous.gamma, true);
+
+  for (const tightened of [
+    { maxCollectedPatchBytes: 1 }, { maxCollectedPatchBytes: 2048 },
+    { maxAnalysisBytes: 64 }, { maxAnalysisBytes: 8192 },
+    { maxJevCalls: 1 }, { maxJevCalls: 2 },
+    { timeoutMs: 1 },
+  ] as Array<Partial<Inputs>>) {
+    const tighter = await run(tightened);
+    for (const id of Object.keys(generous)) {
+      assert.ok(tighter[id]! || !generous[id]!,
+        `${JSON.stringify(tightened)} turned ${id} from run into skip`);
+    }
   }
 });

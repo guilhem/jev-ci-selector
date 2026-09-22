@@ -56,7 +56,7 @@ jobs:
           test "$STATUS" = bypassed
           test "$HAS_TASKS" = true
           test -s "$REPORT_PATH"
-          node -e 'const report = require(process.argv[1]); if (report.version !== 7 || report.status !== "bypassed") process.exit(1)' "$REPORT_PATH"
+          node -e 'const report = require(process.argv[1]); if (report.version !== 8 || report.status !== "bypassed") process.exit(1)' "$REPORT_PATH"
   ci-required:
     if: ${{ always() }}
     needs:

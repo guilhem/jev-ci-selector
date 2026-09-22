@@ -5,11 +5,7 @@ var __getOwnPropNames = Object.getOwnPropertyNames;
 var __getProtoOf = Object.getPrototypeOf;
 var __hasOwnProp = Object.prototype.hasOwnProperty;
 var __commonJS = (cb, mod) => function __require() {
-  try {
-    return mod || (0, cb[__getOwnPropNames(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;
-  } catch (e) {
-    throw mod = 0, e;
-  }
+  return mod || (0, cb[__getOwnPropNames(cb)[0]])((mod = { exports: {} }).exports, mod), mod.exports;
 };
 var __copyProps = (to, from, except, desc) => {
   if (from && typeof from === "object" || typeof from === "function") {
@@ -4340,7 +4336,7 @@ var require_core = __commonJS({
       constructor(opts = {}) {
         this.schemas = {};
         this.refs = {};
-        this.formats = /* @__PURE__ */ Object.create(null);
+        this.formats = {};
         this._compilations = /* @__PURE__ */ new Set();
         this._loading = {};
         this._cache = /* @__PURE__ */ new Map();
@@ -5121,7 +5117,6 @@ var require_pattern = __commonJS({
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var code_1 = require_code2();
-    var util_1 = require_util();
     var codegen_1 = require_codegen();
     var error = {
       message: ({ schemaCode }) => (0, codegen_1.str)`must match pattern "${schemaCode}"`,
@@ -5134,18 +5129,10 @@ var require_pattern = __commonJS({
       $data: true,
       error,
       code(cxt) {
-        const { gen, data, $data, schema, schemaCode, it } = cxt;
+        const { data, $data, schema, schemaCode, it } = cxt;
         const u = it.opts.unicodeRegExp ? "u" : "";
-        if ($data) {
-          const { regExp } = it.opts.code;
-          const regExpCode = regExp.code === "new RegExp" ? (0, codegen_1._)`new RegExp` : (0, util_1.useFunc)(gen, regExp);
-          const valid = gen.let("valid");
-          gen.try(() => gen.assign(valid, (0, codegen_1._)`${regExpCode}(${schemaCode}, ${u}).test(${data})`), () => gen.assign(valid, false));
-          cxt.fail$data((0, codegen_1._)`!${valid}`);
-        } else {
-          const regExp = (0, code_1.usePattern)(cxt, schema);
-          cxt.fail$data((0, codegen_1._)`!${regExp}.test(${data})`);
-        }
+        const regExp = $data ? (0, codegen_1._)`(new RegExp(${schemaCode}, ${u}))` : (0, code_1.usePattern)(cxt, schema);
+        cxt.fail$data((0, codegen_1._)`!${regExp}.test(${data})`);
       }
     };
     exports.default = def;
@@ -6885,7 +6872,7 @@ import { pathToFileURL } from "node:url";
 // schemas/report.schema.json
 var report_schema_default = {
   $schema: "http://json-schema.org/draft-07/schema#",
-  title: "jev-ci-selector source-free report v7",
+  title: "jev-ci-selector source-free report v8",
   type: "object",
   additionalProperties: false,
   required: [
@@ -6909,11 +6896,13 @@ var report_schema_default = {
     "job_metadata",
     "observation_error",
     "observation",
-    "context_resolution"
+    "context_resolution",
+    "manifest",
+    "analysis"
   ],
   properties: {
     version: {
-      const: 7
+      const: 8
     },
     base_sha: {
       $ref: "#/definitions/sha"
@@ -7060,6 +7049,10 @@ var report_schema_default = {
                 "binary-change",
                 "submodule-change",
                 "unrepresentable-change",
+                "coverage-incomplete",
+                "patch-unavailable",
+                "analysis-budget-exceeded",
+                "manifest-incomplete",
                 "jev-timeout",
                 "jev-error",
                 "invalid-response",
@@ -7133,6 +7126,141 @@ var report_schema_default = {
     selection_hash: {
       type: "string",
       pattern: "^[a-f0-9]{64}$"
+    },
+    manifest: {
+      type: "object",
+      additionalProperties: false,
+      required: [
+        "complete",
+        "hash",
+        "change_count"
+      ],
+      properties: {
+        complete: {
+          type: "boolean"
+        },
+        hash: {
+          type: [
+            "string",
+            "null"
+          ],
+          pattern: "^[a-f0-9]{64}$"
+        },
+        change_count: {
+          type: [
+            "integer",
+            "null"
+          ],
+          minimum: 0
+        }
+      }
+    },
+    analysis: {
+      type: "object",
+      additionalProperties: false,
+      required: [
+        "manifest_entries",
+        "patches_requested",
+        "patches_read",
+        "collected_patch_bytes",
+        "preparation_calls",
+        "preparation_bytes",
+        "observation_calls",
+        "observation_bytes",
+        "jev_calls",
+        "analysis_bytes",
+        "limits_reached",
+        "analysed_tasks",
+        "required_without_analysis",
+        "task_states",
+        "coverage",
+        "fallback_scope",
+        "fallback_tasks"
+      ],
+      properties: {
+        manifest_entries: {
+          type: [
+            "integer",
+            "null"
+          ],
+          minimum: 0
+        },
+        patches_requested: {
+          $ref: "#/definitions/counter"
+        },
+        patches_read: {
+          $ref: "#/definitions/counter"
+        },
+        collected_patch_bytes: {
+          $ref: "#/definitions/counter"
+        },
+        preparation_calls: {
+          $ref: "#/definitions/counter"
+        },
+        preparation_bytes: {
+          $ref: "#/definitions/counter"
+        },
+        observation_calls: {
+          $ref: "#/definitions/counter"
+        },
+        observation_bytes: {
+          $ref: "#/definitions/counter"
+        },
+        jev_calls: {
+          $ref: "#/definitions/counter"
+        },
+        analysis_bytes: {
+          $ref: "#/definitions/counter"
+        },
+        limits_reached: {
+          type: "array",
+          uniqueItems: true,
+          items: {
+            enum: [
+              "manifest-bytes",
+              "patch-unit-bytes",
+              "collected-patch-bytes",
+              "analysis-bytes",
+              "jev-calls",
+              "time"
+            ]
+          }
+        },
+        analysed_tasks: {
+          $ref: "#/definitions/taskIdList"
+        },
+        required_without_analysis: {
+          $ref: "#/definitions/taskIdList"
+        },
+        task_states: {
+          type: "object",
+          propertyNames: {
+            pattern: "^[A-Za-z_][A-Za-z0-9_-]{0,63}$"
+          },
+          additionalProperties: {
+            $ref: "#/definitions/taskState"
+          }
+        },
+        coverage: {
+          type: "object",
+          propertyNames: {
+            pattern: "^[A-Za-z_][A-Za-z0-9_-]{0,63}$"
+          },
+          additionalProperties: {
+            type: "boolean"
+          }
+        },
+        fallback_scope: {
+          enum: [
+            "none",
+            "global",
+            "partial"
+          ]
+        },
+        fallback_tasks: {
+          $ref: "#/definitions/taskIdList"
+        }
+      }
     }
   },
   definitions: {
@@ -7183,7 +7311,9 @@ var report_schema_default = {
         "model",
         "usage",
         "duration_ms",
-        "error"
+        "error",
+        "unit_index",
+        "change_ids"
       ],
       properties: {
         index: {
@@ -7214,7 +7344,8 @@ var report_schema_default = {
           enum: [
             "completed",
             "failed",
-            "not-started"
+            "not-started",
+            "not-needed"
           ]
         },
         model: {
@@ -7250,7 +7381,7 @@ var report_schema_default = {
         },
         requests: {
           type: "array",
-          minItems: 1,
+          minItems: 0,
           items: {
             $ref: "#/definitions/observationCall"
           }
@@ -7265,6 +7396,17 @@ var report_schema_default = {
           },
           additionalProperties: {
             $ref: "#/definitions/taskChoiceJudgment"
+          }
+        },
+        unit_index: {
+          type: "integer",
+          minimum: 0
+        },
+        change_ids: {
+          type: "array",
+          items: {
+            type: "string",
+            pattern: "^c[0-9]+$|^whole-diff$"
           }
         }
       }
@@ -7287,12 +7429,13 @@ var report_schema_default = {
         status: {
           enum: [
             "complete",
-            "incomplete"
+            "incomplete",
+            "stopped-early"
           ]
         },
         chunks: {
           type: "array",
-          minItems: 1,
+          minItems: 0,
           items: {
             $ref: "#/definitions/observationChunk"
           }
@@ -7438,14 +7581,16 @@ var report_schema_default = {
         "usage",
         "duration_ms",
         "error",
-        "task_ids"
+        "task_ids",
+        "request_bytes"
       ],
       properties: {
         status: {
           enum: [
             "completed",
             "failed",
-            "not-started"
+            "not-started",
+            "not-needed"
           ]
         },
         model: {
@@ -7481,6 +7626,13 @@ var report_schema_default = {
             type: "string",
             pattern: "^[A-Za-z_][A-Za-z0-9_-]{0,63}$"
           }
+        },
+        request_bytes: {
+          type: [
+            "integer",
+            "null"
+          ],
+          minimum: 0
         }
       }
     },
@@ -7490,7 +7642,8 @@ var report_schema_default = {
         "jev-error",
         "invalid-response",
         "git-read-failed",
-        "context-too-large"
+        "context-too-large",
+        "analysis-budget-exceeded"
       ]
     },
     choiceJudgment: {
@@ -7847,6 +8000,26 @@ var report_schema_default = {
           maximum: 1
         }
       }
+    },
+    taskState: {
+      enum: [
+        "pending",
+        "settled-run",
+        "settled-skip",
+        "fallback-run"
+      ]
+    },
+    taskIdList: {
+      type: "array",
+      uniqueItems: true,
+      items: {
+        type: "string",
+        pattern: "^[A-Za-z_][A-Za-z0-9_-]{0,63}$"
+      }
+    },
+    counter: {
+      type: "integer",
+      minimum: 0
     }
   }
 };

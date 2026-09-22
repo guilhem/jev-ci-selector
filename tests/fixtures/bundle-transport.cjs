@@ -30,5 +30,14 @@ globalThis.fetch = async (url, init) => {
           probabilities: Object.fromEntries(Object.keys(question.criteria).map(option => [option, option === selected ? 1 : 0])) }];
       })) });
   }
+  // Answer exactly the questions this request carries. The action now asks only
+  // about tasks that are still open, so a fixed answer set would otherwise look
+  // like an invalid response as soon as a task is settled deterministically.
+  if (fixture.answers && typeof fixture.answers === 'object') {
+    const answers = Object.fromEntries(Object.keys(request.questions)
+      .filter(id => Object.hasOwn(fixture.answers, id))
+      .map(id => [id, fixture.answers[id]]));
+    return Response.json({ ...fixture, answers });
+  }
   return new Response(process.env.FIXTURE_RESPONSE, { status: 200 });
 };

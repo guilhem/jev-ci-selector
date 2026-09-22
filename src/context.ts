@@ -5,8 +5,10 @@ import type { GitRepository } from './changes.js';
 import type { ResolveTasksResult } from './metadata.js';
 import type { SelectionDefinition } from './tasks.js';
 import { REQUEST_BYTES, STATE_AND_QUESTION_BYTES } from './observations.js';
+import { AnalysisBudget, BudgetError } from './budget.js';
 
-export type ContextError = 'jev-timeout' | 'jev-error' | 'invalid-response' | 'git-read-failed' | 'context-too-large';
+export type ContextError = 'jev-timeout' | 'jev-error' | 'invalid-response' | 'git-read-failed' | 'context-too-large'
+  | 'analysis-budget-exceeded';
 export interface ContextCall {
   paths: string[];
   request_hash: string;
@@ -34,6 +36,11 @@ type Request = JevApiOptions & {
   commit: string;
   apiKey: string;
   deadline: number;
+  /**
+   * Shared budget. Preparation draws on an internal sub-limit so that it can
+   * never consume the allowance the decision itself needs.
+   */
+  budget?: AnalysisBudget;
 };
 class ContextFailure extends Error {
   constructor(readonly code: ContextError) { super(code); }
@@ -166,7 +173,19 @@ export async function resolveContextFiles(request: Request, evaluate = evaluateC
             const call = pass.calls[offset]!;
             const remaining = Math.floor(request.deadline - performance.now());
             if (remaining <= 0) { failure = 'jev-timeout'; break; }
+            const requestBytes = bytes({ model: request.apiModel ?? configured.model, state: input.state, questions: input.questions });
+            let reservation;
+            if (request.budget) {
+              try { reservation = request.budget.reserve('preparation', requestBytes); }
+              catch (error) {
+                if (!(error instanceof BudgetError)) throw error;
+                failure = 'analysis-budget-exceeded';
+                call.status = 'not-started'; call.error = failure;
+                break;
+              }
+            }
             const started = performance.now();
+            reservation?.commit();
             try {
               const result = await evaluate({ model: configured.model, state: input.state, questions: input.questions,
                 apiKey: request.apiKey, timeoutMs: Math.min(10000, remaining),

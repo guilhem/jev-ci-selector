@@ -1,25 +1,33 @@
 import { createHash } from 'node:crypto';
 import { splitDiff, ChunkError } from './chunks.js';
 import { buildQuestions, validateChoicesResponse, JevError, type Usage, type evaluateJev, type ChoiceJudgment } from './jev.js';
+import { AnalysisBudget, BudgetError } from './budget.js';
+import type { Reason } from './policy.js';
+import type { ResolvedSelection } from './tasks.js';
 
 type ObservationError = 'jev-timeout' | 'jev-error' | 'invalid-response';
+type CallStatus = 'completed' | 'failed' | 'not-started' | 'not-needed';
 export interface ObservationCall {
   task_ids: string[];
-  status: 'completed' | 'failed' | 'not-started';
+  status: CallStatus;
   model: string | null;
   usage: Usage | null;
   duration_ms: number | null;
+  request_bytes: number | null;
   error: ObservationError | null;
 }
 export interface ObservationChunk {
   index: number;
+  unit_index: number;
+  change_ids: string[];
+  /** Byte range inside the unit that produced it, not a global diff offset. */
   start_byte: number;
   end_byte: number;
   diff_hash: string;
   state_hash: string;
   diff_bytes: number;
   paths?: string[];
-  status: 'completed' | 'failed' | 'not-started';
+  status: CallStatus;
   judgments: Record<string, ChoiceJudgment> | null;
   model: string | null;
   usage: Usage | null;
@@ -29,15 +37,78 @@ export interface ObservationChunk {
 }
 export interface Observation {
   strategy: 'whole-diff' | 'chunked-diff';
-  status: 'complete' | 'incomplete';
+  /**
+   * `complete` means every dispatched call answered. It is a property of the
+   * observation, not of the decision: an analysis stopped early because every
+   * task was already settled is `stopped-early`, never a failure.
+   */
+  status: 'complete' | 'incomplete' | 'stopped-early';
   chunks: ObservationChunk[];
 }
 
-type Request = Parameters<typeof evaluateJev>[0];
-type State = { base_sha: string; head_sha: string; tested_sha: string; changed_paths: string[]; diff: string };
-type ObservationRequest = Omit<Request, 'state'> & { state: State; workingDirectories?: string[]; maxGroupBytes?: number };
-const hash = (value: string) => createHash('sha256').update(value).digest('hex');
-const bytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value));
+/**
+ * Per-task progress, kept apart from the status of any individual request.
+ *
+ * `settled-run` is terminal: a task whose execution is acquired is never put
+ * back into a question, and a call still in flight cannot revoke it.
+ */
+export type TaskState = 'pending' | 'settled-run' | 'settled-skip' | 'fallback-run';
+
+/** One bounded delivery of patch text, or the reason it could not be read. */
+export interface PatchDelivery {
+  changeIds: readonly string[];
+  paths: readonly string[];
+  diff: string;
+  issue: Reason | null;
+}
+export interface PatchStream {
+  /** Resolves to the next unit, or null once the change set is exhausted. */
+  next(): Promise<PatchDelivery | null>;
+}
+
+type State = { base_sha: string; head_sha: string; tested_sha: string };
+export interface AnalysisRequest {
+  selection: ResolvedSelection;
+  /** Candidates only: tasks already settled by policy are never analysed. */
+  taskIds: string[];
+  /** Every change in the manifest. These are the obligations to discharge. */
+  changeIds: readonly string[];
+  workingDirectories?: string[];
+  patches: PatchStream;
+  budget: AnalysisBudget;
+  state: State;
+  apiKey: string;
+  apiBaseUrl?: string;
+  apiModel?: string;
+  maxGroupBytes?: number;
+  concurrency?: number;
+  /**
+   * Stop asking about a task once its execution is acquired, and stop pulling
+   * patch text once every task is settled. Disabled by the evaluation harness,
+   * which compares judgments over a fixed corpus and must therefore keep asking
+   * every task on every group.
+   */
+  stopWhenSettled?: boolean;
+  /** Surface a grouping size failure to the caller instead of retaining tasks. */
+  throwOnSizeError?: boolean;
+}
+
+export interface AnalysisOutcome {
+  observation: Observation | null;
+  decisions: Record<string, boolean | null>;
+  /** True only when every obligation of that task was actually discharged. */
+  coverage: Record<string, boolean>;
+  /** Why a specific task could not conclude. Never a global verdict. */
+  taskErrors: Record<string, Reason>;
+  states: Record<string, TaskState>;
+  /** First provider-level error seen, for the report's observation_error. */
+  failure?: ObservationError;
+  model: string | null;
+  usage: Usage | null;
+}
+
+const hash = (value: string) => createHash('sha256').update(value, 'utf8').digest('hex');
+const bytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value) ?? '', 'utf8');
 
 export class ObservationSizeError extends Error {
   constructor(public readonly code: 'context-too-large' | 'diff-too-large' | 'unrepresentable-change') { super(code); }
@@ -46,47 +117,11 @@ export class ObservationSizeError extends Error {
 // Byte guards include real metadata and JSON escaping. They are not token counts.
 export const STATE_AND_QUESTION_BYTES = 64 * 1024;
 export const REQUEST_BYTES = 128 * 1024;
+export const GROUP_TARGET_BYTES = 20 * 1024;
+/** Reported when a unit could not be collected inside the shared budget. */
+export const PATCH_UNIT_LIMIT_REASON = 'analysis-budget-exceeded' as const satisfies Reason;
 const MAX_CHUNKS = 64;
 
-function prepareStates(request: ObservationRequest) {
-  const questions = buildQuestions(request.selection, request.taskIds);
-  const longestQuestion = Math.max(0, ...Object.values(questions).map(bytes));
-  const { diff, changed_paths: _allPaths, ...shared } = request.state;
-  // Prefer ~20 KiB groups; reduce them when a job's real metadata needs more room.
-  let budget = Math.min(request.maxGroupBytes ?? 20 * 1024, STATE_AND_QUESTION_BYTES - bytes(shared) - longestQuestion - 1024);
-  for (let attempt = 0; attempt < 12 && budget >= 1024; attempt++) {
-    let parts;
-    try { parts = splitDiff(diff, budget, request.workingDirectories); }
-    catch (error) {
-      if (error instanceof ChunkError) throw new ObservationSizeError(error.code === 'unparseable-diff' ? 'unrepresentable-change' : 'context-too-large');
-      throw error;
-    }
-    if (parts.length > MAX_CHUNKS) throw new ObservationSizeError('diff-too-large');
-    const states = parts.map((part, index) => ({ ...part,
-      state: { ...shared, changed_paths: part.paths, diff: part.diff,
-        chunk: { index, total: parts.length, start_byte: part.startByte, end_byte: part.endByte,
-          preceding_diff_headers: part.context,
-          scope: 'Evaluate only these files and hunks. Other groups are not included.' } } }));
-    const excess = Math.max(...states.map(part => bytes(part.state) + longestQuestion - STATE_AND_QUESTION_BYTES));
-    if (excess <= 0) return { states, questions };
-    budget -= excess + 128;
-  }
-  throw new ObservationSizeError('context-too-large');
-}
-
-function questionBatches(taskIds: string[], questions: ReturnType<typeof buildQuestions>, state: unknown): string[][] {
-  const batches: string[][] = [];
-  let batch: string[] = [];
-  for (const id of [...taskIds].sort()) {
-    const candidate = [...batch, id];
-    if (batch.length && bytes(state) + bytes(Object.fromEntries(candidate.map(id => [id, questions[id]]))) > REQUEST_BYTES) {
-      batches.push(batch); batch = [];
-    }
-    batch.push(id);
-  }
-  if (batch.length) batches.push(batch);
-  return batches;
-}
 const addUsage = (values: Array<Usage | null>): Usage | null => {
   const usages = values.filter((usage): usage is Usage => usage !== null);
   return usages.length ? usages.reduce((total, usage) => ({ input_tokens: total.input_tokens + usage.input_tokens,
@@ -97,62 +132,294 @@ const singleModel = (models: Array<string | null>): string | null => {
   return unique.length === 1 ? unique[0]! : null;
 };
 
-export async function observeChange(request: ObservationRequest, evaluate: typeof evaluateJev) {
-  const { states, questions } = prepareStates(request);
-  const observation: Observation = { strategy: states.length === 1 ? 'whole-diff' : 'chunked-diff', status: 'incomplete',
-    chunks: states.map((part, index) => ({ index, start_byte: part.startByte, end_byte: part.endByte, paths: part.paths,
-      diff_hash: hash(part.diff), state_hash: hash(JSON.stringify(part.state)), diff_bytes: Buffer.byteLength(part.diff),
-      status: 'not-started', judgments: null, model: null, usage: null, duration_ms: null, error: null,
-      requests: questionBatches(request.taskIds, questions, part.state).map(task_ids => ({ task_ids,
-        status: 'not-started', model: null, usage: null, duration_ms: null, error: null })) })) };
-  const calls = observation.chunks.flatMap(chunk => chunk.requests!.map(call => ({ chunk, call })));
-  const deadline = performance.now() + request.timeoutMs;
-  let next = 0;
-  let failure: ObservationError | undefined;
-  async function worker(): Promise<void> {
-    while (!failure && next < calls.length) {
-      const { chunk, call } = calls[next++]!;
-      const remaining = Math.floor(deadline - performance.now());
-      if (remaining <= 0) { failure = 'jev-timeout'; break; }
-      const started = performance.now();
-      try {
-        const result = await evaluate({ ...request, taskIds: call.task_ids, state: states[chunk.index]!.state,
-          timeoutMs: Math.min(10000, remaining) });
-        // Injected evaluators must honor the same per-request answer contract as the SDK.
-        const validated = validateChoicesResponse({ ...result,
-          answers: Object.fromEntries(Object.entries(result.answers ?? {}).map(([id, answer]) => [id, { ...answer, type: 'choice' }])) },
-        buildQuestions(request.selection, call.task_ids), request.selection.model);
-        chunk.judgments = { ...chunk.judgments, ...validated.answers };
-        call.status = 'completed';
-        call.model = result.model; call.usage = result.usage;
-      } catch (error) {
-        if (!(error instanceof JevError)) { failure = 'jev-error'; throw error; }
-        failure ??= error.code;
-        call.status = 'failed'; call.error = error.code;
-        call.model = error.metadata.model; call.usage = error.metadata.usage;
-      } finally { call.duration_ms = performance.now() - started; }
+/**
+ * Split one delivered unit into provider-sized groups.
+ *
+ * The group budget is derived from the real state and question sizes, so a
+ * group never has to be truncated later. `longestQuestion` is measured over
+ * every candidate, an upper bound that stays valid as tasks settle and drop
+ * out of subsequent calls.
+ */
+function groupsFor(request: AnalysisRequest, delivery: PatchDelivery, shared: State, longestQuestion: number) {
+  let budget = Math.min(request.maxGroupBytes ?? GROUP_TARGET_BYTES,
+    STATE_AND_QUESTION_BYTES - bytes(shared) - longestQuestion - 1024);
+  for (let attempt = 0; attempt < 12 && budget >= 1024; attempt++) {
+    let parts;
+    try { parts = splitDiff(delivery.diff, budget, request.workingDirectories); }
+    catch (error) {
+      if (error instanceof ChunkError) throw new ObservationSizeError(error.code === 'unparseable-diff' ? 'unrepresentable-change' : 'context-too-large');
+      throw error;
     }
+    if (parts.length > MAX_CHUNKS) throw new ObservationSizeError('diff-too-large');
+    const states = parts.map((part, index) => ({
+      paths: part.paths,
+      diff: part.diff,
+      startByte: part.startByte,
+      endByte: part.endByte,
+      state: { ...shared, changed_paths: part.paths, diff: part.diff,
+        chunk: { index, total: parts.length, start_byte: part.startByte, end_byte: part.endByte,
+          preceding_diff_headers: part.context,
+          scope: 'Evaluate only these files and hunks. Other groups are not included.' } },
+    }));
+    const excess = Math.max(-Infinity, ...states.map(part => bytes(part.state) + longestQuestion - STATE_AND_QUESTION_BYTES));
+    if (!states.length || excess <= 0) return states;
+    budget -= excess + 128;
   }
-  const workers = await Promise.allSettled(Array.from({ length: Math.min(3, calls.length) }, worker));
-  const rejected = workers.find(result => result.status === 'rejected');
-  if (rejected?.status === 'rejected') throw rejected.reason;
-  for (const { call } of calls) if (call.status === 'not-started') call.error = failure ?? 'jev-timeout';
-  for (const chunk of observation.chunks) {
-    const requests = chunk.requests!;
-    chunk.status = requests.every(call => call.status === 'completed') ? 'completed'
-      : requests.some(call => call.status !== 'not-started') ? 'failed' : 'not-started';
-    chunk.model = singleModel(requests.map(call => call.model));
-    chunk.usage = addUsage(requests.map(call => call.usage));
-    chunk.duration_ms = requests.some(call => call.duration_ms !== null)
-      ? requests.reduce((total, call) => total + (call.duration_ms ?? 0), 0) : null;
-    chunk.error = requests.find(call => call.error)?.error ?? null;
+  throw new ObservationSizeError('context-too-large');
+}
+
+/** Task ids that still need an answer, in stable order. */
+const openTasks = (states: Map<string, TaskState>) =>
+  [...states].filter(([, state]) => state === 'pending').map(([id]) => id).sort();
+
+/**
+ * Batch open tasks into requests that respect the transport ceiling. Batches
+ * are built immediately before dispatch, from the tasks still open at that
+ * moment, so a settled task never appears in a request that has not started.
+ */
+function batchesFor(taskIds: string[], questions: ReturnType<typeof buildQuestions>, model: string, state: unknown): string[][] {
+  const batches: string[][] = [];
+  let batch: string[] = [];
+  const envelope = (ids: string[]) => bytes({ model, state, questions: Object.fromEntries(ids.map(id => [id, questions[id]])) });
+  for (const id of taskIds) {
+    if (batch.length && envelope([...batch, id]) > REQUEST_BYTES) { batches.push(batch); batch = []; }
+    batch.push(id);
   }
-  observation.status = observation.chunks.every(chunk => chunk.status === 'completed') ? 'complete' : 'incomplete';
-  // Compose boolean decisions, never a synthetic global probability. A failed batch
-  // does not erase complete evidence for other jobs sharing the same group.
-  const decisions = decisionsFromObservation(observation, request.taskIds);
-  return { observation, decisions, failure, model: singleModel(calls.map(({ call }) => call.model)),
-    usage: addUsage(calls.map(({ call }) => call.usage)) };
+  if (batch.length) batches.push(batch);
+  return batches;
+}
+
+/**
+ * Bounded, demand-driven analysis.
+ *
+ * Patch text is pulled one unit at a time and only while some task is still
+ * open. Nothing is prebuilt for the whole change set: no global diff string, no
+ * precomputed request per group per task.
+ */
+export async function analyseChange(request: AnalysisRequest, evaluate: typeof evaluateJev): Promise<AnalysisOutcome> {
+  const { budget } = request;
+  const stopWhenSettled = request.stopWhenSettled !== false;
+  const candidates = [...new Set(request.taskIds)].sort();
+  const states = new Map<string, TaskState>(candidates.map(id => [id, 'pending' as TaskState]));
+  const taskErrors = new Map<string, Reason>();
+  // Obligations start as every inventoried change: with no impact map, a change
+  // that has not been read is potentially relevant to every candidate.
+  const obligations = new Set(request.changeIds);
+  const covered = new Map<string, Set<string>>(candidates.map(id => [id, new Set<string>()]));
+  const chunks: ObservationChunk[] = [];
+  const model = request.apiModel ?? request.selection.model;
+  const allQuestions = candidates.length ? buildQuestions(request.selection, candidates) : {};
+  const longestQuestion = Math.max(0, ...Object.values(allQuestions).map(bytes));
+
+  const settle = (id: string, state: TaskState, reason?: Reason) => {
+    // Terminal states are never revised; an acquired execution stands.
+    if (states.get(id) !== 'pending') return;
+    states.set(id, state);
+    if (reason) taskErrors.set(id, reason);
+  };
+  const retainOpen = (reason: Reason) => {
+    for (const id of openTasks(states)) settle(id, 'fallback-run', reason);
+  };
+
+  // With early stopping disabled every candidate is asked on every group, so
+  // `pending` no longer gates which tasks a request carries.
+  const askable = () => stopWhenSettled ? openTasks(states) : candidates;
+  // Dispatching stops as soon as no candidate can still change state, whether
+  // they were all decided or all retained. Nothing is sent that cannot matter.
+  // Without early stopping only a total failure ends the sweep, since the
+  // evaluation harness still wants a judgment for every task on every group.
+  const exhausted = () => stopWhenSettled
+    ? candidates.every(id => states.get(id) !== 'pending')
+    : candidates.every(id => states.get(id) === 'fallback-run');
+  const decidedOnly = () => candidates.every(id => {
+    const state = states.get(id);
+    return state === 'settled-run' || state === 'settled-skip';
+  });
+  let failure: ObservationError | undefined;
+  let stoppedEarly = false;
+  let unitIndex = -1;
+  while (candidates.length && !exhausted()) {
+      let delivery: PatchDelivery | null;
+      try { delivery = await request.patches.next(); }
+      catch (error) {
+        retainOpen(error instanceof BudgetError ? 'analysis-budget-exceeded' : 'patch-unavailable');
+        break;
+      }
+      if (delivery === null) break;
+      unitIndex += 1;
+      if (delivery.issue !== null) {
+        // The unit could not be read, so its changes stay undischarged for every
+        // task still open. Without a reliable impact map that is all of them.
+        retainOpen(delivery.issue);
+        break;
+      }
+
+      let groups;
+      try { groups = groupsFor(request, delivery, request.state, longestQuestion); }
+      catch (error) {
+        if (!(error instanceof ObservationSizeError)) throw error;
+        if (request.throwOnSizeError) throw error;
+        retainOpen(error.code === 'diff-too-large' ? 'diff-too-large'
+          : error.code === 'unrepresentable-change' ? 'unrepresentable-change' : 'context-too-large');
+        break;
+      }
+
+      const deliveredIds = [...delivery.changeIds];
+      const unitChunks: Array<{ record: ObservationChunk; state: unknown; answered: Set<string> }> = [];
+      for (const group of groups) {
+        const record: ObservationChunk = {
+          index: chunks.length + unitChunks.length,
+          unit_index: unitIndex,
+          change_ids: deliveredIds,
+          start_byte: group.startByte,
+          end_byte: group.endByte,
+          paths: group.paths,
+          diff_hash: hash(group.diff),
+          state_hash: hash(JSON.stringify(group.state)),
+          diff_bytes: Buffer.byteLength(group.diff, 'utf8'),
+          status: 'not-started', judgments: null, model: null, usage: null, duration_ms: null,
+          error: null, requests: [],
+        };
+        unitChunks.push({ record, state: group.state, answered: new Set<string>() });
+      }
+
+      let index = 0;
+      const worker = async (): Promise<void> => {
+        while (index < unitChunks.length) {
+          if (exhausted()) break;
+          const slot = unitChunks[index++]!;
+          const open = askable();
+          if (!open.length) { slot.record.status = 'not-needed'; stoppedEarly = true; continue; }
+          for (const ids of batchesFor(open, allQuestions, model, slot.state)) {
+            // Rebuild the open set per call: a task settled by a sibling call is
+            // dropped before this request is even constructed.
+            const taskIds = stopWhenSettled ? ids.filter(id => states.get(id) === 'pending') : ids;
+            if (!taskIds.length) {
+              slot.record.requests!.push({ task_ids: ids, status: 'not-needed', model: null, usage: null,
+                duration_ms: null, request_bytes: null, error: null });
+              stoppedEarly = true;
+              continue;
+            }
+            const questions = Object.fromEntries(taskIds.map(id => [id, allQuestions[id]]));
+            const requestBytes = bytes({ model, state: slot.state, questions });
+            const call: ObservationCall = { task_ids: taskIds, status: 'not-started', model: null, usage: null,
+              duration_ms: null, request_bytes: requestBytes, error: null };
+            slot.record.requests!.push(call);
+            if (requestBytes > REQUEST_BYTES) {
+              // An oversized request is never sent; its tasks stay retained.
+              call.status = 'failed'; call.error = 'invalid-response'; failure ??= 'invalid-response';
+              for (const id of taskIds) settle(id, 'fallback-run', 'context-too-large');
+              continue;
+            }
+            let reservation;
+            try { reservation = budget.reserve('observation', requestBytes); }
+            catch (error) {
+              if (!(error instanceof BudgetError)) throw error;
+              for (const id of taskIds) settle(id, 'fallback-run', 'analysis-budget-exceeded');
+              call.status = 'not-started'; call.error = null;
+              continue;
+            }
+            const remaining = budget.remainingMs();
+            if (remaining <= 0) {
+              reservation.release();
+              for (const id of taskIds) settle(id, 'fallback-run', 'jev-timeout');
+              call.status = 'not-started'; call.error = 'jev-timeout'; failure ??= 'jev-timeout';
+              continue;
+            }
+            const started = performance.now();
+            reservation.commit();
+            try {
+              const result = await evaluate({ selection: request.selection, taskIds, state: slot.state as never,
+                apiKey: request.apiKey, timeoutMs: Math.min(10000, remaining),
+                ...(request.apiBaseUrl ? { apiBaseUrl: request.apiBaseUrl } : {}),
+                ...(request.apiModel ? { apiModel: request.apiModel } : {}) });
+              // Injected evaluators must honor the same per-request answer contract as the SDK.
+              const validated = validateChoicesResponse({ ...result,
+                answers: Object.fromEntries(Object.entries(result.answers ?? {}).map(([id, answer]) => [id, { ...answer, type: 'choice' }])) },
+              buildQuestions(request.selection, taskIds), request.selection.model);
+              slot.record.judgments = { ...slot.record.judgments, ...validated.answers };
+              call.status = 'completed'; call.model = result.model; call.usage = result.usage;
+              for (const [id, answer] of Object.entries(validated.answers)) {
+                if (answer.choice === 'required' || answer.choice === 'unresolved') settle(id, 'settled-run');
+                else if (answer.choice === 'independent') slot.answered.add(id);
+              }
+            } catch (error) {
+              if (!(error instanceof JevError)) throw error;
+              call.status = 'failed'; call.error = error.code; failure ??= error.code;
+              call.model = error.metadata.model; call.usage = error.metadata.usage;
+              // Scope the failure to the tasks this call was carrying.
+              for (const id of taskIds) settle(id, 'fallback-run', error.code);
+            } finally { call.duration_ms = performance.now() - started; }
+          }
+        }
+      };
+      const concurrency = Math.max(1, Math.min(request.concurrency ?? 3, unitChunks.length));
+      await Promise.all(Array.from({ length: concurrency }, worker));
+
+      // A group nobody needed any more is a success of the decision, not a
+      // timeout: only a group left unanswered while a task still needed it is
+      // reported as not-started.
+      const unneeded = decidedOnly();
+      // A change is discharged for a task only when every group covering it came
+      // back independent. One silent group leaves the obligation open.
+      const discharged = candidates.filter(id => states.get(id) === 'pending'
+        && unitChunks.length > 0 && unitChunks.every(slot => slot.answered.has(id)));
+      for (const id of discharged) for (const changeId of deliveredIds) covered.get(id)!.add(changeId);
+      for (const { record } of unitChunks) {
+        const requests = record.requests!;
+        if (!requests.length) {
+          record.status = unneeded ? 'not-needed' : 'not-started';
+          if (unneeded) stoppedEarly = true;
+          else record.error = failure ?? 'jev-timeout';
+          chunks.push(record);
+          continue;
+        }
+        record.status = requests.every(call => call.status === 'not-needed') ? 'not-needed'
+          : requests.every(call => call.status === 'completed' || call.status === 'not-needed') ? 'completed'
+            : requests.some(call => call.status === 'failed') ? 'failed' : 'not-started';
+        record.model = singleModel(requests.map(call => call.model));
+        record.usage = addUsage(requests.map(call => call.usage));
+        record.duration_ms = requests.some(call => call.duration_ms !== null)
+          ? requests.reduce((total, call) => total + (call.duration_ms ?? 0), 0) : null;
+        record.error = requests.find(call => call.error)?.error ?? null;
+        chunks.push(record);
+      }
+  }
+  if (stopWhenSettled && !openTasks(states).length) stoppedEarly = stoppedEarly || chunks.length > 0;
+
+  for (const id of candidates) {
+    if (states.get(id) !== 'pending') continue;
+    const complete = [...obligations].every(changeId => covered.get(id)!.has(changeId));
+    settle(id, complete ? 'settled-skip' : 'fallback-run', complete ? undefined : 'coverage-incomplete');
+  }
+
+  const decisions: Record<string, boolean | null> = {};
+  const coverage: Record<string, boolean> = {};
+  for (const id of candidates) {
+    const state = states.get(id)!;
+    decisions[id] = state === 'settled-run' ? true : state === 'settled-skip' ? false : null;
+    coverage[id] = state === 'settled-skip';
+  }
+
+  const dispatched = chunks.flatMap(chunk => chunk.requests!).filter(call => call.status !== 'not-needed');
+  const observation: Observation | null = chunks.length ? {
+    strategy: chunks.length === 1 ? 'whole-diff' : 'chunked-diff',
+    status: chunks.every(chunk => chunk.status === 'completed' || chunk.status === 'not-needed')
+      ? (stoppedEarly && chunks.some(chunk => chunk.status === 'not-needed') ? 'stopped-early' : 'complete')
+      : 'incomplete',
+    chunks,
+  } : null;
+
+  return {
+    observation,
+    decisions,
+    coverage,
+    taskErrors: Object.fromEntries([...taskErrors]),
+    ...(failure ? { failure } : {}),
+    states: Object.fromEntries([...states]),
+    model: singleModel(dispatched.map(call => call.model)),
+    usage: addUsage(dispatched.map(call => call.usage)),
+  };
 }
 
 /** Boolean composition only: raw judgments remain unchanged. */
@@ -162,4 +429,54 @@ export function decisionsFromObservation(observation: Observation, taskIds: stri
     return [id, choices.some(value => value === 'required' || value === 'unresolved') ? true
       : choices.length > 0 && choices.every(value => value === 'independent') ? false : null];
   }));
+}
+
+type LegacyState = State & { changed_paths: string[]; diff: string };
+export type ObservationRequest = {
+  selection: ResolvedSelection; taskIds: string[]; state: LegacyState; apiKey: string; timeoutMs: number;
+  apiBaseUrl?: string; apiModel?: string; workingDirectories?: string[]; maxGroupBytes?: number;
+};
+
+/**
+ * Whole-diff observation over an already-built diff string.
+ *
+ * Retained for the evaluation harness, which measures Jev over a fixed corpus:
+ * its recordings bind to exact request payloads, so this path keeps asking
+ * every task on every group and keeps the historical result shape. The action
+ * itself uses `analyseChange`, which never builds a global diff.
+ */
+export async function observeChange(request: ObservationRequest, evaluate: typeof evaluateJev) {
+  const { diff, changed_paths: _paths, ...shared } = request.state;
+  const budget = new AnalysisBudget({
+    maxCollectedPatchBytes: Number.MAX_SAFE_INTEGER,
+    maxAnalysisBytes: Number.MAX_SAFE_INTEGER,
+    maxJevCalls: Number.MAX_SAFE_INTEGER,
+    deadline: performance.now() + request.timeoutMs,
+  });
+  let delivered = false;
+  const outcome = await analyseChange({
+    selection: request.selection, taskIds: request.taskIds, changeIds: ['whole-diff'],
+    ...(request.workingDirectories ? { workingDirectories: request.workingDirectories } : {}),
+    ...(request.maxGroupBytes === undefined ? {} : { maxGroupBytes: request.maxGroupBytes }),
+    ...(request.apiBaseUrl ? { apiBaseUrl: request.apiBaseUrl } : {}),
+    ...(request.apiModel ? { apiModel: request.apiModel } : {}),
+    apiKey: request.apiKey, budget, state: shared,
+    stopWhenSettled: false, throwOnSizeError: true,
+    patches: {
+      next: async () => {
+        if (delivered) return null;
+        delivered = true;
+        return { changeIds: ['whole-diff'], paths: request.state.changed_paths, diff, issue: null };
+      },
+    },
+  }, evaluate);
+  const observation: Observation = outcome.observation
+    ?? { strategy: 'whole-diff', status: 'incomplete', chunks: [] };
+  return {
+    observation,
+    decisions: decisionsFromObservation(observation, request.taskIds),
+    failure: outcome.failure,
+    model: outcome.model,
+    usage: outcome.usage,
+  };
 }

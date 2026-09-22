@@ -1,19 +1,32 @@
 import { InputError } from './input-error.js';
 import { resolveTasks, type ResolveTasksOptions, type ResolveTasksResult } from './metadata.js';
 import { externalActionResolver } from './external.js';
-import { ChangeError, GitRepository, type ChangeSet } from './changes.js';
+import {
+  ChangeError, GitRepository,
+  type ChangeEntry, type ChangeManifest, type EntryIssueCode, type VerifiedComparison,
+} from './changes.js';
 import { validateSelection, selectionHash, type SelectionDefinition } from './tasks.js';
 import { evaluateJev, resolveJevApi, type JevMetadata, type JevApiOptions } from './jev.js';
-import { globalPathReason, selectTasks, type ForceAllReason, type Mode } from './policy.js';
-import { validateReport, type Report } from './report.js';
-import { observeChange, ObservationSizeError, type Observation } from './observations.js';
+import { globalPathReason, preselectTasks, selectTasks, type ForceAllReason, type Mode, type Reason } from './policy.js';
+import { validateReport, MAX_REPORT_CHUNKS, type Report } from './report.js';
+import {
+  analyseChange, ObservationSizeError, PATCH_UNIT_LIMIT_REASON,
+  type AnalysisOutcome, type Observation, type PatchDelivery, type PatchStream, type TaskState,
+} from './observations.js';
 import { resolveContextFiles, type ContextResolutionReport } from './context.js';
 import { evaluateChoices } from './jev.js';
+import { AnalysisBudget, BudgetError, PATCH_UNIT_BYTES, type BudgetCounters } from './budget.js';
 
 export interface Inputs extends JevApiOptions, SelectionDefinition {
   testedRef?: 'head' | 'merge';
   mode: Mode; githubToken: string; apiKey: string;
-  allowExternalContext: boolean; forceAll: boolean; timeoutMs: number; maxDiffBytes: number;
+  allowExternalContext: boolean; forceAll: boolean; timeoutMs: number;
+  /** Ceiling for the sum of patch units actually collected locally. */
+  maxCollectedPatchBytes: number;
+  /** Ceiling for the sum of complete request JSON sent to Jev. */
+  maxAnalysisBytes: number;
+  /** Ceiling for dispatched Jev calls, preparation and observation together. */
+  maxJevCalls: number;
 }
 export interface Context {
   eventName: string; repository: string; serverUrl: string; testedSha: string;
@@ -39,7 +52,7 @@ export function eventContext(env: NodeJS.ProcessEnv, event: unknown, testedRef: 
   return { eventName, repository, serverUrl: url.origin, testedSha: testedRef === 'head' ? head.sha : testedSha, baseSha: base.sha, headSha: head.sha, fork };
 }
 
-type Repository = Pick<GitRepository, 'fetchCommit' | 'readFile' | 'listFiles' | 'collect' | 'dispose'>;
+type Repository = Pick<GitRepository, 'fetchCommit' | 'readFile' | 'listFiles' | 'verifyComparison' | 'collectManifest' | 'readPatch' | 'dispose'>;
 export interface PlannerDependencies {
   createRepository?: (options: { remoteUrl: string; token?: string }) => Promise<Repository>;
   evaluate?: typeof evaluateJev;
@@ -52,10 +65,87 @@ export function validateInputs(inputs: Inputs): void {
   if (!['head', 'merge'].includes(inputs.testedRef ?? 'merge')) throw new InputError('tested-ref');
   if (!['shadow', 'enforce'].includes(inputs.mode)) throw new InputError('mode');
   if (!Number.isSafeInteger(inputs.timeoutMs) || inputs.timeoutMs < 1 || inputs.timeoutMs > 2_147_483_647) throw new InputError('timeout-ms');
-  if (!Number.isSafeInteger(inputs.maxDiffBytes) || inputs.maxDiffBytes < 1) throw new InputError('max-diff-bytes');
+  if (!Number.isSafeInteger(inputs.maxCollectedPatchBytes) || inputs.maxCollectedPatchBytes < 1) throw new InputError('max-collected-patch-bytes');
+  if (!Number.isSafeInteger(inputs.maxAnalysisBytes) || inputs.maxAnalysisBytes < 1) throw new InputError('max-analysis-bytes');
+  if (!Number.isSafeInteger(inputs.maxJevCalls) || inputs.maxJevCalls < 1) throw new InputError('max-jev-calls');
   if (typeof inputs.allowExternalContext !== 'boolean') throw new InputError('allow-external-context');
   if (typeof inputs.forceAll !== 'boolean') throw new InputError('force-all');
   resolveJevApi(inputs);
+}
+
+/** Entry-level failures mapped to the vocabulary the policy already reports. */
+const ISSUE_REASONS: Record<EntryIssueCode, Reason> = {
+  submodule: 'submodule-change',
+  binary: 'binary-change',
+  'too-large': 'diff-too-large',
+  unrepresentable: 'unrepresentable-change',
+  'git-read-failed': 'git-read-failed',
+};
+/** Entries grouped per read. Large files end up isolated by the halving retry. */
+const UNIT_ENTRIES = 16;
+
+/**
+ * Pull patch text one bounded unit at a time.
+ *
+ * Nothing is collected in advance: a unit is read only when the scheduler asks
+ * for it, which is only while some task is still open. A unit that exceeds its
+ * allowance is split in half and retried, so one oversized file does not make
+ * its neighbours unreadable; a single entry that still does not fit is reported
+ * as an issue rather than delivered as a truncated prefix.
+ */
+function patchStream(
+  repository: Repository,
+  comparison: VerifiedComparison,
+  entries: readonly ChangeEntry[],
+  budget: AnalysisBudget,
+): PatchStream {
+  const pending: ChangeEntry[][] = [];
+  for (let index = 0; index < entries.length; index += UNIT_ENTRIES) pending.push(entries.slice(index, index + UNIT_ENTRIES));
+  return {
+    async next(): Promise<PatchDelivery | null> {
+      while (pending.length) {
+        const unit = pending.shift()!;
+        if (!unit.length) continue;
+        const changeIds = unit.map(entry => entry.id);
+        const allowance = budget.patchUnitAllowance();
+        if (allowance <= 0) return { changeIds, paths: [], diff: '', issue: PATCH_UNIT_LIMIT_REASON };
+        budget.notePatchRequested();
+        const result = await repository.readPatch(comparison, unit, {
+          maxUnitBytes: Math.min(allowance, PATCH_UNIT_BYTES),
+          timeoutMs: Math.max(1, budget.remainingMs()),
+        });
+        if (result.issue === 'too-large' && unit.length > 1) {
+          const middle = Math.ceil(unit.length / 2);
+          pending.unshift(unit.slice(0, middle), unit.slice(middle));
+          continue;
+        }
+        if (result.issue !== null) return { changeIds, paths: result.paths, diff: '', issue: ISSUE_REASONS[result.issue] };
+        try { budget.spendPatchBytes(result.bytes); }
+        catch (error) {
+          if (!(error instanceof BudgetError)) throw error;
+          return { changeIds, paths: result.paths, diff: '', issue: PATCH_UNIT_LIMIT_REASON };
+        }
+        return { changeIds, paths: result.paths, diff: result.diff, issue: null };
+      }
+      return null;
+    },
+  };
+}
+
+/** Keep only the tasks worth resolving; the rest never reach a file read. */
+function restrict(configured: SelectionDefinition, taskIds: readonly string[]): SelectionDefinition {
+  const keep = new Set(taskIds);
+  return { model: configured.model, tasks: Object.fromEntries(Object.entries(configured.tasks).filter(([id]) => keep.has(id))) };
+}
+
+function plainSelection(inputs: Inputs, taskIds?: readonly string[]): ResolveTasksResult['selection'] {
+  const keep = taskIds ? new Set(taskIds) : null;
+  return { model: inputs.model,
+    tasks: Object.fromEntries(Object.entries(inputs.tasks).filter(([id]) => !keep || keep.has(id)).map(([id, task]) => [id, {
+      ...(task.always === undefined ? {} : { always: task.always }),
+      ...(task.force_paths === undefined ? {} : { force_paths: task.force_paths }),
+      evidence: { description: task.description },
+    }])) };
 }
 
 export async function planChange(inputs: Inputs, context: Context, dependencies: PlannerDependencies = {}) {
@@ -64,6 +154,12 @@ export async function planChange(inputs: Inputs, context: Context, dependencies:
   const configured: SelectionDefinition = { model: inputs.model, tasks: inputs.tasks };
   const api = resolveJevApi(inputs);
   const started = performance.now();
+  const budget = new AnalysisBudget({
+    maxCollectedPatchBytes: inputs.maxCollectedPatchBytes,
+    maxAnalysisBytes: inputs.maxAnalysisBytes,
+    maxJevCalls: inputs.maxJevCalls,
+    deadline: started + inputs.timeoutMs,
+  });
   const metadataSha = context.metadataSha ?? context.baseSha;
   let forced: ForceAllReason | undefined;
   if (context.eventName !== 'pull_request') forced = { status: 'bypassed', code: 'non-pull-request' };
@@ -73,77 +169,105 @@ export async function planChange(inputs: Inputs, context: Context, dependencies:
   else if (!inputs.allowExternalContext) forced = { status: 'bypassed', code: 'external-context-disabled' };
   // Bypasses need only validated task definitions: no project files or metadata reads.
   let resolved: ResolveTasksResult = {
-    selection: { model: inputs.model,
-      tasks: Object.fromEntries(Object.entries(inputs.tasks).map(([id, task]) => [id, {
-        ...(task.always === undefined ? {} : { always: task.always }),
-        ...(task.force_paths === undefined ? {} : { force_paths: task.force_paths }),
-        evidence: { description: task.description },
-      }])) },
+    selection: plainSelection(inputs),
     metadata: { repository: context.repository, commit: metadataSha, tasks: {} }, workingDirectories: [],
   };
   let repository: Repository | undefined;
   try {
-    let change: ChangeSet | undefined;
+    let manifest: ChangeManifest | undefined;
+    let analysisTaskIds: string[] = [];
     if (!forced && Object.keys(inputs.tasks).length) {
       try {
         repository = await (dependencies.createRepository ?? GitRepository.create)({
           remoteUrl: `${context.serverUrl}/${context.repository}.git`, token: inputs.githubToken,
         });
         await repository.fetchCommit(context.baseSha);
-        change = await repository.collect({ baseSha: context.baseSha, headSha: context.headSha,
-          testedSha: context.testedSha, testedRef: inputs.testedRef ?? 'merge', maxDiffBytes: inputs.maxDiffBytes });
-        forced = globalPathReason(change.changedPaths);
+        const comparison = await repository.verifyComparison({ baseSha: context.baseSha, headSha: context.headSha,
+          testedSha: context.testedSha, testedRef: inputs.testedRef ?? 'merge' });
+        // Names, modes and object ids only. No numstat, no blob, no patch.
+        manifest = await repository.collectManifest(comparison);
+        budget.noteManifest(manifest.entries.length);
+        forced = globalPathReason(manifest.changedPaths);
+        // A partial inventory can never justify a new exclusion.
+        if (!manifest.complete) forced ??= { status: 'fallback', code: 'manifest-incomplete' };
       } catch (error) {
         if (!(error instanceof ChangeError)) throw error;
         forced = (error.changedPaths ? globalPathReason(error.changedPaths) : undefined)
           ?? { status: 'fallback', code: error.code };
       }
-      if (change && repository) {
-        let metadataAvailable = true;
-        if (metadataSha !== context.baseSha && Object.values(inputs.tasks).some(task => task.jobs?.length || task.context_files?.length || task.resolve_context_files === true)) {
-          try { await repository.fetchCommit(metadataSha); }
-          catch (error) {
-            if (!(error instanceof ChangeError)) throw error;
-            metadataAvailable = false;
+      if (manifest && repository) {
+        // The deterministic rules run before a single byte of content is read.
+        const preselection = preselectTasks(plainSelection(inputs), manifest.changedPaths);
+        // `enforce` never spends anything on a task whose execution is already
+        // settled, nor anything at all once a global protection applies.
+        // `shadow` keeps observing every task so evaluation campaigns still see
+        // a proposal; the bypasses that precede repository access stay
+        // unaffected, since they never reach this point at all.
+        analysisTaskIds = inputs.mode === 'shadow'
+          ? [...preselection.required, ...preselection.candidates].sort()
+          : forced ? [] : preselection.candidates;
+        if (analysisTaskIds.length) {
+          let metadataAvailable = true;
+          const scoped = restrict(configured, analysisTaskIds);
+          if (metadataSha !== context.baseSha && Object.values(scoped.tasks).some(task => task.jobs?.length || task.context_files?.length || task.resolve_context_files === true)) {
+            try { await repository.fetchCommit(metadataSha); }
+            catch (error) {
+              if (!(error instanceof ChangeError)) throw error;
+              metadataAvailable = false;
+            }
           }
+          const activeRepository = repository;
+          const scopedResolution = await resolveTasks(scoped, {
+            repository: context.repository, commit: metadataSha,
+            readFile: (commit, path) => {
+              if (!metadataAvailable) throw new ChangeError('git-fetch-failed');
+              return activeRepository.readFile(commit, path);
+            },
+            resolveExternal: dependencies.resolveExternal ?? externalActionResolver(context.serverUrl, inputs.githubToken),
+          });
+          resolved = {
+            ...scopedResolution,
+            // Unanalysed tasks keep their plain definition: they are already
+            // required, so nothing was read on their behalf.
+            selection: { model: scopedResolution.selection.model,
+              tasks: { ...plainSelection(inputs).tasks, ...scopedResolution.selection.tasks } },
+          };
         }
-        const activeRepository = repository;
-        resolved = await resolveTasks(configured, {
-          repository: context.repository, commit: metadataSha,
-          readFile: (commit, path) => {
-            if (!metadataAvailable) throw new ChangeError('git-fetch-failed');
-            return activeRepository.readFile(commit, path);
-          },
-          resolveExternal: dependencies.resolveExternal ?? externalActionResolver(context.serverUrl, inputs.githubToken),
-        });
       }
     }
     const selection = resolved.selection;
     const requestedModel = api.model ?? selection.model;
     const collectionMs = performance.now() - started;
     let decisions: Record<string, boolean | null> | undefined;
-    let observationError: import('./policy.js').Reason | undefined;
+    let coverage: Record<string, boolean> | undefined;
+    let taskErrors: Record<string, Reason> | undefined;
+    let taskStates: Record<string, TaskState> = {};
+    let observationError: Reason | undefined;
     let metadata: JevMetadata = { model: null, usage: null };
     let jevMs: number | null = null;
     let observation: Observation | null = null;
     let contextResolution: ContextResolutionReport = {};
-    const candidates = Object.keys(selection.tasks).sort();
-    // Workflow protection keeps full CI while still allowing an authorized observation.
-    if (change && candidates.length) {
+    if (manifest && repository && analysisTaskIds.length) {
       const callStarted = performance.now();
-      const deadline = callStarted + inputs.timeoutMs;
       try {
-        if (repository) contextResolution = await resolveContextFiles({ configured, resolved, repository, commit: metadataSha,
-          apiKey: inputs.apiKey, deadline, apiBaseUrl: api.baseURL, apiModel: requestedModel }, dependencies.evaluateContext ?? evaluateChoices);
-        const result = await observeChange({ selection, taskIds: candidates, workingDirectories: resolved.workingDirectories,
-          apiBaseUrl: api.baseURL, apiModel: requestedModel,
-          apiKey: inputs.apiKey, timeoutMs: Math.max(0, deadline - performance.now()),
-          state: { base_sha: change.diffBaseSha ?? context.baseSha, head_sha: context.headSha, tested_sha: context.testedSha,
-            changed_paths: change.changedPaths, diff: change.diff } }, dependencies.evaluate ?? evaluateJev);
-        observation = result.observation;
-        decisions = result.decisions;
-        metadata = result;
-        observationError = result.failure;
+        contextResolution = await resolveContextFiles({ configured: restrict(configured, analysisTaskIds), resolved,
+          repository, commit: metadataSha, apiKey: inputs.apiKey, deadline: budget.limits.deadline, budget,
+          apiBaseUrl: api.baseURL, apiModel: requestedModel }, dependencies.evaluateContext ?? evaluateChoices);
+        const outcome: AnalysisOutcome = await analyseChange({
+          selection, taskIds: analysisTaskIds, workingDirectories: resolved.workingDirectories,
+          changeIds: manifest.entries.map(entry => entry.id),
+          patches: patchStream(repository, manifest.comparison, manifest.entries, budget),
+          budget, apiBaseUrl: api.baseURL, apiModel: requestedModel, apiKey: inputs.apiKey,
+          stopWhenSettled: inputs.mode !== 'shadow',
+          state: { base_sha: manifest.comparison.diffBaseSha, head_sha: context.headSha, tested_sha: context.testedSha },
+        }, dependencies.evaluate ?? evaluateJev);
+        observation = outcome.observation;
+        decisions = outcome.decisions;
+        coverage = outcome.coverage;
+        taskErrors = outcome.taskErrors;
+        taskStates = outcome.states;
+        metadata = outcome;
+        observationError = outcome.failure;
       } catch (error) {
         if (!(error instanceof ObservationSizeError)) throw error;
         observationError = error.code;
@@ -157,7 +281,8 @@ export async function planChange(inputs: Inputs, context: Context, dependencies:
         metadata.model ??= calls.find(call => call.model !== null)?.model ?? null;
       }
     }
-    const plan = selectTasks({ selection, changedPaths: change?.changedPaths ?? [], ...(decisions ? { decisions } : {}),
+    const plan = selectTasks({ selection, changedPaths: manifest?.changedPaths ?? [], ...(decisions ? { decisions } : {}),
+      ...(coverage ? { coverage } : {}), ...(taskErrors ? { taskErrors } : {}),
       ...(observationError ? { observationError } : {}), mode: inputs.mode, ...(forced ? { forceAllReason: forced } : {}) });
     for (const [id, info] of Object.entries(resolved.metadata.tasks)) {
       if (!info.incomplete) continue;
@@ -167,21 +292,46 @@ export async function planChange(inputs: Inputs, context: Context, dependencies:
       if (contextIncomplete && plan.status === 'planned') plan.status = 'fallback';
     }
     if (observation?.strategy === 'chunked-diff') {
-      for (const id of candidates) plan.tasks[id]!.reasons.push('chunked-observation');
+      for (const id of analysisTaskIds) plan.tasks[id]!.reasons.push('chunked-observation');
     }
     if (observation && plan.status === 'bypassed') {
-      for (const id of candidates) plan.tasks[id]!.reasons.push('observation-only');
+      for (const id of analysisTaskIds) plan.tasks[id]!.reasons.push('observation-only');
     }
+    const counters: BudgetCounters = budget.counters;
+    // A partial fallback names exactly the tasks left without a qualified
+    // proposal, whether the gap came from the analysis or from their metadata.
+    const retained = Object.keys(plan.tasks).filter(id => plan.tasks[id]!.proposed_run === null).sort();
     const report: Report = {
-      version: 7, tested_ref: inputs.testedRef ?? 'merge', context_resolution: contextResolution,
-      diff_base_sha: change?.diffBaseSha ?? (inputs.testedRef === 'head' ? null : context.baseSha),
+      version: 8, tested_ref: inputs.testedRef ?? 'merge', context_resolution: contextResolution,
+      diff_base_sha: manifest?.comparison.diffBaseSha ?? (inputs.testedRef === 'head' ? null : context.baseSha),
       job_metadata: resolved.metadata.tasks, observation_error: observationError ?? null,
       metadata_sha: metadataSha, base_sha: context.baseSha, head_sha: context.headSha, tested_sha: context.testedSha,
       selection_hash: selectionHash(configured),
-      diff_hash: change?.diffHash ?? null, diff_bytes: change?.diffBytes ?? null, changed_path_count: change?.changedPaths.length ?? null,
+      // No global diff is built, so the historical whole-diff fields stay null
+      // rather than being filled by a read nothing else needed.
+      diff_hash: null, diff_bytes: null,
+      changed_path_count: manifest?.changedPaths.length ?? null,
+      manifest: {
+        complete: manifest?.complete ?? false,
+        hash: manifest?.manifestHash ?? null,
+        change_count: manifest?.entries.length ?? null,
+      },
+      analysis: {
+        ...counters,
+        analysed_tasks: [...analysisTaskIds].sort(),
+        required_without_analysis: Object.keys(plan.tasks).filter(id => !analysisTaskIds.includes(id)).sort(),
+        task_states: taskStates,
+        coverage: coverage ?? {},
+        fallback_scope: plan.status !== 'fallback' ? 'none' : forced ? 'global' : 'partial',
+        fallback_tasks: plan.status !== 'fallback' ? [] : forced ? Object.keys(plan.tasks).sort() : retained,
+      },
       mode: plan.mode, status: plan.status, model: { requested: requestedModel, expected: selection.model, returned: metadata.model },
       durations_ms: { collection: collectionMs, jev: jevMs, total: performance.now() - started },
-      usage: metadata.usage, tasks: plan.tasks, observation,
+      usage: metadata.usage, tasks: plan.tasks,
+      observation: observation && observation.chunks.length > MAX_REPORT_CHUNKS
+        // Keep the report bounded: the counters above still describe the whole run.
+        ? { ...observation, chunks: observation.chunks.slice(0, MAX_REPORT_CHUNKS) }
+        : observation,
     };
     validateReport(report);
     return { plan, report };

@@ -6,9 +6,17 @@ import schema from '../../schemas/report.schema.json';
 
 function report(): Report {
   return {
-    version: 7, metadata_sha: 'a'.repeat(40), base_sha: 'a'.repeat(40), head_sha: 'b'.repeat(40),
+    version: 8, metadata_sha: 'a'.repeat(40), base_sha: 'a'.repeat(40), head_sha: 'b'.repeat(40),
     tested_sha: 'c'.repeat(40), tested_ref: 'merge', diff_base_sha: null,
     selection_hash: 'd'.repeat(64), diff_hash: null, diff_bytes: null, changed_path_count: null,
+    manifest: { complete: false, hash: null, change_count: null },
+    analysis: {
+      manifest_entries: null, patches_requested: 0, patches_read: 0, collected_patch_bytes: 0,
+      preparation_calls: 0, preparation_bytes: 0, observation_calls: 0, observation_bytes: 0,
+      jev_calls: 0, analysis_bytes: 0, limits_reached: [],
+      analysed_tasks: [], required_without_analysis: ['unit'], task_states: {}, coverage: {},
+      fallback_scope: 'none', fallback_tasks: [],
+    },
     mode: 'shadow', status: 'bypassed', model: { requested: 'provider/alias', expected: 'jev-1.13.0', returned: null },
     durations_ms: { collection: 1, jev: null, total: 1 }, usage: null,
     tasks: { unit: { proposed_run: null, run: true, reasons: ['missing-api-key'] } },
@@ -16,11 +24,11 @@ function report(): Report {
   };
 }
 
-test('v7 requires complete provenance and rejects historical versions and fields', () => {
+test('v8 requires complete provenance and rejects historical versions and fields', () => {
   const value = report();
   validateReport(value);
   assert.deepEqual([...schema.properties.tasks.additionalProperties.properties.reasons.items.enum].sort(), [...REASONS].sort());
-  for (const version of [1, 2, 3, 4, 5, 6, 8]) assert.throws(() => validateReport({ ...value, version }), /invalid-report/);
+  for (const version of [1, 2, 3, 4, 5, 6, 7, 9]) assert.throws(() => validateReport({ ...value, version }), /invalid-report/);
   for (const field of schema.required) {
     const missing = { ...value } as Record<string, unknown>;
     delete missing[field];
@@ -105,7 +113,8 @@ test('context resolution is strict, source-free, and reports both choice vocabul
 test('observation judgments remain source-free and appear below decisions in collapsible details', () => {
   const answer = { choice: 'independent', probabilities: { required: 0.02, independent: 0.93, unresolved: 0.05 }, confidence: 0.82 };
   const chunk = {
-    index: 0, start_byte: 0, end_byte: 32, diff_hash: 'e'.repeat(64), state_hash: 'f'.repeat(64), diff_bytes: 32,
+    index: 0, unit_index: 0, change_ids: ['c0'], start_byte: 0, end_byte: 32,
+    diff_hash: 'e'.repeat(64), state_hash: 'f'.repeat(64), diff_bytes: 32,
     status: 'completed' as const, judgments: { unit: answer }, model: 'jev-1.13.0',
     usage: { input_tokens: 10, output_tokens: 2 }, duration_ms: 12, error: null,
   };
@@ -126,7 +135,7 @@ test('observation judgments remain source-free and appear below decisions in col
   assert.match(text, /independent=0\.93/);
   assert.match(text, /confidence=0\.82/);
   assert.match(text, /jev-timeout/);
-  assert.match(text, /No cross-chunk aggregate/);
+  assert.match(text, /No cross-group aggregate/);
   assert.match(text, /<\/details>/);
   assert.match(summary(report()), /not-collected/);
   const withChoice = (judgment: unknown) => ({ ...report(), observation: {
@@ -154,4 +163,29 @@ test('named outputs preserve effective booleans and stable ordering, including a
     assert.equal(outputs['tested-sha'], 'a'.repeat(40));
     assert.equal(outputs['report-path'], '/tmp/report.json');
   }
+});
+
+test('the summary reports what was measured and what was never read', () => {
+  const value: Report = { ...report(), status: 'fallback', manifest: { complete: true, hash: 'a'.repeat(64), change_count: 3 },
+    analysis: { ...report().analysis, manifest_entries: 3, patches_requested: 2, patches_read: 1,
+      collected_patch_bytes: 4096, preparation_calls: 1, preparation_bytes: 700,
+      observation_calls: 2, observation_bytes: 1300, jev_calls: 3, analysis_bytes: 2000,
+      limits_reached: ['collected-patch-bytes'], analysed_tasks: ['unit'], required_without_analysis: [],
+      task_states: { unit: 'fallback-run' }, coverage: { unit: false },
+      fallback_scope: 'partial', fallback_tasks: ['unit'] } };
+  validateReport(value);
+  const text = summary(value);
+  assert.match(text, /Inventory: complete, 3 change\(s\), hash aaaaaaaaaaaa\./);
+  assert.match(text, /Collection: 1\/2 patch unit\(s\) read, 4096 byte\(s\) collected\./);
+  assert.match(text, /Inference: 3 call\(s\) and 2000 request byte\(s\) \(preparation 1\/700, observation 2\/1300\)\./);
+  assert.match(text, /Limits reached: collected-patch-bytes; partial fallback: unit\./);
+  assert.match(text, /not token counts\.|not token counts/);
+  assert.doesNotMatch(text, /private source/);
+});
+
+test('an incomplete inventory is displayed as incomplete with no hash', () => {
+  const text = summary(report());
+  assert.match(text, /Inventory: incomplete, — change\(s\), hash —\./);
+  assert.match(text, /Limits reached: none; no fallback\./);
+  assert.match(text, /required without analysis: unit\./);
 });

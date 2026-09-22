@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { TextDecoder } from 'node:util';
+import { MANIFEST_BYTES } from './budget.js';
 
 export type ChangeErrorCode =
   | 'git-fetch-failed'
@@ -44,12 +45,82 @@ export interface ChangeSet {
   diffBaseSha?: string;
 }
 
+/**
+ * A comparison whose SHAs, merge relationship and immutability have been
+ * checked. Every later read is expressed against this value, so no step can
+ * silently drift onto a different remote state.
+ */
+export interface VerifiedComparison {
+  baseSha: string;
+  headSha: string;
+  /** Left side of the diff: the base, or the unique merge base for `head`. */
+  diffBaseSha: string;
+  /** Right side of the diff: the tested merge, or the head commit. */
+  testedSha: string;
+  testedRef: TestedRef;
+}
+
+export type EntryIssueCode = 'submodule' | 'binary' | 'too-large' | 'unrepresentable' | 'git-read-failed';
+
+/** One inventoried change. Names and object ids only; never file content. */
+export interface ChangeEntry {
+  id: string;
+  oldPath: string | null;
+  newPath: string | null;
+  oldOid: string | null;
+  newOid: string | null;
+  oldMode: string | null;
+  newMode: string | null;
+  status: string;
+  /** Set when the entry cannot be turned into reviewable text at all. */
+  issue: EntryIssueCode | null;
+}
+
+/**
+ * The complete inventory of a comparison. `complete` is false whenever the
+ * inventory itself hit a limit: a partial inventory can never justify a new
+ * exclusion, and `manifestHash` stays null so nothing downstream can pretend
+ * the change set was fully enumerated.
+ */
+export interface ChangeManifest {
+  comparison: VerifiedComparison;
+  entries: readonly ChangeEntry[];
+  changedPaths: readonly string[];
+  complete: boolean;
+  manifestHash: string | null;
+}
+
+/** A bounded slice of patch text, collected on demand for named entries. */
+export interface PatchUnit {
+  changeIds: string[];
+  paths: string[];
+  diff: string;
+  bytes: number;
+  issue: EntryIssueCode | null;
+}
+
+export interface ReadPatchLimits {
+  /** Hard ceiling for this unit's stdout, enforced before any allocation. */
+  maxUnitBytes: number;
+  /** Ceiling for either side's blob, checked from object metadata first. */
+  maxBlobBytes?: number;
+  renames?: boolean;
+  timeoutMs?: number;
+}
+
 export type TestedRef = 'head' | 'merge';
 
 export interface GitRepositoryOptions {
   remoteUrl: string;
   token?: string;
   tempRoot?: string;
+}
+
+export interface VerifyComparisonOptions {
+  baseSha: string;
+  headSha: string;
+  testedSha: string;
+  testedRef?: TestedRef;
 }
 
 export interface CollectOptions {
@@ -67,6 +138,16 @@ const SHA_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
 const ZERO_SHA_PATTERN = /^(?:0{40}|0{64})$/;
 const utf8Decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
 const MAX_FILE_BYTES = 1024 * 1024;
+const MAX_MANIFEST_ENTRIES = 50_000;
+const MAX_UNIT_PATHS = 256;
+const MAX_UNIT_PATHSPEC_BYTES = 64 * 1024;
+const LEGACY_ISSUE_CODES: Record<EntryIssueCode, ChangeErrorCode> = {
+  submodule: 'submodule-change',
+  binary: 'binary-change',
+  'too-large': 'diff-too-large',
+  unrepresentable: 'unrepresentable-change',
+  'git-read-failed': 'git-read-failed',
+};
 const MAX_METADATA_BYTES = 4 * 1024 * 1024;
 const MAX_BLOB_BYTES = 16 * 1024 * 1024;
 const HISTORY_DEEPEN_STEPS = [32, 128, 512, 2048];
@@ -177,28 +258,6 @@ function parseRawDiff(raw: Buffer): Array<{
   return entries;
 }
 
-function rejectBinaryNumstat(numstat: Buffer): void {
-  if (numstat.length === 0) return;
-  if (numstat[numstat.length - 1] !== 0) throw new ChangeError('unrepresentable-change');
-  const tokens = numstat.toString('utf8').slice(0, -1).split('\0');
-  for (let index = 0; index < tokens.length; index++) {
-    const token = tokens[index]!;
-    const firstTab = token.indexOf('\t');
-    const secondTab = firstTab < 0 ? -1 : token.indexOf('\t', firstTab + 1);
-    if (firstTab < 0 || secondTab < 0) throw new ChangeError('unrepresentable-change');
-    const added = token.slice(0, firstTab);
-    const deleted = token.slice(firstTab + 1, secondTab);
-    if (added === '-' || deleted === '-') throw new ChangeError('binary-change');
-    if (!/^\d+$/.test(added) || !/^\d+$/.test(deleted)) throw new ChangeError('unrepresentable-change');
-    // With -z, a rename has an empty name here followed by two literal paths.
-    // A filename beginning "-\t-\t" is a path, never a second stat record.
-    if (token.length === secondTab + 1) {
-      if (!tokens[index + 1] || !tokens[index + 2]) throw new ChangeError('unrepresentable-change');
-      index += 2;
-    }
-  }
-}
-
 function parseCommitParents(commit: Buffer): string[] | undefined {
   const headerEnd = commit.indexOf(Buffer.from('\n\n'));
   if (headerEnd < 0) return undefined;
@@ -211,6 +270,71 @@ function parseCommitParents(commit: Buffer): string[] | undefined {
     parents.push(parent.toLowerCase());
   }
   return parents;
+}
+
+
+/**
+ * Structural binary detection on collected patch text.
+ *
+ * Only lines outside a hunk body are inspected. Inside a hunk every content
+ * line carries a ' ', '+' or '-' prefix, so hostile file content can never be
+ * mistaken for Git's own top-level binary marker.
+ */
+function patchIsBinary(diff: string): boolean {
+  let inHunk = false;
+  for (const raw of diff.split('\n')) {
+    const line = raw.endsWith('\r') ? raw.slice(0, -1) : raw;
+    if (line.startsWith('diff --git ')) { inHunk = false; continue; }
+    if (line.startsWith('@@ ')) { inHunk = true; continue; }
+    if (inHunk) continue;
+    if (line.startsWith('Binary files ') || line === 'GIT binary patch') return true;
+  }
+  return false;
+}
+
+function entriesFrom(raw: ReturnType<typeof parseRawDiff>): ChangeEntry[] {
+  return raw.map((entry, index) => {
+    const paths = entry.paths.map(buffer => {
+      const path = decodeUtf8(buffer);
+      if (path === undefined || !validLiteralPath(path)) throw new ChangeError('unrepresentable-change');
+      return path;
+    });
+    const kind = entry.status[0]!;
+    const twoPaths = paths.length === 2;
+    const oldPath = kind === 'A' ? null : paths[0]!;
+    const newPath = kind === 'D' ? null : twoPaths ? paths[1]! : paths[0]!;
+    const submodule = entry.oldMode === '160000' || entry.newMode === '160000';
+    return {
+      id: `c${index}`,
+      oldPath,
+      newPath,
+      oldOid: isZeroObjectId(entry.oldSha) ? null : entry.oldSha.toLowerCase(),
+      newOid: isZeroObjectId(entry.newSha) ? null : entry.newSha.toLowerCase(),
+      oldMode: entry.oldMode === '000000' ? null : entry.oldMode,
+      newMode: entry.newMode === '000000' ? null : entry.newMode,
+      status: entry.status,
+      issue: submodule ? 'submodule' as const : null,
+    };
+  });
+}
+
+/** Deterministic identity of an inventory: names, modes and object ids only. */
+function manifestDigest(comparison: VerifiedComparison, entries: readonly ChangeEntry[]): string {
+  const canonical = JSON.stringify({
+    diff_base_sha: comparison.diffBaseSha,
+    tested_sha: comparison.testedSha,
+    entries: entries.map(entry => [entry.status, entry.oldPath, entry.newPath, entry.oldMode, entry.newMode, entry.oldOid, entry.newOid]),
+  });
+  return createHash('sha256').update(canonical, 'utf8').digest('hex');
+}
+
+export function changedPathsOf(entries: readonly ChangeEntry[]): string[] {
+  const paths = new Set<string>();
+  for (const entry of entries) {
+    if (entry.oldPath !== null) paths.add(entry.oldPath);
+    if (entry.newPath !== null) paths.add(entry.newPath);
+  }
+  return [...paths].sort();
 }
 
 export class GitRepository {
@@ -296,16 +420,20 @@ export class GitRepository {
     }
   }
 
-  async collect({ baseSha, headSha, testedSha, maxDiffBytes, testedRef = 'merge' }: CollectOptions): Promise<ChangeSet> {
+  /**
+   * Check the supplied commit relationship before anything is read.
+   *
+   * Keeps the existing merge-base, merge-parent and immutable-reference rules:
+   * a comparison that cannot be verified never becomes a usable manifest.
+   */
+  async verifyComparison({ baseSha, headSha, testedSha, testedRef = 'merge' }: VerifyComparisonOptions): Promise<VerifiedComparison> {
     this.ensureOpen();
     if (
       !validSha(baseSha) ||
       !validSha(headSha) ||
       !validSha(testedSha) ||
       (testedRef !== 'head' && testedRef !== 'merge') ||
-      (testedRef === 'head' && testedSha !== headSha) ||
-      !Number.isSafeInteger(maxDiffBytes) ||
-      maxDiffBytes < 0
+      (testedRef === 'head' && testedSha !== headSha)
     ) {
       throw new ChangeError('sha-incoherent');
     }
@@ -337,117 +465,168 @@ export class GitRepository {
         throw new ChangeError('sha-incoherent');
       }
     }
+    return { baseSha, headSha, diffBaseSha, testedSha: effectiveTestedSha, testedRef };
+  }
 
+  /**
+   * Inventory the comparison without reading a single byte of file content.
+   *
+   * This is names, modes and object ids from `diff --raw`; no `numstat`, no
+   * similarity search, no blob read and no patch. Rename detection is off by
+   * default: a rename then appears as a deletion plus an addition, which keeps
+   * both paths visible to the path-based safety rules. Renames can be enriched
+   * later, at a bounded cost, only where they help an actual observation.
+   */
+  async collectManifest(comparison: VerifiedComparison, options: { renames?: boolean } = {}): Promise<ChangeManifest> {
+    this.ensureOpen();
     let raw: Buffer;
-    let numstat: Buffer;
+    let complete = true;
     try {
-      [raw, numstat] = await Promise.all([
-        GitRepository.runGitFrom(this.repoPath, this.env, [
-          'diff',
-          '--raw',
-          '-z',
-          '--full-index',
-          '--no-abbrev',
-          '-M',
-          '--no-ext-diff',
-          '--no-textconv',
-          diffBaseSha,
-          effectiveTestedSha,
-          '--',
-        ], MAX_METADATA_BYTES),
-        GitRepository.runGitFrom(this.repoPath, this.env, [
-          'diff',
-          '--numstat',
-          '-z',
-          '-M',
-          '--no-ext-diff',
-          '--no-textconv',
-          diffBaseSha,
-          effectiveTestedSha,
-          '--',
-        ], MAX_METADATA_BYTES),
-      ]);
+      raw = await GitRepository.runGitFrom(this.repoPath, this.env, [
+        '--literal-pathspecs',
+        'diff',
+        '--raw',
+        '-z',
+        '--full-index',
+        '--no-abbrev',
+        options.renames === true ? '-M' : '--no-renames',
+        '--no-ext-diff',
+        '--no-textconv',
+        comparison.diffBaseSha,
+        comparison.testedSha,
+        '--',
+      ], MANIFEST_BYTES);
     } catch (error) {
-      if (error instanceof OutputLimitError) throw new ChangeError('diff-too-large');
-      throw new ChangeError('git-read-failed');
+      if (!(error instanceof OutputLimitError)) throw new ChangeError('git-read-failed');
+      // A truncated inventory is reported as incomplete rather than guessed at.
+      complete = false;
+      raw = Buffer.alloc(0);
     }
 
-    const entries = parseRawDiff(raw);
-    const changedPaths: string[] = [];
-    const seenPaths = new Set<string>();
-    const blobsToCheck = new Set<string>();
-    let hasSubmodule = false;
-    for (const entry of entries) {
-      if (entry.oldMode === '160000' || entry.newMode === '160000') hasSubmodule = true;
-      for (const pathBuffer of entry.paths) {
-        const path = decodeUtf8(pathBuffer);
-        if (path === undefined || !validLiteralPath(path)) throw new ChangeError('unrepresentable-change');
-        if (!seenPaths.has(path)) {
-          seenPaths.add(path);
-          changedPaths.push(path);
-        }
-      }
-      if (!isZeroObjectId(entry.oldSha)) blobsToCheck.add(entry.oldSha);
-      if (!isZeroObjectId(entry.newSha)) blobsToCheck.add(entry.newSha);
+    const entries = complete ? entriesFrom(parseRawDiff(raw)) : [];
+    if (entries.length > MAX_MANIFEST_ENTRIES) complete = false;
+    return {
+      comparison,
+      entries,
+      changedPaths: changedPathsOf(entries),
+      complete,
+      manifestHash: complete ? manifestDigest(comparison, entries) : null,
+    };
+  }
+
+  /**
+   * Collect the patch text for one bounded unit of entries.
+   *
+   * Object sizes are pre-checked from metadata, so an oversized blob is refused
+   * before Git is asked to render it. Output is capped before allocation, and a
+   * unit that exceeds its cap yields an issue rather than a truncated prefix:
+   * a partial patch is never passed on as if it were a complete one.
+   */
+  async readPatch(comparison: VerifiedComparison, entries: readonly ChangeEntry[], limits: ReadPatchLimits): Promise<PatchUnit> {
+    this.ensureOpen();
+    const paths = changedPathsOf(entries);
+    const unit: PatchUnit = { changeIds: entries.map(entry => entry.id), paths, diff: '', bytes: 0, issue: null };
+    if (!Number.isSafeInteger(limits.maxUnitBytes) || limits.maxUnitBytes <= 0) return { ...unit, issue: 'too-large' };
+    const blocked = entries.find(entry => entry.issue !== null);
+    if (blocked) return { ...unit, issue: blocked.issue };
+    if (!paths.length) return unit;
+    if (paths.length > MAX_UNIT_PATHS || paths.reduce((total, path) => total + Buffer.byteLength(path) + 1, 0) > MAX_UNIT_PATHSPEC_BYTES) {
+      return { ...unit, issue: 'too-large' };
     }
 
-    if (hasSubmodule) throw new ChangeError('submodule-change', changedPaths);
-    try {
-      rejectBinaryNumstat(numstat);
-    } catch (error) {
-      if (error instanceof ChangeError) throw new ChangeError(error.code, changedPaths);
-      throw error;
-    }
-
-    for (const blobSha of blobsToCheck) {
-      let blob: Buffer;
+    const maxBlobBytes = limits.maxBlobBytes ?? MAX_BLOB_BYTES;
+    const oids = [...new Set(entries.flatMap(entry => [entry.oldOid, entry.newOid]).filter((oid): oid is string => oid !== null))];
+    if (oids.length) {
+      let sizes: Map<string, number>;
       try {
-        blob = await GitRepository.runGitFrom(
-          this.repoPath,
-          this.env,
-          ['cat-file', 'blob', blobSha],
-          MAX_BLOB_BYTES,
-        );
-      } catch (error) {
-        throw new ChangeError(error instanceof OutputLimitError ? 'diff-too-large' : 'git-read-failed', changedPaths);
+        sizes = await this.objectSizes(oids);
+      } catch {
+        return { ...unit, issue: 'git-read-failed' };
       }
-      if (blob.includes(0)) throw new ChangeError('binary-change', changedPaths);
-      if (decodeUtf8(blob) === undefined) throw new ChangeError('unrepresentable-change', changedPaths);
+      // An object size bounds the input, never the rendered patch. It is used
+      // only to refuse work that certainly cannot fit.
+      for (const oid of oids) {
+        const size = sizes.get(oid);
+        if (size === undefined) return { ...unit, issue: 'git-read-failed' };
+        if (size > maxBlobBytes) return { ...unit, issue: 'too-large' };
+      }
     }
 
     let patch: Buffer;
     try {
-      patch = await GitRepository.runGitFrom(
-        this.repoPath,
-        this.env,
-        [
-          'diff',
-          '--patch',
-          '--full-index',
-          '-M',
-          '--no-ext-diff',
-          '--no-textconv',
-          '--no-color',
-          diffBaseSha,
-          effectiveTestedSha,
-          '--',
-        ],
-        maxDiffBytes,
-      );
+      patch = await GitRepository.runGitFrom(this.repoPath, this.env, [
+        '--literal-pathspecs',
+        'diff',
+        '--patch',
+        '--full-index',
+        limits.renames === true ? '-M' : '--no-renames',
+        '--no-ext-diff',
+        '--no-textconv',
+        '--no-color',
+        comparison.diffBaseSha,
+        comparison.testedSha,
+        '--',
+        ...paths,
+      ], limits.maxUnitBytes, limits.timeoutMs);
     } catch (error) {
-      if (error instanceof OutputLimitError) throw new ChangeError('diff-too-large', changedPaths);
-      throw new ChangeError('git-read-failed');
+      return { ...unit, issue: error instanceof OutputLimitError ? 'too-large' : 'git-read-failed' };
     }
-    if (patch.length > maxDiffBytes) throw new ChangeError('diff-too-large', changedPaths);
+    if (patch.length > limits.maxUnitBytes) return { ...unit, issue: 'too-large' };
+    if (patch.includes(0)) return { ...unit, issue: 'binary' };
     const diff = decodeUtf8(patch);
-    if (diff === undefined) throw new ChangeError('unrepresentable-change', changedPaths);
-    const diffHash = createHash('sha256').update(patch).digest('hex');
+    if (diff === undefined) return { ...unit, issue: 'unrepresentable' };
+    if (patchIsBinary(diff)) return { ...unit, issue: 'binary' };
+    return { ...unit, diff, bytes: patch.length };
+  }
+
+  /** Object sizes from metadata alone: no content is streamed. */
+  private async objectSizes(oids: readonly string[]): Promise<Map<string, number>> {
+    for (const oid of oids) if (!shaForObjectId(oid)) throw new ChangeError('git-read-failed');
+    const output = await GitRepository.runGitFrom(
+      this.repoPath,
+      this.env,
+      ['cat-file', '--batch-check=%(objectname) %(objecttype) %(objectsize)'],
+      MAX_METADATA_BYTES,
+      undefined,
+      `${oids.join('\n')}\n`,
+    );
+    const sizes = new Map<string, number>();
+    for (const line of output.toString('ascii').split('\n')) {
+      if (!line) continue;
+      const [name, type, size] = line.split(' ');
+      if (name === undefined || type !== 'blob' || size === undefined || !/^\d+$/.test(size)) continue;
+      sizes.set(name.toLowerCase(), Number(size));
+    }
+    return sizes;
+  }
+
+  /**
+   * Compatibility adapter over the operations above.
+   *
+   * It still returns one whole-diff `ChangeSet` for historical callers and
+   * tests. New code uses `verifyComparison` + `collectManifest` + `readPatch`
+   * so that a decision can be reached without ever building a global diff.
+   */
+  async collect({ baseSha, headSha, testedSha, maxDiffBytes, testedRef = 'merge' }: CollectOptions): Promise<ChangeSet> {
+    if (!Number.isSafeInteger(maxDiffBytes) || maxDiffBytes < 0) throw new ChangeError('sha-incoherent');
+    const comparison = await this.verifyComparison({ baseSha, headSha, testedSha, testedRef });
+    const manifest = await this.collectManifest(comparison, { renames: true });
+    if (!manifest.complete) throw new ChangeError('diff-too-large');
+    const changedPaths = [...manifest.changedPaths];
+    const submodule = manifest.entries.find(entry => entry.issue === 'submodule');
+    if (submodule) throw new ChangeError('submodule-change', changedPaths);
+
+    const unit = await this.readPatch(comparison, manifest.entries, {
+      maxUnitBytes: Math.max(1, maxDiffBytes),
+      renames: true,
+    });
+    if (unit.issue !== null) throw new ChangeError(LEGACY_ISSUE_CODES[unit.issue], changedPaths);
     return {
-      changedPaths: changedPaths.sort(),
-      diff,
-      diffHash,
-      diffBytes: patch.length,
-      ...(testedRef === 'head' ? { diffBaseSha } : {}),
+      changedPaths,
+      diff: unit.diff,
+      diffHash: createHash('sha256').update(unit.diff, 'utf8').digest('hex'),
+      diffBytes: unit.bytes,
+      ...(testedRef === 'head' ? { diffBaseSha: comparison.diffBaseSha } : {}),
     };
   }
 
@@ -591,6 +770,7 @@ export class GitRepository {
     args: string[],
     maxStdoutBytes?: number,
     timeoutMs = GIT_TIMEOUT_MS,
+    input?: string,
   ): Promise<Buffer> {
     return new Promise((resolve, reject) => {
       let child;
@@ -598,12 +778,16 @@ export class GitRepository {
         child = spawn('git', args, {
           cwd,
           env,
-          stdio: ['ignore', 'pipe', 'ignore'],
+          stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'ignore'],
           detached: process.platform !== 'win32',
         });
       } catch {
         reject(new GitCommandError('spawn failed'));
         return;
+      }
+      if (input !== undefined) {
+        child.stdin?.on('error', () => { /* The child may exit before the batch is written. */ });
+        child.stdin?.end(input);
       }
       const chunks: Buffer[] = [];
       let bytes = 0;
@@ -643,7 +827,7 @@ export class GitRepository {
       };
 
       timeoutHandle = setTimeout(() => terminate('timeout'), Math.max(1, timeoutMs));
-      child.stdout.on('data', (chunk: Buffer) => {
+      child.stdout!.on('data', (chunk: Buffer) => {
         if (termination) return;
         bytes += chunk.length;
         if (maxStdoutBytes !== undefined && bytes > maxStdoutBytes) {

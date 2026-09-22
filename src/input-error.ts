@@ -6,7 +6,10 @@ const constraints = {
   'allow-external-context': '"true" or "false"',
   'force-all': '"true" or "false"',
   'timeout-ms': 'an integer from 1 to 2147483647',
-  'max-diff-bytes': 'a positive safe integer',
+  'max-diff-bytes': 'no value; it was replaced by "max-collected-patch-bytes", which bounds the patch text actually collected rather than the size of a complete diff',
+  'max-collected-patch-bytes': 'a positive safe integer',
+  'max-analysis-bytes': 'a positive safe integer',
+  'max-jev-calls': 'a positive safe integer',
   'api-base-url': 'an absolute HTTPS URL without credentials, query, fragment, whitespace, control characters or backslashes',
   'api-model': '1–128 characters, starting with an ASCII letter or digit and containing only ASCII letters, digits, ".", "_", ":", "/" or "-"',
 } as const;

@@ -90,7 +90,7 @@ A `false` output is a policy decision, not a guarantee that the task cannot dete
 
 For precise descriptions and explicit context, use the [describe-ci-jobs skill](skills/describe-ci-jobs/SKILL.md). It follows the job's commands, tool configuration and local actions to describe its actual verification scope, independently of the current PR.
 
-Jev classifies each change group against each task as `required`, `independent` or `unresolved`. Only `independent` in every group permits skipping; `required` and `unresolved` retain the task. Raw choices, distributions and confidence appear in report v7. There is no threshold to tune.
+Jev classifies each change group against each task as `required`, `independent` or `unresolved`. Only `independent` in every group permits skipping; `required` and `unresolved` retain the task. Raw choices, distributions and confidence appear in report v8. There is no threshold to tune.
 
 ## Observe or customize
 
@@ -130,4 +130,4 @@ Tests use temporary Git repositories, mocked HTTP and the shipped bundles. Repla
 
 Commit regenerated bundles with their sources. `npm run check:dist` checks reproducibility. The action and standalone analyzer include their dependency license notices.
 
-This API is a breaking update: existing integrations must supply inline `tasks`; explicitly set `mode: shadow` to retain observation-only behavior. The current analyzer accepts report v7 only.
+This API is a breaking update: existing integrations must supply inline `tasks`; explicitly set `mode: shadow` to retain observation-only behavior. The current analyzer accepts report v8 only.

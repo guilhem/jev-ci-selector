@@ -32,9 +32,15 @@ GitHub passes strings. Validation and normalization precede Git or HTTP access, 
 | `pull-request` | Empty | Open PR number for `workflow_dispatch`; add `pull-requests: read` |
 | `force-all` | `'false'` | All tasks, no Jev request |
 | `timeout-ms` | `10000` | Integer from 1 to 2147483647; shared context-preparation and final evaluation deadline |
-| `max-diff-bytes` | `65536` | Positive safe integer; complete UTF-8 diff limit |
+| `max-collected-patch-bytes` | `1048576` | Positive safe integer; UTF-8 patch text actually collected, summed over every unit read |
+| `max-analysis-bytes` | `524288` | Positive safe integer; complete request JSON sent to the API, preparation and observation together |
+| `max-jev-calls` | `16` | Positive safe integer; API calls dispatched, failures included |
 
 Boolean inputs accept only `true` and `false`; quote them in YAML. Integers use decimal integer syntax, without permissive suffix parsing.
+
+`max-diff-bytes` has been removed. The action no longer builds a complete diff, so the input has no meaning it could keep; supplying it fails with a migration diagnostic rather than being reinterpreted. Replace it with `max-collected-patch-bytes`, whose value bounds a different thing: the patch text actually read, not the size of a whole diff. Runs pinned to an earlier release are unaffected.
+
+Every budget counts what it names: real UTF-8 or JSON bytes produced or sent, and calls actually dispatched. None of them is a token count or an estimate of one. Beyond these three, the inventory ceiling, the per-unit patch ceiling, the per-request ceilings and the Git timeouts are fixed constants, centralized in `src/budget.ts` and `src/observations.ts`.
 
 There are no per-task providers or budgets, no file path interpretation of `tasks`, and no configuration source precedence.
 
@@ -120,17 +126,40 @@ Named and aggregate outputs agree. Shadow and bypass retain all declared tasks. 
 
 Use `steps.select.outputs.unit == 'true'` within a job, or forward it through job outputs for `needs.selection.outputs.unit == 'true'`. Check `has-tasks` before matrix expansion. Keep existing CI failure gates; the action does not make a skipped consumer job prove that planning succeeded. [Static](../examples/static-jobs/README.md) and [matrix](../examples/matrix/README.md) examples include advanced final gates.
 
-## Report v7
+## Analysis order and budgets
 
-The report is persisted and validated before outputs are published. The [strict schema](../schemas/report.schema.json) is authoritative; historical report versions are rejected and the current analyzer accepts only v7. Version 7 records raw task Choice answers and removes the numeric selection threshold while keeping the report source-free.
+Nothing is read before the deterministic rules have run:
+
+1. Inputs and event are validated, then the existing bypasses apply, without any repository access.
+2. The comparison is verified: SHAs, merge base and merge parents.
+3. The manifest is inventoried from `diff --raw`: names, modes and object ids. No `numstat`, no similarity search, no blob read and no patch. Rename detection is off, so a rename appears as a deletion plus an addition and both paths stay visible to `force_paths` and the protected-path rule.
+4. The deterministic policy selects the tasks whose execution is already settled.
+5. Only the remaining candidates have their job metadata and context resolved.
+6. Patch text is then collected one bounded unit at a time, and only while some task is still open.
+7. Each unit is grouped and evaluated; a task whose execution becomes acquired is removed from every request that has not started.
+8. Analysis stops as soon as no candidate can still change state.
+
+In `enforce`, a selection where every task is already required reads no patch, resolves no metadata or context, and dispatches no API call. A global protection such as a workflow edit has the same effect. In `shadow`, every task is still observed so evaluation campaigns keep seeing a proposal, while the effective outputs stay unchanged.
+
+An exclusion requires complete coverage: every inventoried change must have been read and judged independent for that task. An unread change never becomes independent by default, and an incomplete inventory authorizes no new exclusion. Failures are scoped to the tasks they concern, so one task retained for lack of evidence does not erase another task's complete decision; the root status is then `fallback` while already-qualified outputs stay `false`.
+
+## Report v8
+
+The report is persisted and validated before outputs are published. The [strict schema](../schemas/report.schema.json) is authoritative; historical report versions are rejected and the current analyzer accepts only v8.
+
+Version 8 follows the removal of the whole-diff step. `diff_hash` and `diff_bytes` stay `null` whenever no complete diff was built, which is the normal case: they are not back-filled by a read nothing else needed. The inventory is identified by `manifest.hash` instead, and groups carry `change_ids` and a `unit_index` rather than offsets into a global diff that does not exist.
 
 | Group | Fields |
 | --- | --- |
-| Version | `version: 7` |
+| Version | `version: 8` |
 | Commits | `base_sha`, `head_sha`, `tested_sha`, `tested_ref`, `diff_base_sha` |
 | Metadata | `metadata_sha`, `job_metadata` |
 | Definition | `selection_hash` |
-| Diff | `diff_hash`, `diff_bytes`, `changed_path_count` |
+| Inventory | `manifest.complete`, `manifest.hash`, `manifest.change_count`, `changed_path_count` |
+| Collection | `analysis.patches_requested`, `analysis.patches_read`, `analysis.collected_patch_bytes` |
+| Inference | `analysis.preparation_calls`, `analysis.preparation_bytes`, `analysis.observation_calls`, `analysis.observation_bytes`, `analysis.jev_calls`, `analysis.analysis_bytes`, `analysis.limits_reached` |
+| Coverage | `analysis.analysed_tasks`, `analysis.required_without_analysis`, `analysis.task_states`, `analysis.coverage`, `analysis.fallback_scope`, `analysis.fallback_tasks` |
+| Legacy diff | `diff_hash`, `diff_bytes` (null unless a complete diff was built) |
 | Execution | `mode`, `status`, `durations_ms`, `usage` |
 | Model | `model.requested`, `model.expected`, `model.returned` |
 | Decisions | `tasks` |
@@ -140,6 +169,8 @@ The report is persisted and validated before outputs are published. The [strict 
 `metadata_sha` is the reference revision for metadata even when no task requests it. `selection_hash` is SHA-256 of canonical JSON `{ model, tasks }` after normalization and defaults: recursively sorted object keys, preserved array order. YAML formatting does not change it.
 
 Each task decision contains `proposed_run`, `run` and `reasons`. Judgments live in observations by group. Observations include groups, requests, judgments, errors, models, usages and durations. `context_resolution` records task IDs, complete or incomplete status, context errors, trusted source paths with SHA-256 hashes and preparation passes. Calls record paths, request hashes, status, judgments, model, usage, duration and a fixed error code. It contains no file contents, raw source, diffs, secrets or provider error text. An empty object represents disabled or bypassed context resolution.
+
+`analysis.task_states` reports the per-task outcome: `settled-run` for an acquired execution, `settled-skip` for an exclusion backed by complete coverage, `fallback-run` for a task retained for lack of evidence, and `pending` only if analysis never reached it. `analysis.coverage` is true only when every obligation was really discharged. A group whose status is `not-needed` was skipped because every task was already decided; that is a success of the decision, reported as `stopped-early`, and never a timeout. `analysis.limits_reached` names the budgets that were actually hit.
 
 Each observed chunk has a nullable `judgments` map of task IDs to `{ choice, probabilities, confidence }`. The exact three probability keys are `required`, `independent` and `unresolved`. Model-based policy reasons are `jev-independent` or `jev-not-independent`. No cross-group probability is synthesized.
 
