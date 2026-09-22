@@ -6,6 +6,7 @@ import type { Usage } from './jev.js';
 import type { ContextResolutionReport } from './context.js';
 import type { BudgetCounters } from './budget.js';
 import type { TaskState } from './observations.js';
+import type { WindowReport } from './window.js';
 
 /** Upper bound on the chunk records embedded in one report. */
 export const MAX_REPORT_CHUNKS = 256;
@@ -23,6 +24,12 @@ export interface ReportAnalysis extends BudgetCounters {
   changes_read: number;
   /** Inventoried changes in total; a lower `changes_read` means an early stop. */
   changes_total: number | null;
+  /**
+   * The bytes-per-token ratio used to size requests: the declared prior, the
+   * worst ratio observed, how many responses fed it, and what was applied.
+   * The byte and token counts elsewhere are measured; this one is inferred.
+   */
+  bytes_per_token: WindowReport | null;
   analysed_tasks: string[];
   /** Tasks settled by the deterministic rules, for which nothing was read. */
   required_without_analysis: string[];

@@ -17,6 +17,7 @@ import { resolveContextFiles, type ContextResolutionReport } from './context.js'
 import { evaluateChoices } from './jev.js';
 import { AnalysisBudget, BudgetError, PATCH_UNIT_BYTES, type BudgetCounters } from './budget.js';
 import { RateController } from './concurrency.js';
+import { TokenMeter, type WindowReport } from './window.js';
 
 export interface Inputs extends JevApiOptions, SelectionDefinition {
   testedRef?: 'head' | 'merge';
@@ -65,10 +66,11 @@ export function validateInputs(inputs: Inputs): void {
   validateSelection({ model: inputs.model, tasks: inputs.tasks });
   if (!['head', 'merge'].includes(inputs.testedRef ?? 'merge')) throw new InputError('tested-ref');
   if (!['shadow', 'enforce'].includes(inputs.mode)) throw new InputError('mode');
-  if (!Number.isSafeInteger(inputs.timeoutMs) || inputs.timeoutMs < 1 || inputs.timeoutMs > 2_147_483_647) throw new InputError('timeout-ms');
-  if (!Number.isSafeInteger(inputs.maxCollectedPatchBytes) || inputs.maxCollectedPatchBytes < 1) throw new InputError('max-collected-patch-bytes');
-  if (!Number.isSafeInteger(inputs.maxAnalysisBytes) || inputs.maxAnalysisBytes < 1) throw new InputError('max-analysis-bytes');
-  if (!Number.isSafeInteger(inputs.maxJevCalls) || inputs.maxJevCalls < 1) throw new InputError('max-jev-calls');
+  // 0 means unbounded for every ceiling, including the deadline.
+  if (!Number.isSafeInteger(inputs.timeoutMs) || inputs.timeoutMs < 0 || inputs.timeoutMs > 2_147_483_647) throw new InputError('timeout-ms');
+  if (!Number.isSafeInteger(inputs.maxCollectedPatchBytes) || inputs.maxCollectedPatchBytes < 0) throw new InputError('max-collected-patch-bytes');
+  if (!Number.isSafeInteger(inputs.maxAnalysisBytes) || inputs.maxAnalysisBytes < 0) throw new InputError('max-analysis-bytes');
+  if (!Number.isSafeInteger(inputs.maxJevCalls) || inputs.maxJevCalls < 0) throw new InputError('max-jev-calls');
   if (typeof inputs.allowExternalContext !== 'boolean') throw new InputError('allow-external-context');
   if (typeof inputs.forceAll !== 'boolean') throw new InputError('force-all');
   resolveJevApi(inputs);
@@ -90,8 +92,17 @@ const EMPTY_COUNTERS: BudgetCounters = {
   jev_calls: 0, analysis_bytes: 0, attempts: 0, limits_reached: [],
 };
 
-/** Entries grouped per read. Large files end up isolated by the halving retry. */
-const UNIT_ENTRIES = 16;
+/**
+ * Entries per read, before anything has been measured.
+ *
+ * A fixed batch size forced at least one call per sixteen changes however large
+ * the window was, which capped the benefit of sizing requests properly. The
+ * packer below grows the batch toward the window once real patch sizes are
+ * known, so the call count follows total bytes rather than file count.
+ */
+const INITIAL_UNIT_ENTRIES = 16;
+/** Pathspec ceiling of a single read. */
+const MAX_UNIT_ENTRIES = 256;
 
 /**
  * Pull patch text one bounded unit at a time.
@@ -113,13 +124,26 @@ function patchStream(
   comparison: VerifiedComparison,
   entries: readonly ChangeEntry[],
   budget: AnalysisBudget,
+  meter: TokenMeter,
 ): PatchStream {
+  const queue = [...entries];
+  // Forced splits and oversized reads push work back to the front.
   const pending: ChangeEntry[][] = [];
-  for (let index = 0; index < entries.length; index += UNIT_ENTRIES) pending.push(entries.slice(index, index + UNIT_ENTRIES));
+  let perUnit = INITIAL_UNIT_ENTRIES;
+  let bytesPerEntry = 0;
+  const take = (): ChangeEntry[] => {
+    if (pending.length) return pending.shift()!;
+    // Aim a unit at what one request can carry, using the largest per-entry
+    // size seen so far so a heavy file cannot be underestimated twice.
+    const target = Math.min(meter.stateAndQuestionBytes(), PATCH_UNIT_BYTES);
+    const sized = bytesPerEntry > 0 ? Math.floor(target / bytesPerEntry) : perUnit;
+    perUnit = Math.max(1, Math.min(MAX_UNIT_ENTRIES, sized, perUnit * 2));
+    return queue.splice(0, perUnit);
+  };
   return {
     async next(): Promise<PatchDelivery | null> {
-      while (pending.length) {
-        const unit = pending.shift()!;
+      while (pending.length || queue.length) {
+        const unit = take();
         if (!unit.length) continue;
         const changeIds = unit.map(entry => entry.id);
         // `patchUnitAllowance` registers the ceiling itself when it is reached.
@@ -138,6 +162,8 @@ function patchStream(
         if (result.issue === 'too-large') {
           budget.noteLimit('patch-unit-bytes');
           if (unit.length > 1) {
+            // Straight to singletons: halving would bill the cap once per level.
+            perUnit = Math.max(1, Math.floor(perUnit / 2));
             pending.unshift(...unit.map(entry => [entry]));
             continue;
           }
@@ -150,6 +176,7 @@ function patchStream(
           }
           return { changeIds, paths: result.paths, diff: '', issue: ISSUE_REASONS[result.issue] };
         }
+        bytesPerEntry = Math.max(bytesPerEntry, Math.ceil(result.bytes / unit.length));
         try { budget.spendPatchBytes(result.bytes); }
         catch (error) {
           if (!(error instanceof BudgetError)) throw error;
@@ -235,7 +262,7 @@ export async function planChange(inputs: Inputs, context: Context, dependencies:
           maxCollectedPatchBytes: inputs.maxCollectedPatchBytes,
           maxAnalysisBytes: inputs.maxAnalysisBytes,
           maxJevCalls: inputs.maxJevCalls,
-          deadline: performance.now() + inputs.timeoutMs,
+          deadline: inputs.timeoutMs === 0 ? Number.POSITIVE_INFINITY : performance.now() + inputs.timeoutMs,
         });
         budget.noteManifest(manifest.entries.length);
         forced = globalPathReason(manifest.changedPaths);
@@ -303,12 +330,15 @@ export async function planChange(inputs: Inputs, context: Context, dependencies:
     let jevMs: number | null = null;
     let observation: Observation | null = null;
     let changesRead = 0;
+    let meterReport: WindowReport | null = null;
     let contextResolution: ContextResolutionReport = {};
     if (manifest && repository && budget && analysisTaskIds.length) {
       const activeBudget = budget;
       // One controller for preparation and observation together: a burst in one
       // must not cause rate limiting the other pays for.
       const rate = new RateController();
+      const meter = new TokenMeter();
+      meterReport = meter.report;
       const callStarted = performance.now();
       try {
         contextResolution = await resolveContextFiles({ configured: restrict(configured, analysisTaskIds), resolved,
@@ -321,8 +351,8 @@ export async function planChange(inputs: Inputs, context: Context, dependencies:
         const outcome: AnalysisOutcome = await analyseChange({
           selection, taskIds: analysisTaskIds, workingDirectories: resolved.workingDirectories,
           changeIds: manifest.entries.map(entry => entry.id),
-          patches: patchStream(repository, manifest.comparison, manifest.entries, activeBudget),
-          budget: activeBudget, rate, apiBaseUrl: api.baseURL, apiModel: requestedModel, apiKey: inputs.apiKey,
+          patches: patchStream(repository, manifest.comparison, manifest.entries, activeBudget, meter),
+          budget: activeBudget, rate, meter, apiBaseUrl: api.baseURL, apiModel: requestedModel, apiKey: inputs.apiKey,
           stopWhenSettled: inputs.mode !== 'shadow',
           state: { base_sha: manifest.comparison.diffBaseSha, head_sha: context.headSha, tested_sha: context.testedSha },
         }, dependencies.evaluate ?? evaluateJev);
@@ -332,6 +362,7 @@ export async function planChange(inputs: Inputs, context: Context, dependencies:
         taskErrors = outcome.taskErrors;
         taskStates = outcome.states;
         changesRead = outcome.changesRead;
+        meterReport = meter.report;
         metadata = outcome;
         observationError = outcome.failure;
       } catch (error) {
@@ -401,6 +432,9 @@ export async function planChange(inputs: Inputs, context: Context, dependencies:
         ...counters,
         changes_read: changesRead,
         changes_total: manifest?.entries.length ?? null,
+        // The counts above are measured; this ratio is inferred, so it is
+        // published rather than folded silently into the byte figures.
+        bytes_per_token: meterReport,
         analysed_tasks: [...analysisTaskIds].sort(),
         required_without_analysis: Object.keys(plan.tasks).filter(id => !analysisTaskIds.includes(id)).sort(),
         task_states: states,

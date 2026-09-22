@@ -32,11 +32,20 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Nothing needs sizing for scale. Every ceiling defaults to `0`, meaning none:
+  a run is bounded by the provider's window and rate limits and by the job's
+  own `timeout-minutes`. Measured with one task over changes judged
+  independent: 200 files in 9 calls, 1 000 in 51, 5 000 in 256, 20 000 in
+  1 025 — all `planned` with a real skip, where 200 files previously fell back.
+  The ceilings remain available for anyone who wants one.
+- Requests are sized from the provider's documented window using a
+  bytes-per-token ratio measured from `usage.input_tokens`, and a payload the
+  provider refuses is split and retried instead of abandoned. Concurrency
+  adapts between one and eight, shared by preparation and analysis, halving on
+  a rate limit. Rate limits and transient faults are retried with backoff,
+  bounded by the deadline.
 - `max-collected-patch-bytes`, `max-analysis-bytes` and `max-jev-calls` inputs.
-  `max-analysis-bytes` defaults to 4 MiB, sized by measuring real context
-  preparation: its cost scales with the number of tracked repository files, so
-  a smaller default made `resolve_context_files` fail on every run of any
-  repository of moderate size.
+  All three now default to `0` (no ceiling).
   Each counts what it names — real UTF-8 or JSON bytes, and dispatched calls —
   and never estimates provider tokens.
 - A shared budget with reservation before dispatch, so concurrent requests
@@ -56,7 +65,12 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - `timeout-ms` keeps its historical meaning and its clock starts once the
   inventory is built, so a slow fetch cannot consume the analysis allowance.
-  Git commands keep their own separate timeouts.
+  Git commands keep their own separate timeouts. It now defaults to `0`, no
+  internal deadline: a step killed by the job's own timeout publishes no report
+  and no outputs, so set it if a graceful fallback matters more.
+- Context discovery still costs one question per tracked repository path, so it
+  remains the limiting factor for very large repositories; `context_files`
+  stays the predictable option there.
 - `npm run eval:replay` exercises the whole-diff path, so it qualifies the
   recorded request contract, not the progressive collection path. A campaign
   over multi-unit and cross-boundary cases is still owed before promoting the

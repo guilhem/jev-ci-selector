@@ -862,7 +862,10 @@ export class GitRepository {
         else resolve(value ?? Buffer.alloc(0));
       };
 
-      timeoutHandle = setTimeout(() => terminate('timeout'), Math.max(1, timeoutMs));
+      // Node timers are signed 32-bit: a longer delay silently becomes 1 ms, so
+      // an unbounded deadline would kill every Git command immediately.
+      timeoutHandle = setTimeout(() => terminate('timeout'),
+        Math.min(Math.max(1, timeoutMs) || 1, 2_147_483_647));
       child.stdout!.on('data', (chunk: Buffer) => {
         if (termination) return;
         bytes += chunk.length;

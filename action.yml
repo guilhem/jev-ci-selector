@@ -38,17 +38,17 @@ inputs:
     description: Bypass optimization immediately.
     default: 'false'
   timeout-ms:
-    description: Total context-preparation and final Jev evaluation budget, with at most 3 concurrent requests and 10 seconds per request, without retries.
-    default: '10000'
+    description: Deadline for context preparation and analysis together. 0 means none, leaving the job's own timeout-minutes to bound the run; a step killed that way publishes no report, so set this if you want a graceful fallback instead.
+    default: '0'
   max-collected-patch-bytes:
-    description: Maximum UTF-8 patch text actually collected, summed over every unit read. Replaces max-diff-bytes, which bounded a complete diff this action no longer builds. Not a token count.
-    default: '1048576'
+    description: Optional ceiling on patch bytes received from Git, rejected and retried attempts included. 0 means none. Replaces max-diff-bytes, which bounded a complete diff this action no longer builds. Not a token count.
+    default: '0'
   max-analysis-bytes:
-    description: Maximum complete request JSON sent to the API, summed over context preparation and observation. Half of it is reserved for preparation, whose cost scales with the number of tracked repository files rather than with the change; raise it for large repositories or many job anchors. Not a token count.
-    default: '4194304'
+    description: Optional ceiling on complete request JSON sent to the API, preparation and observation together. 0 means none. When set, half is reserved for preparation. Not a token count.
+    default: '0'
   max-jev-calls:
-    description: Maximum API calls dispatched for one run, context preparation and observation together, failures included. Half of it is reserved for context preparation, so resolve_context_files needs at least 2.
-    default: '16'
+    description: Optional ceiling on API calls dispatched for one run, failures included. 0 means none. When set, half is reserved for context preparation, so resolve_context_files then needs at least 2.
+    default: '0'
 # Every task also publishes a dynamic output named after its ID.
 # Values are the effective 'true'/'false' strings (all true in shadow/bypass/fallback).
 outputs:

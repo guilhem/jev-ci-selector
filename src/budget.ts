@@ -130,8 +130,16 @@ export class AnalysisBudget {
     for (const key of ['maxCollectedPatchBytes', 'maxAnalysisBytes', 'maxJevCalls'] as const) {
       if (!Number.isSafeInteger(limits[key]) || limits[key] < 0) throw new Error(`invalid-budget:${key}`);
     }
-    if (!Number.isFinite(limits.deadline)) throw new Error('invalid-budget:deadline');
-    this.limits = { ...limits };
+    // Zero means "no ceiling": the provider's own window and rate limits, plus
+    // the job's own timeout, are what bound a run. A configured ceiling still
+    // binds, and still reserves half of itself for context preparation.
+    const unbounded = (value: number) => value === 0 ? Number.POSITIVE_INFINITY : value;
+    this.limits = {
+      maxCollectedPatchBytes: unbounded(limits.maxCollectedPatchBytes),
+      maxAnalysisBytes: unbounded(limits.maxAnalysisBytes),
+      maxJevCalls: unbounded(limits.maxJevCalls),
+      deadline: limits.deadline,
+    };
   }
 
   get counters(): BudgetCounters {

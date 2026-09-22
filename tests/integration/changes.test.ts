@@ -599,3 +599,24 @@ test('the compatibility adapter still reads comparisons with many changed paths'
     assert.equal(changes.diffBytes, Buffer.byteLength(changes.diff));
   });
 });
+
+test('an unbounded deadline still lets Git commands run to completion', async () => {
+  // Node turns any delay past 2^31-1 into 1ms, so an unclamped "no timeout"
+  // would kill every command instantly instead of letting it finish.
+  const value = await fixture(async (work) => {
+    const isFeature = await access(join(work, 'feature marker.txt')).then(() => true).catch(() => false);
+    if (!isFeature) await writeFile(join(work, 'base.txt'), 'base\n');
+    if (isFeature) await writeFile(join(work, 'added.txt'), 'added line\n'.repeat(50));
+  });
+  await withRepository(value, async repository => {
+    await repository.fetchCommit(value.base);
+    const comparison = await repository.verifyComparison({ baseSha: value.base, headSha: value.head, testedSha: value.tested });
+    const manifest = await repository.collectManifest(comparison);
+    const entries = manifest.entries.filter(entry => entry.newPath === 'added.txt');
+    for (const timeoutMs of [Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER, 2_147_483_648]) {
+      const unit = await repository.readPatch(comparison, entries, { maxUnitBytes: 64 * 1024, timeoutMs });
+      assert.equal(unit.issue, null, `timeout ${timeoutMs} must not abort the read`);
+      assert.match(unit.diff, /\+added line/);
+    }
+  });
+});

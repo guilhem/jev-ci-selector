@@ -7,7 +7,6 @@ import { eventContext, planChange, validateInputs, type Inputs } from './planner
 import { parseSelectionInputs } from './tasks.js';
 import { actionOutputs, summary } from './report.js';
 import { manualContext } from './manual.js';
-import { ANALYSIS_BYTES, COLLECTED_PATCH_BYTES, JEV_CALLS } from './budget.js';
 
 function booleanInput(name: 'allow-external-context' | 'force-all'): boolean {
   const value = core.getInput(name) || 'false';
@@ -17,7 +16,8 @@ function booleanInput(name: 'allow-external-context' | 'force-all'): boolean {
 type IntegerInput = 'timeout-ms' | 'max-collected-patch-bytes' | 'max-analysis-bytes' | 'max-jev-calls';
 function integerInput(name: IntegerInput, defaultValue: number): number {
   const value = core.getInput(name) || String(defaultValue);
-  if (!/^[1-9][0-9]*$/.test(value) || !Number.isSafeInteger(Number(value))) throw new InputError(name);
+  // 0 is meaningful: it means "no ceiling".
+  if (!/^(0|[1-9][0-9]*)$/.test(value) || !Number.isSafeInteger(Number(value))) throw new InputError(name);
   return Number(value);
 }
 async function main(): Promise<void> {
@@ -33,10 +33,10 @@ async function main(): Promise<void> {
     githubToken: core.getInput('github-token'), apiKey: core.getInput('api-key'),
     apiBaseUrl: core.getInput('api-base-url'), apiModel: core.getInput('api-model'),
     allowExternalContext: booleanInput('allow-external-context'), forceAll: booleanInput('force-all'),
-    timeoutMs: integerInput('timeout-ms', 10000),
-    maxCollectedPatchBytes: integerInput('max-collected-patch-bytes', COLLECTED_PATCH_BYTES),
-    maxAnalysisBytes: integerInput('max-analysis-bytes', ANALYSIS_BYTES),
-    maxJevCalls: integerInput('max-jev-calls', JEV_CALLS),
+    timeoutMs: integerInput('timeout-ms', 0),
+    maxCollectedPatchBytes: integerInput('max-collected-patch-bytes', 0),
+    maxAnalysisBytes: integerInput('max-analysis-bytes', 0),
+    maxJevCalls: integerInput('max-jev-calls', 0),
   };
   validateInputs(inputs);
   const event: unknown = JSON.parse(await readFile(process.env.GITHUB_EVENT_PATH!, 'utf8'));

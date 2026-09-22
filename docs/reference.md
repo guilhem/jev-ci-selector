@@ -31,16 +31,29 @@ GitHub passes strings. Validation and normalization precede Git or HTTP access, 
 | `tested-ref` | `merge` | `merge` or `head` |
 | `pull-request` | Empty | Open PR number for `workflow_dispatch`; add `pull-requests: read` |
 | `force-all` | `'false'` | All tasks, no Jev request |
-| `timeout-ms` | `10000` | Integer from 1 to 2147483647; shared context-preparation and analysis deadline, started once the inventory is built |
-| `max-collected-patch-bytes` | `1048576` | Positive safe integer; patch bytes received on stdout, rejected and retried attempts included |
-| `max-analysis-bytes` | `4194304` | Positive safe integer; complete request JSON sent to the API, preparation and observation together |
-| `max-jev-calls` | `16` | Positive safe integer; API calls dispatched, failures included |
+| `timeout-ms` | `0` | `0` for no deadline, else 1 to 2147483647; shared context-preparation and analysis deadline, started once the inventory is built |
+| `max-collected-patch-bytes` | `0` | `0` for none; patch bytes received on stdout, rejected and retried attempts included |
+| `max-analysis-bytes` | `0` | `0` for none; complete request JSON sent to the API, preparation and observation together |
+| `max-jev-calls` | `0` | `0` for none; API calls dispatched, failures included |
 
 Boolean inputs accept only `true` and `false`; quote them in YAML. Integers use decimal integer syntax, without permissive suffix parsing.
 
 `max-diff-bytes` has been removed. The action no longer builds a complete diff, so the input has no meaning it could keep; supplying it fails with a migration diagnostic rather than being reinterpreted. Replace it with `max-collected-patch-bytes`, whose value bounds a different thing: the patch text actually read, not the size of a whole diff. Runs pinned to an earlier release are unaffected.
 
-Every budget counts what it names: real UTF-8 or JSON bytes produced or sent, and calls actually dispatched. None of them is a token count or an estimate of one. Beyond these three, the inventory ceiling, the per-unit patch ceiling, the per-request ceilings and the Git timeouts are fixed constants, centralized in `src/budget.ts` and `src/observations.ts`.
+**There is nothing to size for scale.** All four ceilings default to `0`, meaning none: a run is bounded by the provider's own window and rate limits and by the job's `timeout-minutes`. They remain available as explicit ceilings for anyone who wants one, and each still counts what it names — real UTF-8 or JSON bytes, real calls — never a token count or an estimate of one.
+
+Requests are sized from the provider's documented window (32k tokens for `state` plus the longest question) using a bytes-per-token ratio measured from `usage.input_tokens` on real responses, starting from a declared prior. A payload the provider refuses is split and retried rather than abandoned, and each refusal lowers the ratio, so the retry terminates. Concurrency adapts too: it starts at four, widens after sustained success, halves on a rate limit and floors at one, shared between preparation and analysis. Rate limits and transient faults are retried with backoff, bounded by the deadline.
+
+Measured behaviour with every ceiling at `0`, one task, changes judged independent:
+
+| Changed files | Calls | Patch delivered | Outcome |
+| ---: | ---: | ---: | --- |
+| 200 | 9 | 0.3 MB | `planned`, skip |
+| 1 000 | 51 | 1.4 MB | `planned`, skip |
+| 5 000 | 256 | 6.9 MB | `planned`, skip |
+| 20 000 | 1 025 | 27.7 MB | `planned`, skip |
+
+At the published price those runs cost roughly a cent to thirty cents. What bounds them in practice is the 1 200 requests per minute rate limit and the job's own timeout.
 
 `max-collected-patch-bytes` bounds the **work**, not the useful context: a read that Git interrupted, and a patch produced in full but then rejected as binary or unrepresentable, are both charged. The report separates the two, as `analysis.patch_bytes_read` and `analysis.patch_bytes_delivered`.
 
@@ -48,7 +61,7 @@ Every budget counts what it names: real UTF-8 or JSON bytes produced or sent, an
 
 Half of `max-analysis-bytes` and half of `max-jev-calls` are reserved for context preparation, so it can never starve the decision it serves. Two consequences are worth planning for. Preparation asks one question per tracked repository path, per pass, per job anchor, so its cost scales with the **size of the repository**, not with the size of the change: about 220 KB for a 250-file repository with a single anchor, and proportionally more with more files or more anchors. And below `max-jev-calls: 2` the preparation share floors to zero, so `resolve_context_files` cannot run at all. In both cases the affected tasks are retained with `context-resolution-incomplete`, and `analysis.limits_reached` names the ceiling that stopped it.
 
-`timeout-ms` keeps its historical meaning — the shared deadline for context preparation and analysis — and its clock starts once the comparison is verified and the inventory is built. A slow fetch therefore cannot silently consume the analysis allowance. Git commands keep their own separate timeouts, and no read or call is started once the deadline has passed.
+`timeout-ms` keeps its historical meaning — the shared deadline for context preparation and analysis — and its clock starts once the comparison is verified and the inventory is built, so a slow fetch cannot silently consume the analysis allowance. Git commands keep their own separate timeouts, and no read or call is started once the deadline has passed. At its default of `0` there is no internal deadline at all: the job's `timeout-minutes` bounds the run, and a step killed that way publishes **no report and no outputs**, which leaves the consuming workflow with no selection rather than a fallback. Set `timeout-ms` if you would rather degrade gracefully.
 
 There are no per-task providers or budgets, no file path interpretation of `tasks`, and no configuration source precedence.
 

@@ -7196,7 +7196,8 @@ var report_schema_default = {
         "patch_bytes_delivered",
         "changes_read",
         "changes_total",
-        "attempts"
+        "attempts",
+        "bytes_per_token"
       ],
       properties: {
         manifest_entries: {
@@ -7296,6 +7297,47 @@ var report_schema_default = {
         },
         attempts: {
           $ref: "#/definitions/counter"
+        },
+        bytes_per_token: {
+          anyOf: [
+            {
+              type: "null"
+            },
+            {
+              type: "object",
+              additionalProperties: false,
+              required: [
+                "prior",
+                "observed_min",
+                "samples",
+                "applied",
+                "rejections"
+              ],
+              properties: {
+                prior: {
+                  type: "number",
+                  exclusiveMinimum: 0
+                },
+                observed_min: {
+                  type: [
+                    "number",
+                    "null"
+                  ],
+                  exclusiveMinimum: 0
+                },
+                samples: {
+                  $ref: "#/definitions/counter"
+                },
+                applied: {
+                  type: "number",
+                  exclusiveMinimum: 0
+                },
+                rejections: {
+                  $ref: "#/definitions/counter"
+                }
+              }
+            }
+          ]
         }
       }
     }

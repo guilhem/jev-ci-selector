@@ -36888,7 +36888,6 @@ var MANIFEST_BYTES = 4 * 1024 * 1024;
 var PATCH_UNIT_BYTES = 256 * 1024;
 var COLLECTED_PATCH_BYTES = 1024 * 1024;
 var ANALYSIS_BYTES = 4 * 1024 * 1024;
-var JEV_CALLS = 16;
 var PREPARATION_SHARE = 0.5;
 var AnalysisBudget = class {
   limits;
@@ -36907,8 +36906,13 @@ var AnalysisBudget = class {
     for (const key of ["maxCollectedPatchBytes", "maxAnalysisBytes", "maxJevCalls"]) {
       if (!Number.isSafeInteger(limits[key]) || limits[key] < 0) throw new Error(`invalid-budget:${key}`);
     }
-    if (!Number.isFinite(limits.deadline)) throw new Error("invalid-budget:deadline");
-    this.limits = { ...limits };
+    const unbounded = (value) => value === 0 ? Number.POSITIVE_INFINITY : value;
+    this.limits = {
+      maxCollectedPatchBytes: unbounded(limits.maxCollectedPatchBytes),
+      maxAnalysisBytes: unbounded(limits.maxAnalysisBytes),
+      maxJevCalls: unbounded(limits.maxJevCalls),
+      deadline: limits.deadline
+    };
   }
   get counters() {
     return {
@@ -37702,7 +37706,10 @@ var GitRepository = class _GitRepository {
         if (error) reject(error);
         else resolve(value ?? Buffer.alloc(0));
       };
-      timeoutHandle = setTimeout(() => terminate("timeout"), Math.max(1, timeoutMs));
+      timeoutHandle = setTimeout(
+        () => terminate("timeout"),
+        Math.min(Math.max(1, timeoutMs) || 1, 2147483647)
+      );
       child.stdout.on("data", (chunk) => {
         if (termination) return;
         bytes3 += chunk.length;
@@ -40773,7 +40780,8 @@ var report_schema_default = {
         "patch_bytes_delivered",
         "changes_read",
         "changes_total",
-        "attempts"
+        "attempts",
+        "bytes_per_token"
       ],
       properties: {
         manifest_entries: {
@@ -40873,6 +40881,47 @@ var report_schema_default = {
         },
         attempts: {
           $ref: "#/definitions/counter"
+        },
+        bytes_per_token: {
+          anyOf: [
+            {
+              type: "null"
+            },
+            {
+              type: "object",
+              additionalProperties: false,
+              required: [
+                "prior",
+                "observed_min",
+                "samples",
+                "applied",
+                "rejections"
+              ],
+              properties: {
+                prior: {
+                  type: "number",
+                  exclusiveMinimum: 0
+                },
+                observed_min: {
+                  type: [
+                    "number",
+                    "null"
+                  ],
+                  exclusiveMinimum: 0
+                },
+                samples: {
+                  $ref: "#/definitions/counter"
+                },
+                applied: {
+                  type: "number",
+                  exclusiveMinimum: 0
+                },
+                rejections: {
+                  $ref: "#/definitions/counter"
+                }
+              }
+            }
+          ]
         }
       }
     }
@@ -42935,10 +42984,10 @@ function validateInputs(inputs) {
   validateSelection({ model: inputs.model, tasks: inputs.tasks });
   if (!["head", "merge"].includes(inputs.testedRef ?? "merge")) throw new InputError("tested-ref");
   if (!["shadow", "enforce"].includes(inputs.mode)) throw new InputError("mode");
-  if (!Number.isSafeInteger(inputs.timeoutMs) || inputs.timeoutMs < 1 || inputs.timeoutMs > 2147483647) throw new InputError("timeout-ms");
-  if (!Number.isSafeInteger(inputs.maxCollectedPatchBytes) || inputs.maxCollectedPatchBytes < 1) throw new InputError("max-collected-patch-bytes");
-  if (!Number.isSafeInteger(inputs.maxAnalysisBytes) || inputs.maxAnalysisBytes < 1) throw new InputError("max-analysis-bytes");
-  if (!Number.isSafeInteger(inputs.maxJevCalls) || inputs.maxJevCalls < 1) throw new InputError("max-jev-calls");
+  if (!Number.isSafeInteger(inputs.timeoutMs) || inputs.timeoutMs < 0 || inputs.timeoutMs > 2147483647) throw new InputError("timeout-ms");
+  if (!Number.isSafeInteger(inputs.maxCollectedPatchBytes) || inputs.maxCollectedPatchBytes < 0) throw new InputError("max-collected-patch-bytes");
+  if (!Number.isSafeInteger(inputs.maxAnalysisBytes) || inputs.maxAnalysisBytes < 0) throw new InputError("max-analysis-bytes");
+  if (!Number.isSafeInteger(inputs.maxJevCalls) || inputs.maxJevCalls < 0) throw new InputError("max-jev-calls");
   if (typeof inputs.allowExternalContext !== "boolean") throw new InputError("allow-external-context");
   if (typeof inputs.forceAll !== "boolean") throw new InputError("force-all");
   resolveJevApi(inputs);
@@ -42965,14 +43014,24 @@ var EMPTY_COUNTERS = {
   attempts: 0,
   limits_reached: []
 };
-var UNIT_ENTRIES = 16;
-function patchStream(repository, comparison, entries, budget) {
+var INITIAL_UNIT_ENTRIES = 16;
+var MAX_UNIT_ENTRIES = 256;
+function patchStream(repository, comparison, entries, budget, meter) {
+  const queue = [...entries];
   const pending = [];
-  for (let index = 0; index < entries.length; index += UNIT_ENTRIES) pending.push(entries.slice(index, index + UNIT_ENTRIES));
+  let perUnit = INITIAL_UNIT_ENTRIES;
+  let bytesPerEntry = 0;
+  const take = () => {
+    if (pending.length) return pending.shift();
+    const target = Math.min(meter.stateAndQuestionBytes(), PATCH_UNIT_BYTES);
+    const sized = bytesPerEntry > 0 ? Math.floor(target / bytesPerEntry) : perUnit;
+    perUnit = Math.max(1, Math.min(MAX_UNIT_ENTRIES, sized, perUnit * 2));
+    return queue.splice(0, perUnit);
+  };
   return {
     async next() {
-      while (pending.length) {
-        const unit = pending.shift();
+      while (pending.length || queue.length) {
+        const unit = take();
         if (!unit.length) continue;
         const changeIds = unit.map((entry) => entry.id);
         const allowance = budget.patchUnitAllowance();
@@ -42987,6 +43046,7 @@ function patchStream(repository, comparison, entries, budget) {
         if (result.issue === "too-large") {
           budget.noteLimit("patch-unit-bytes");
           if (unit.length > 1) {
+            perUnit = Math.max(1, Math.floor(perUnit / 2));
             pending.unshift(...unit.map((entry) => [entry]));
             continue;
           }
@@ -42997,6 +43057,7 @@ function patchStream(repository, comparison, entries, budget) {
           }
           return { changeIds, paths: result.paths, diff: "", issue: ISSUE_REASONS[result.issue] };
         }
+        bytesPerEntry = Math.max(bytesPerEntry, Math.ceil(result.bytes / unit.length));
         try {
           budget.spendPatchBytes(result.bytes);
         } catch (error) {
@@ -43071,7 +43132,7 @@ async function planChange(inputs, context, dependencies = {}) {
           maxCollectedPatchBytes: inputs.maxCollectedPatchBytes,
           maxAnalysisBytes: inputs.maxAnalysisBytes,
           maxJevCalls: inputs.maxJevCalls,
-          deadline: performance.now() + inputs.timeoutMs
+          deadline: inputs.timeoutMs === 0 ? Number.POSITIVE_INFINITY : performance.now() + inputs.timeoutMs
         });
         budget.noteManifest(manifest.entries.length);
         forced = globalPathReason(manifest.changedPaths);
@@ -43129,10 +43190,13 @@ async function planChange(inputs, context, dependencies = {}) {
     let jevMs = null;
     let observation = null;
     let changesRead = 0;
+    let meterReport = null;
     let contextResolution = {};
     if (manifest && repository && budget && analysisTaskIds.length) {
       const activeBudget = budget;
       const rate = new RateController();
+      const meter = new TokenMeter();
+      meterReport = meter.report;
       const callStarted = performance.now();
       try {
         contextResolution = await resolveContextFiles({
@@ -43154,9 +43218,10 @@ async function planChange(inputs, context, dependencies = {}) {
           taskIds: analysisTaskIds,
           workingDirectories: resolved.workingDirectories,
           changeIds: manifest.entries.map((entry) => entry.id),
-          patches: patchStream(repository, manifest.comparison, manifest.entries, activeBudget),
+          patches: patchStream(repository, manifest.comparison, manifest.entries, activeBudget, meter),
           budget: activeBudget,
           rate,
+          meter,
           apiBaseUrl: api.baseURL,
           apiModel: requestedModel,
           apiKey: inputs.apiKey,
@@ -43169,6 +43234,7 @@ async function planChange(inputs, context, dependencies = {}) {
         taskErrors = outcome.taskErrors;
         taskStates = outcome.states;
         changesRead = outcome.changesRead;
+        meterReport = meter.report;
         metadata = outcome;
         observationError = outcome.failure;
       } catch (error) {
@@ -43243,6 +43309,9 @@ async function planChange(inputs, context, dependencies = {}) {
         ...counters,
         changes_read: changesRead,
         changes_total: manifest?.entries.length ?? null,
+        // The counts above are measured; this ratio is inferred, so it is
+        // published rather than folded silently into the byte figures.
+        bytes_per_token: meterReport,
         analysed_tasks: [...analysisTaskIds].sort(),
         required_without_analysis: Object.keys(plan.tasks).filter((id) => !analysisTaskIds.includes(id)).sort(),
         task_states: states,
@@ -43292,7 +43361,7 @@ function booleanInput(name) {
 }
 function integerInput(name, defaultValue) {
   const value = core.getInput(name) || String(defaultValue);
-  if (!/^[1-9][0-9]*$/.test(value) || !Number.isSafeInteger(Number(value))) throw new InputError(name);
+  if (!/^(0|[1-9][0-9]*)$/.test(value) || !Number.isSafeInteger(Number(value))) throw new InputError(name);
   return Number(value);
 }
 async function main() {
@@ -43311,10 +43380,10 @@ async function main() {
     apiModel: core.getInput("api-model"),
     allowExternalContext: booleanInput("allow-external-context"),
     forceAll: booleanInput("force-all"),
-    timeoutMs: integerInput("timeout-ms", 1e4),
-    maxCollectedPatchBytes: integerInput("max-collected-patch-bytes", COLLECTED_PATCH_BYTES),
-    maxAnalysisBytes: integerInput("max-analysis-bytes", ANALYSIS_BYTES),
-    maxJevCalls: integerInput("max-jev-calls", JEV_CALLS)
+    timeoutMs: integerInput("timeout-ms", 0),
+    maxCollectedPatchBytes: integerInput("max-collected-patch-bytes", 0),
+    maxAnalysisBytes: integerInput("max-analysis-bytes", 0),
+    maxJevCalls: integerInput("max-jev-calls", 0)
   };
   validateInputs(inputs);
   const event = JSON.parse(await (0, import_promises2.readFile)(process.env.GITHUB_EVENT_PATH, "utf8"));
