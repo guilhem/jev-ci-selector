@@ -90,3 +90,33 @@ Current campaigns use Choice only and compare context and grouping variants.
 The archived Noul campaigns and their calibration thresholds are historical
 results, not qualification of the current action. The current runner rejects
 those campaigns; its default replay checks the frozen Choice evidence instead.
+
+## Coarse inventory pass
+
+`analyseChange` accepts an `inventory`: the manifest's paths, statuses and modes,
+with no file content at all. Supplying it enables one question per still-open
+task before any patch is read; leaving it out skips the pass entirely. **The
+action does not supply it**, so the pass is inert until a campaign has measured
+it; enabling it afterwards is one argument in `planChange`.
+
+Its question has exactly two options, `required` and `undetermined`. That is the
+design, not an omission: with no `independent` option the shortcut the pass must
+never take cannot be expressed at all, so it is structurally incapable of
+producing a wrong exclusion — it can only move a task to "must run". A third
+`unresolved` option would also lose skips the content pass finds today, since an
+opaque list of a thousand paths would resolve to it and retain everything.
+
+Two consequences follow, and both are asserted in `tests/unit/inventory.test.ts`:
+the pass never grants coverage, so an exclusion still requires the content sweep;
+and a failed coarse call never retains anything, which inverts the usual rule
+because an uninformative pass must leave every task exactly where it was.
+
+What it buys is calls, not correctness: a task the inventory already settles
+stops appearing in later requests, so a large change set that must run anyway is
+decided in one call instead of reading all of it. It does **not** help prove a
+task independent of a large change set — that requires reading everything, and
+is irreducible.
+
+A campaign must measure two things before it ships on: how often `required`
+agrees with what the content pass concludes, and how often `undetermined` costs
+an extra call that the content pass would have avoided.

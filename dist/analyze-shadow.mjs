@@ -7520,6 +7520,25 @@ var report_schema_default = {
           items: {
             $ref: "#/definitions/observationChunk"
           }
+        },
+        inventory: {
+          type: "object",
+          additionalProperties: false,
+          required: [
+            "calls",
+            "settled"
+          ],
+          properties: {
+            calls: {
+              type: "array",
+              items: {
+                $ref: "#/definitions/observationCall"
+              }
+            },
+            settled: {
+              $ref: "#/definitions/taskIdList"
+            }
+          }
         }
       }
     },
