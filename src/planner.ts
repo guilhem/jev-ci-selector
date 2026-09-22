@@ -96,10 +96,16 @@ const UNIT_ENTRIES = 16;
  * Pull patch text one bounded unit at a time.
  *
  * Nothing is collected in advance: a unit is read only when the scheduler asks
- * for it, which is only while some task is still open. A unit that exceeds its
- * allowance is split in half and retried, so one oversized file does not make
- * its neighbours unreadable; a single entry that still does not fit is reported
- * as an issue rather than delivered as a truncated prefix.
+ * for it, which is only while some task is still open.
+ *
+ * A unit that exceeds its allowance is split straight into single entries
+ * rather than halved. Every attempt is charged, so halving would bill the
+ * oversized file once per level — about five times the per-unit cap for a
+ * sixteen-entry unit, which on the default budget exhausts the whole allowance
+ * before the file is even isolated and leaves nothing for its neighbours.
+ * Splitting once bounds the waste to two attempts: the batch, then the single
+ * entry that genuinely does not fit. That entry is reported as an issue rather
+ * than delivered as a truncated prefix.
  */
 function patchStream(
   repository: Repository,
@@ -131,12 +137,18 @@ function patchStream(
         if (result.issue === 'too-large') {
           budget.noteLimit('patch-unit-bytes');
           if (unit.length > 1) {
-            const middle = Math.ceil(unit.length / 2);
-            pending.unshift(unit.slice(0, middle), unit.slice(middle));
+            pending.unshift(...unit.map(entry => [entry]));
             continue;
           }
         }
-        if (result.issue !== null) return { changeIds, paths: result.paths, diff: '', issue: ISSUE_REASONS[result.issue] };
+        if (result.issue !== null) {
+          // A read the deadline cut short is a time stop, not a broken
+          // repository: blaming Git here would hide the budget that ran out.
+          if (result.issue === 'git-read-failed' && budget.expired()) {
+            return { changeIds, paths: result.paths, diff: '', issue: PATCH_UNIT_LIMIT_REASON };
+          }
+          return { changeIds, paths: result.paths, diff: '', issue: ISSUE_REASONS[result.issue] };
+        }
         try { budget.spendPatchBytes(result.bytes); }
         catch (error) {
           if (!(error instanceof BudgetError)) throw error;

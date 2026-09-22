@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { AnalysisBudget, BudgetError, PATCH_UNIT_BYTES } from '../../src/budget.js';
+import { AnalysisBudget, ANALYSIS_BYTES, BudgetError, MIN_PREPARATION_CALLS, PATCH_UNIT_BYTES } from '../../src/budget.js';
 
 const budget = (overrides: Partial<ConstructorParameters<typeof AnalysisBudget>[0]> = {}) => new AnalysisBudget({
   maxCollectedPatchBytes: 1000, maxAnalysisBytes: 1000, maxJevCalls: 4,
@@ -86,4 +86,32 @@ test('limits and counters are validated and reported, never estimated', () => {
   value.noteManifest(7);
   assert.equal(value.counters.manifest_entries, 7);
   assert.deepEqual(value.counters.limits_reached, []);
+});
+
+test('asking whether a call fits records nothing', () => {
+  const value = budget({ maxAnalysisBytes: 100, maxJevCalls: 1 });
+  assert.equal(value.fits('observation', 4096), false);
+  assert.equal(value.fits('observation', 10), true);
+  assert.deepEqual(value.limitsReached, [], 'a question is not a ceiling that was reached');
+  assert.throws(() => value.reserve('observation', 4096), BudgetError);
+  assert.deepEqual(value.limitsReached, ['analysis-bytes'], 'an actual attempt is recorded');
+});
+
+test('context preparation needs at least two call slots to exist at all', () => {
+  const single = budget({ maxJevCalls: 1, maxAnalysisBytes: 10_000 });
+  assert.equal(single.fits('preparation', 10), false, 'its share floors to zero');
+  assert.equal(single.fits('observation', 10), true, 'the decision keeps the only slot');
+  assert.equal(MIN_PREPARATION_CALLS, 2);
+  const pair = budget({ maxJevCalls: MIN_PREPARATION_CALLS, maxAnalysisBytes: 10_000 });
+  assert.equal(pair.fits('preparation', 10), true);
+});
+
+test('the default analysis budget leaves preparation room for a real repository', () => {
+  // Measured: a 250-file repository spends about 220 KB on one anchor's two
+  // passes. The default must not sit within a hair of that.
+  const value = new AnalysisBudget({ maxCollectedPatchBytes: 1 << 20, maxAnalysisBytes: ANALYSIS_BYTES,
+    maxJevCalls: 16, deadline: performance.now() + 1000 });
+  assert.equal(value.fits('preparation', 230_000), true, 'one anchor over a mid-sized repository fits');
+  value.reserve('preparation', 230_000).commit();
+  assert.equal(value.fits('preparation', 230_000), true, 'a second anchor still fits');
 });

@@ -33,6 +33,10 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Added
 
 - `max-collected-patch-bytes`, `max-analysis-bytes` and `max-jev-calls` inputs.
+  `max-analysis-bytes` defaults to 4 MiB, sized by measuring real context
+  preparation: its cost scales with the number of tracked repository files, so
+  a smaller default made `resolve_context_files` fail on every run of any
+  repository of moderate size.
   Each counts what it names — real UTF-8 or JSON bytes, and dispatched calls —
   and never estimates provider tokens.
 - A shared budget with reservation before dispatch, so concurrent requests

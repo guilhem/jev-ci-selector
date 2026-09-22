@@ -577,3 +577,25 @@ test('a read interrupted after partial output charges what it delivered', async 
     assert.ok(capped.bytesRead > 256, 'the bytes received are reported, overshoot included');
   });
 });
+
+test('the compatibility adapter still reads comparisons with many changed paths', async () => {
+  // `collect()` promises the complete diff, so it must not inherit the
+  // per-unit pathspec limits that bound a lazily collected unit.
+  const value = await fixture(async (work) => {
+    const isFeature = await access(join(work, 'feature marker.txt')).then(() => true).catch(() => false);
+    if (!isFeature) await writeFile(join(work, 'base.txt'), 'base\n');
+    if (!isFeature) return;
+    await mkdir(join(work, 'many'), { recursive: true });
+    for (let index = 0; index < 300; index++) {
+      await writeFile(join(work, 'many', `file-${index}.txt`), `content ${index}\n`);
+    }
+  });
+  await withRepository(value, async repository => {
+    await repository.fetchCommit(value.base);
+    const changes = await repository.collect({ baseSha: value.base, headSha: value.head,
+      testedSha: value.tested, maxDiffBytes: 1_000_000 });
+    assert.ok(changes.changedPaths.length > 256, 'more paths than one unit may carry');
+    assert.match(changes.diff, /many\/file-299\.txt/);
+    assert.equal(changes.diffBytes, Buffer.byteLength(changes.diff));
+  });
+});

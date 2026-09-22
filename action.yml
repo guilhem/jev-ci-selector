@@ -44,10 +44,10 @@ inputs:
     description: Maximum UTF-8 patch text actually collected, summed over every unit read. Replaces max-diff-bytes, which bounded a complete diff this action no longer builds. Not a token count.
     default: '1048576'
   max-analysis-bytes:
-    description: Maximum complete request JSON sent to the API, summed over context preparation and observation. Not a token count.
-    default: '524288'
+    description: Maximum complete request JSON sent to the API, summed over context preparation and observation. Half of it is reserved for preparation, whose cost scales with the number of tracked repository files rather than with the change; raise it for large repositories or many job anchors. Not a token count.
+    default: '4194304'
   max-jev-calls:
-    description: Maximum API calls dispatched for one run, context preparation and observation together, failures included.
+    description: Maximum API calls dispatched for one run, context preparation and observation together, failures included. Half of it is reserved for context preparation, so resolve_context_files needs at least 2.
     default: '16'
 # Every task also publishes a dynamic output named after its ID.
 # Values are the effective 'true'/'false' strings (all true in shadow/bypass/fallback).

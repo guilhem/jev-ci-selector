@@ -36887,7 +36887,7 @@ var BudgetError = class extends Error {
 var MANIFEST_BYTES = 4 * 1024 * 1024;
 var PATCH_UNIT_BYTES = 256 * 1024;
 var COLLECTED_PATCH_BYTES = 1024 * 1024;
-var ANALYSIS_BYTES = 512 * 1024;
+var ANALYSIS_BYTES = 4 * 1024 * 1024;
 var JEV_CALLS = 16;
 var PREPARATION_SHARE = 0.5;
 var AnalysisBudget = class {
@@ -36987,38 +36987,39 @@ var AnalysisBudget = class {
   #scopeByteLimit(scope) {
     return scope === "preparation" ? Math.floor(this.limits.maxAnalysisBytes * PREPARATION_SHARE) : this.limits.maxAnalysisBytes;
   }
-  /** True when another call of this size would fit right now. */
+  /**
+   * Whether another call of this size would fit right now.
+   *
+   * A pure query: unlike `reserve`, it records nothing, so asking the question
+   * never makes the report claim a ceiling was reached.
+   */
   fits(scope, bytes3) {
-    try {
-      this.reserve(scope, bytes3).release();
-      return true;
-    } catch {
-      return false;
+    return this.#violation(scope, bytes3) === null;
+  }
+  /** The ceiling a call of this size would break, without recording anything. */
+  #violation(scope, bytes3) {
+    if (!Number.isSafeInteger(bytes3) || bytes3 < 0) throw new Error("invalid-request-bytes");
+    const calls = this.#calls.preparation + this.#calls.observation + this.#reservedCalls;
+    const used = this.#bytes.preparation + this.#bytes.observation + this.#reservedBytes;
+    if (calls + 1 > this.limits.maxJevCalls) return new BudgetError("jev-calls", this.limits.maxJevCalls, calls + 1);
+    if (used + bytes3 > this.limits.maxAnalysisBytes) return new BudgetError("analysis-bytes", this.limits.maxAnalysisBytes, used + bytes3);
+    if (this.#calls[scope] + this.#reservedCalls + 1 > this.#scopeCallLimit(scope)) {
+      return new BudgetError("jev-calls", this.#scopeCallLimit(scope), this.#calls[scope] + 1, scope);
     }
+    if (this.#bytes[scope] + this.#reservedBytes + bytes3 > this.#scopeByteLimit(scope)) {
+      return new BudgetError("analysis-bytes", this.#scopeByteLimit(scope), this.#bytes[scope] + bytes3, scope);
+    }
+    return null;
   }
   /**
    * Debit one call slot and `bytes` of request JSON before dispatch. The debit
    * is synchronous, so concurrent workers cannot race past a limit.
    */
   reserve(scope, bytes3) {
-    if (!Number.isSafeInteger(bytes3) || bytes3 < 0) throw new Error("invalid-request-bytes");
-    const calls = this.#calls.preparation + this.#calls.observation + this.#reservedCalls;
-    const used = this.#bytes.preparation + this.#bytes.observation + this.#reservedBytes;
-    if (calls + 1 > this.limits.maxJevCalls) {
-      this.#reached.add("jev-calls");
-      throw new BudgetError("jev-calls", this.limits.maxJevCalls, calls + 1);
-    }
-    if (used + bytes3 > this.limits.maxAnalysisBytes) {
-      this.#reached.add("analysis-bytes");
-      throw new BudgetError("analysis-bytes", this.limits.maxAnalysisBytes, used + bytes3);
-    }
-    if (this.#calls[scope] + this.#reservedCalls + 1 > this.#scopeCallLimit(scope)) {
-      this.#reached.add("jev-calls");
-      throw new BudgetError("jev-calls", this.#scopeCallLimit(scope), this.#calls[scope] + 1, scope);
-    }
-    if (this.#bytes[scope] + this.#reservedBytes + bytes3 > this.#scopeByteLimit(scope)) {
-      this.#reached.add("analysis-bytes");
-      throw new BudgetError("analysis-bytes", this.#scopeByteLimit(scope), this.#bytes[scope] + bytes3, scope);
+    const violation = this.#violation(scope, bytes3);
+    if (violation) {
+      this.#reached.add(violation.kind);
+      throw violation;
     }
     this.#reservedCalls += 1;
     this.#reservedBytes += bytes3;
@@ -37416,8 +37417,9 @@ var GitRepository = class _GitRepository {
     if (!Number.isSafeInteger(limits.maxUnitBytes) || limits.maxUnitBytes <= 0) return { ...unit, issue: "too-large" };
     const blocked = entries.find((entry) => entry.issue !== null);
     if (blocked) return { ...unit, issue: blocked.issue };
+    const pathspec = limits.wholeComparison === true ? [] : paths;
     if (!paths.length) return unit;
-    if (paths.length > MAX_UNIT_PATHS || paths.reduce((total, path2) => total + Buffer.byteLength(path2) + 1, 0) > MAX_UNIT_PATHSPEC_BYTES) {
+    if (pathspec.length > MAX_UNIT_PATHS || pathspec.reduce((total, path2) => total + Buffer.byteLength(path2) + 1, 0) > MAX_UNIT_PATHSPEC_BYTES) {
       return { ...unit, issue: "too-large" };
     }
     const maxBlobBytes = limits.maxBlobBytes ?? MAX_BLOB_BYTES;
@@ -37449,7 +37451,7 @@ var GitRepository = class _GitRepository {
         comparison.diffBaseSha,
         comparison.testedSha,
         "--",
-        ...paths
+        ...pathspec
       ], limits.maxUnitBytes, limits.timeoutMs);
     } catch (error) {
       const bytesRead = stdoutBytesOf(error);
@@ -37502,7 +37504,8 @@ var GitRepository = class _GitRepository {
     if (submodule) throw new ChangeError("submodule-change", changedPaths);
     const unit = await this.readPatch(comparison, manifest.entries, {
       maxUnitBytes: Math.max(1, maxDiffBytes),
-      renames: true
+      renames: true,
+      wholeComparison: true
     });
     if (unit.issue !== null) throw new ChangeError(LEGACY_ISSUE_CODES[unit.issue], changedPaths);
     return {
@@ -42311,9 +42314,7 @@ async function analyseChange(request, evaluate) {
           };
           slot.record.requests.push(call);
           if (requestBytes > REQUEST_BYTES) {
-            call.status = "failed";
-            call.error = "invalid-response";
-            failure ??= "invalid-response";
+            call.status = "not-started";
             for (const id of taskIds) settle(id, "fallback-run", "context-too-large");
             continue;
           }
@@ -42749,12 +42750,16 @@ function patchStream(repository, comparison, entries, budget) {
         if (result.issue === "too-large") {
           budget.noteLimit("patch-unit-bytes");
           if (unit.length > 1) {
-            const middle = Math.ceil(unit.length / 2);
-            pending.unshift(unit.slice(0, middle), unit.slice(middle));
+            pending.unshift(...unit.map((entry) => [entry]));
             continue;
           }
         }
-        if (result.issue !== null) return { changeIds, paths: result.paths, diff: "", issue: ISSUE_REASONS[result.issue] };
+        if (result.issue !== null) {
+          if (result.issue === "git-read-failed" && budget.expired()) {
+            return { changeIds, paths: result.paths, diff: "", issue: PATCH_UNIT_LIMIT_REASON };
+          }
+          return { changeIds, paths: result.paths, diff: "", issue: ISSUE_REASONS[result.issue] };
+        }
         try {
           budget.spendPatchBytes(result.bytes);
         } catch (error) {

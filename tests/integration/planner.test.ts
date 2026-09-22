@@ -1018,3 +1018,86 @@ test('a preparation fallback names the task it kept', async () => {
   assert.deepEqual(report.analysis.fallback_tasks, ['verify'], 'the retained task is named');
   assert.equal(report.analysis.task_states.verify, 'fallback-run');
 });
+
+test('one oversized file does not consume the whole collection budget', async () => {
+  // A sixteen-entry unit whose first file cannot fit. Halving would bill the
+  // per-unit cap once per level and exhaust the default budget before the file
+  // was even isolated; splitting straight to single entries bounds the waste.
+  const paths = Array.from({ length: 16 }, (_, index) => `file-${index}.txt`);
+  const f = fixture({ paths });
+  const create = f.dependencies.createRepository!;
+  const attempts: number[] = [];
+  const unitBytes = 256 * 1024;
+  const { plan, report } = await planChange(
+    { ...inputs, tasks: { check: { description: 'Checks backend rules.' } } },
+    context, {
+      ...f.dependencies,
+      createRepository: async options => {
+        const repository = await create(options);
+        return { ...repository, readPatch: async (_comparison, entries) => {
+          attempts.push(entries.length);
+          const changeIds = entries.map(entry => entry.id);
+          const unitPaths = entries.map(entry => entry.newPath!);
+          // Only the first file is oversized; every other entry reads fine.
+          if (entries.some(entry => entry.newPath === 'file-0.txt')) {
+            return { changeIds, paths: unitPaths, diff: '', bytes: 0, bytesRead: unitBytes, issue: 'too-large' as const };
+          }
+          const diff = entries.map(entry => patch(1, entry.newPath!)).join('');
+          return { changeIds, paths: unitPaths, diff, bytes: Buffer.byteLength(diff), bytesRead: Buffer.byteLength(diff), issue: null };
+        } };
+      },
+      evaluate: async request => ({ answers: Object.fromEntries(request.taskIds.map(id => [id, judgment()])),
+        model: 'jev-1.13.0', usage: { input_tokens: 5, output_tokens: 1 } }),
+    });
+  // The batch, then the single entry that genuinely does not fit.
+  assert.deepEqual(attempts.filter(size => size > 1), [16], 'the unit was split once, not halved repeatedly');
+  assert.equal(report.analysis.patch_bytes_read, unitBytes * 2, 'exactly two attempts were charged');
+  assert.ok(report.analysis.patch_bytes_read < inputs.maxCollectedPatchBytes,
+    'the budget survives isolating one oversized file');
+  assert.ok(report.analysis.limits_reached.includes('patch-unit-bytes'));
+  // The unreadable change still retains the task: nothing is excluded blind.
+  assert.equal(plan.run.check, true);
+  assert.deepEqual(plan.tasks.check!.reasons, ['diff-too-large']);
+});
+
+test('a read lost to the deadline is reported as a time stop, not a broken repository', async () => {
+  const f = fixture();
+  const create = f.dependencies.createRepository!;
+  const { plan, report } = await planChange(
+    { ...inputs, timeoutMs: 40, tasks: { check: { description: 'Checks backend rules.' } } },
+    context, {
+      ...f.dependencies,
+      createRepository: async options => {
+        const repository = await create(options);
+        return { ...repository, readPatch: async (_comparison, entries) => {
+          // Outlast the deadline, then fail the way a killed Git command does.
+          await new Promise(resolve => setTimeout(resolve, 80));
+          return { changeIds: entries.map(entry => entry.id), paths: [], diff: '', bytes: 0,
+            bytesRead: 128, issue: 'git-read-failed' as const };
+        } };
+      },
+    });
+  assert.equal(plan.run.check, true);
+  assert.deepEqual(plan.tasks.check!.reasons, ['analysis-budget-exceeded'],
+    'the deadline is named, not the repository');
+  assert.ok(report.analysis.limits_reached.includes('time'));
+  assert.equal(f.calls.evaluate, 0);
+});
+
+test('a request too large to send is not reported as a provider failure', async () => {
+  const f = fixture();
+  // Evidence large enough that a single-task request exceeds the transport cap.
+  const { plan, report } = await planChange(
+    { ...inputs, tasks: { check: { description: `Checks backend rules. ${'detail '.repeat(20_000)}` } } },
+    context, {
+      ...f.dependencies,
+      evaluate: async () => { throw new Error('an unsendable request must never be dispatched'); },
+    });
+  assert.equal(plan.run.check, true);
+  assert.ok(plan.tasks.check!.reasons.includes('context-too-large'));
+  // Nothing was ever sent, so the report must not blame the provider.
+  assert.equal(report.observation_error, null, 'nothing came back, so nothing was invalid');
+  assert.equal(report.analysis.task_states.check, 'fallback-run');
+  assert.equal(report.analysis.observation_calls, 0);
+  assert.deepEqual(report.analysis.fallback_tasks, ['check']);
+});

@@ -110,6 +110,12 @@ export interface PatchUnit {
 export interface ReadPatchLimits {
   /** Hard ceiling for this unit's stdout, enforced before any allocation. */
   maxUnitBytes: number;
+  /**
+   * Read the whole comparison instead of restricting it to the entries' paths.
+   * Used by the compatibility adapter, whose contract is the complete diff and
+   * which must therefore not inherit the per-unit pathspec limits.
+   */
+  wholeComparison?: boolean;
   /** Ceiling for either side's blob, checked from object metadata first. */
   maxBlobBytes?: number;
   renames?: boolean;
@@ -549,8 +555,9 @@ export class GitRepository {
     if (!Number.isSafeInteger(limits.maxUnitBytes) || limits.maxUnitBytes <= 0) return { ...unit, issue: 'too-large' };
     const blocked = entries.find(entry => entry.issue !== null);
     if (blocked) return { ...unit, issue: blocked.issue };
+    const pathspec = limits.wholeComparison === true ? [] : paths;
     if (!paths.length) return unit;
-    if (paths.length > MAX_UNIT_PATHS || paths.reduce((total, path) => total + Buffer.byteLength(path) + 1, 0) > MAX_UNIT_PATHSPEC_BYTES) {
+    if (pathspec.length > MAX_UNIT_PATHS || pathspec.reduce((total, path) => total + Buffer.byteLength(path) + 1, 0) > MAX_UNIT_PATHSPEC_BYTES) {
       return { ...unit, issue: 'too-large' };
     }
 
@@ -586,7 +593,7 @@ export class GitRepository {
         comparison.diffBaseSha,
         comparison.testedSha,
         '--',
-        ...paths,
+        ...pathspec,
       ], limits.maxUnitBytes, limits.timeoutMs);
     } catch (error) {
       // An interrupted read still delivered bytes before the kill, a timeout
@@ -647,6 +654,7 @@ export class GitRepository {
     const unit = await this.readPatch(comparison, manifest.entries, {
       maxUnitBytes: Math.max(1, maxDiffBytes),
       renames: true,
+      wholeComparison: true,
     });
     if (unit.issue !== null) throw new ChangeError(LEGACY_ISSUE_CODES[unit.issue], changedPaths);
     return {

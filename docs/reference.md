@@ -33,7 +33,7 @@ GitHub passes strings. Validation and normalization precede Git or HTTP access, 
 | `force-all` | `'false'` | All tasks, no Jev request |
 | `timeout-ms` | `10000` | Integer from 1 to 2147483647; shared context-preparation and analysis deadline, started once the inventory is built |
 | `max-collected-patch-bytes` | `1048576` | Positive safe integer; patch bytes received on stdout, rejected and retried attempts included |
-| `max-analysis-bytes` | `524288` | Positive safe integer; complete request JSON sent to the API, preparation and observation together |
+| `max-analysis-bytes` | `4194304` | Positive safe integer; complete request JSON sent to the API, preparation and observation together |
 | `max-jev-calls` | `16` | Positive safe integer; API calls dispatched, failures included |
 
 Boolean inputs accept only `true` and `false`; quote them in YAML. Integers use decimal integer syntax, without permissive suffix parsing.
@@ -45,6 +45,8 @@ Every budget counts what it names: real UTF-8 or JSON bytes produced or sent, an
 `max-collected-patch-bytes` bounds the **work**, not the useful context: a read that Git interrupted, and a patch produced in full but then rejected as binary or unrepresentable, are both charged. The report separates the two, as `analysis.patch_bytes_read` and `analysis.patch_bytes_delivered`.
 
 `patch_bytes_read` counts bytes received on the command's standard output, a timeout after partial output included. It measures what Git delivered, not the work Git performed internally, and the chunk that crosses a ceiling is reported as received rather than clamped to that ceiling — so a read can be charged slightly more than its cap, and the report shows the overshoot instead of hiding it.
+
+Half of `max-analysis-bytes` and half of `max-jev-calls` are reserved for context preparation, so it can never starve the decision it serves. Two consequences are worth planning for. Preparation asks one question per tracked repository path, per pass, per job anchor, so its cost scales with the **size of the repository**, not with the size of the change: about 220 KB for a 250-file repository with a single anchor, and proportionally more with more files or more anchors. And below `max-jev-calls: 2` the preparation share floors to zero, so `resolve_context_files` cannot run at all. In both cases the affected tasks are retained with `context-resolution-incomplete`, and `analysis.limits_reached` names the ceiling that stopped it.
 
 `timeout-ms` keeps its historical meaning — the shared deadline for context preparation and analysis — and its clock starts once the comparison is verified and the inventory is built. A slow fetch therefore cannot silently consume the analysis allowance. Git commands keep their own separate timeouts, and no read or call is started once the deadline has passed.
 

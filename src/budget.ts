@@ -77,15 +77,31 @@ export const MANIFEST_BYTES = 4 * 1024 * 1024;
 export const PATCH_UNIT_BYTES = 256 * 1024;
 /** Default ceiling for the sum of collected patch units. */
 export const COLLECTED_PATCH_BYTES = 1024 * 1024;
-/** Default ceiling for the sum of complete request JSON sent to Jev. */
-export const ANALYSIS_BYTES = 512 * 1024;
+/**
+ * Default ceiling for the sum of complete request JSON sent to Jev.
+ *
+ * Sized from measurement, not from a round number. Context preparation asks one
+ * question per tracked repository path, per pass, per job anchor, so its cost
+ * scales with the size of the repository rather than with the change: a 250-file
+ * repository spends roughly 220 KB on a single anchor's two passes. The earlier
+ * 512 KiB default put that within a hair of the preparation sub-limit, so
+ * `resolve_context_files` failed on every run of any repository of moderate
+ * size. Repositories with many files or many job anchors still need to raise it.
+ */
+export const ANALYSIS_BYTES = 4 * 1024 * 1024;
 /** Default ceiling for dispatched Jev calls, preparation and observation together. */
 export const JEV_CALLS = 16;
 /**
  * Share of the analysis budget preparation may consume. Preparation must not
  * be able to starve the decision it exists to serve.
+ *
+ * It follows that context preparation needs at least two call slots to run at
+ * all: below `max-jev-calls: 2` its share floors to zero and every preparation
+ * request is refused, which retains the tasks that asked for context.
  */
 const PREPARATION_SHARE = 0.5;
+/** Call slots below which context preparation cannot run at all. */
+export const MIN_PREPARATION_CALLS = 2;
 
 export class AnalysisBudget {
   readonly limits: BudgetLimits;
@@ -202,14 +218,30 @@ export class AnalysisBudget {
       : this.limits.maxAnalysisBytes;
   }
 
-  /** True when another call of this size would fit right now. */
+  /**
+   * Whether another call of this size would fit right now.
+   *
+   * A pure query: unlike `reserve`, it records nothing, so asking the question
+   * never makes the report claim a ceiling was reached.
+   */
   fits(scope: BudgetScope, bytes: number): boolean {
-    try {
-      this.reserve(scope, bytes).release();
-      return true;
-    } catch {
-      return false;
+    return this.#violation(scope, bytes) === null;
+  }
+
+  /** The ceiling a call of this size would break, without recording anything. */
+  #violation(scope: BudgetScope, bytes: number): BudgetError | null {
+    if (!Number.isSafeInteger(bytes) || bytes < 0) throw new Error('invalid-request-bytes');
+    const calls = this.#calls.preparation + this.#calls.observation + this.#reservedCalls;
+    const used = this.#bytes.preparation + this.#bytes.observation + this.#reservedBytes;
+    if (calls + 1 > this.limits.maxJevCalls) return new BudgetError('jev-calls', this.limits.maxJevCalls, calls + 1);
+    if (used + bytes > this.limits.maxAnalysisBytes) return new BudgetError('analysis-bytes', this.limits.maxAnalysisBytes, used + bytes);
+    if (this.#calls[scope] + this.#reservedCalls + 1 > this.#scopeCallLimit(scope)) {
+      return new BudgetError('jev-calls', this.#scopeCallLimit(scope), this.#calls[scope] + 1, scope);
     }
+    if (this.#bytes[scope] + this.#reservedBytes + bytes > this.#scopeByteLimit(scope)) {
+      return new BudgetError('analysis-bytes', this.#scopeByteLimit(scope), this.#bytes[scope] + bytes, scope);
+    }
+    return null;
   }
 
   /**
@@ -217,24 +249,10 @@ export class AnalysisBudget {
    * is synchronous, so concurrent workers cannot race past a limit.
    */
   reserve(scope: BudgetScope, bytes: number): Reservation {
-    if (!Number.isSafeInteger(bytes) || bytes < 0) throw new Error('invalid-request-bytes');
-    const calls = this.#calls.preparation + this.#calls.observation + this.#reservedCalls;
-    const used = this.#bytes.preparation + this.#bytes.observation + this.#reservedBytes;
-    if (calls + 1 > this.limits.maxJevCalls) {
-      this.#reached.add('jev-calls');
-      throw new BudgetError('jev-calls', this.limits.maxJevCalls, calls + 1);
-    }
-    if (used + bytes > this.limits.maxAnalysisBytes) {
-      this.#reached.add('analysis-bytes');
-      throw new BudgetError('analysis-bytes', this.limits.maxAnalysisBytes, used + bytes);
-    }
-    if (this.#calls[scope] + this.#reservedCalls + 1 > this.#scopeCallLimit(scope)) {
-      this.#reached.add('jev-calls');
-      throw new BudgetError('jev-calls', this.#scopeCallLimit(scope), this.#calls[scope] + 1, scope);
-    }
-    if (this.#bytes[scope] + this.#reservedBytes + bytes > this.#scopeByteLimit(scope)) {
-      this.#reached.add('analysis-bytes');
-      throw new BudgetError('analysis-bytes', this.#scopeByteLimit(scope), this.#bytes[scope] + bytes, scope);
+    const violation = this.#violation(scope, bytes);
+    if (violation) {
+      this.#reached.add(violation.kind);
+      throw violation;
     }
     this.#reservedCalls += 1;
     this.#reservedBytes += bytes;

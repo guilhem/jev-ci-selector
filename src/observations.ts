@@ -312,8 +312,12 @@ export async function analyseChange(request: AnalysisRequest, evaluate: typeof e
               duration_ms: null, request_bytes: requestBytes, error: null };
             slot.record.requests!.push(call);
             if (requestBytes > REQUEST_BYTES) {
-              // An oversized request is never sent; its tasks stay retained.
-              call.status = 'failed'; call.error = 'invalid-response'; failure ??= 'invalid-response';
+              // Defensive: group sizing already bounds state plus question to
+              // STATE_AND_QUESTION_BYTES, so a request should never reach the
+              // transport ceiling. If one ever does it is not sent, and since
+              // nothing came back it is not a provider failure either: the call
+              // stays not-started and the tasks carry the size reason.
+              call.status = 'not-started';
               for (const id of taskIds) settle(id, 'fallback-run', 'context-too-large');
               continue;
             }
