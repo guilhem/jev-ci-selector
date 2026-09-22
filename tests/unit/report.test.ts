@@ -14,7 +14,7 @@ function report(): Report {
       manifest_entries: null, patches_requested: 0, patches_read: 0,
       patch_bytes_read: 0, patch_bytes_delivered: 0, changes_read: 0, changes_total: null,
       preparation_calls: 0, preparation_bytes: 0, observation_calls: 0, observation_bytes: 0,
-      jev_calls: 0, analysis_bytes: 0, limits_reached: [],
+      jev_calls: 0, analysis_bytes: 0, attempts: 0, limits_reached: [],
       analysed_tasks: [], required_without_analysis: ['unit'], task_states: {}, coverage: {},
       fallback_scope: 'none', fallback_tasks: [],
     },

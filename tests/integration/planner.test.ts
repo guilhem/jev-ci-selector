@@ -8,6 +8,10 @@ import { ChangeError, type ChangeEntry, type EntryIssueCode, type VerifiedCompar
 import { evaluateJev, JevError } from '../../src/jev.js';
 import { actionOutputs, summary } from '../../src/report.js';
 import { judgment } from '../fixtures/selection.js';
+import { RateController } from '../../src/concurrency.js';
+
+/** Calls already in flight when a task settles are bounded by this, not by one. */
+const CONCURRENCY_CEILING = new RateController().ceiling;
 import { patch } from '../fixtures/diff.js';
 
 const inputs: Inputs = { ...routingSelection(), mode: 'enforce', githubToken: 'github-private', apiKey: 'typesafe-private',
@@ -525,9 +529,9 @@ test('repository creation and base fetch failures retain every task', async () =
 });
 
 test('an acquired execution removes a task from every request that has not started', async () => {
-  // Many groups: the first answers `required`. Only the calls already in flight
-  // may complete; no later group is ever dispatched.
-  const f = fixture({ diff: patch(2400) });
+  // Comfortably more groups than the concurrency ceiling, so that some are
+  // still unstarted when the first answer settles the task.
+  const f = fixture({ diff: patch(12_000) });
   const asked: string[][] = [];
   const { plan, report } = await planChange({ ...inputs, tasks: { check: { description: 'Checks backend rules.' } } }, context, {
     ...f.dependencies,
@@ -539,7 +543,7 @@ test('an acquired execution removes a task from every request that has not start
   });
   const groups = report.observation!.chunks.length;
   assert.ok(groups > 3, `expected several groups, got ${groups}`);
-  assert.ok(asked.length <= 3, `at most the concurrency bound was in flight, got ${asked.length}`);
+  assert.ok(asked.length <= CONCURRENCY_CEILING, `at most the concurrency bound was in flight, got ${asked.length}`);
   assert.ok(asked.length < groups, 'later groups were never dispatched');
   assert.ok(asked.every(ids => ids.length === 1));
   assert.equal(plan.run.check, true);
@@ -555,7 +559,7 @@ test('an acquired execution removes a task from every request that has not start
 });
 
 test('an unresolved judgment acquires execution and stops just like required', async () => {
-  const f = fixture({ diff: patch(2400) });
+  const f = fixture({ diff: patch(12_000) });
   let calls = 0;
   const { plan, report } = await planChange({ ...inputs, tasks: { check: { description: 'Checks backend rules.' } } }, context, {
     ...f.dependencies,
@@ -565,7 +569,7 @@ test('an unresolved judgment acquires execution and stops just like required', a
         model: 'jev-1.13.0', usage: { input_tokens: 5, output_tokens: 1 } };
     },
   });
-  assert.ok(calls <= 3 && calls < report.observation!.chunks.length);
+  assert.ok(calls <= CONCURRENCY_CEILING && calls < report.observation!.chunks.length);
   assert.equal(plan.run.check, true);
   assert.equal(report.analysis.task_states.check, 'settled-run');
 });

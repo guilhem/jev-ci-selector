@@ -21,7 +21,7 @@ test('shadow measurement joins by exact SHA and distinguishes regressions, flaky
       analysis: { manifest_entries: 1, patches_requested: 1, patches_read: 1,
         patch_bytes_read: 1, patch_bytes_delivered: 1, changes_read: 1, changes_total: 1,
         preparation_calls: 0, preparation_bytes: 0, observation_calls: 1, observation_bytes: 1,
-        jev_calls: 1, analysis_bytes: 1, limits_reached: [],
+        jev_calls: 1, analysis_bytes: 1, attempts: 1, limits_reached: [],
         analysed_tasks: ['build', 'e2e', 'helm', 'prepare', 'unit'], required_without_analysis: [],
         task_states: {}, coverage: {}, fallback_scope: 'none', fallback_tasks: [] } };
     validateReport(report);

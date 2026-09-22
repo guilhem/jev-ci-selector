@@ -60,13 +60,22 @@ export interface BudgetCounters {
   observation_bytes: number;
   jev_calls: number;
   analysis_bytes: number;
+  /** HTTP attempts really made, retries included. Never below `jev_calls`. */
+  attempts: number;
   limits_reached: BudgetKind[];
 }
 
 export interface Reservation {
   readonly bytes: number;
-  /** Confirm the call was dispatched. Committed reservations are never freed. */
-  commit(): void;
+  /**
+   * Confirm the call was dispatched. Committed reservations are never freed.
+   *
+   * `dispatched` is what the transport really wrote: the SDK may retry, so one
+   * reservation can cover several attempts and more bytes than were admitted.
+   * Passing the measured values keeps the counters truthful; omitting them
+   * charges exactly what was reserved.
+   */
+  commit(dispatched?: { attempts: number; sentBytes: number }): void;
   /** Return an unsent reservation to the shared pool. */
   release(): void;
 }
@@ -114,6 +123,7 @@ export class AnalysisBudget {
   #bytes: Record<BudgetScope, number> = { preparation: 0, observation: 0 };
   #reservedCalls = 0;
   #reservedBytes = 0;
+  #attempts = 0;
   #reached = new Set<BudgetKind>();
 
   constructor(limits: BudgetLimits) {
@@ -137,6 +147,7 @@ export class AnalysisBudget {
       observation_bytes: this.#bytes.observation,
       jev_calls: this.#calls.preparation + this.#calls.observation,
       analysis_bytes: this.#bytes.preparation + this.#bytes.observation,
+      attempts: this.#attempts,
       limits_reached: [...this.#reached].sort(),
     };
   }
@@ -260,13 +271,16 @@ export class AnalysisBudget {
     const budget = this;
     return {
       bytes,
-      commit(): void {
+      commit(dispatched?: { attempts: number; sentBytes: number }): void {
         if (settled) return;
         settled = true;
         budget.#reservedCalls -= 1;
         budget.#reservedBytes -= bytes;
-        budget.#calls[scope] += 1;
-        budget.#bytes[scope] += bytes;
+        // Charge what actually went over the wire. A retried call costs several
+        // attempts and several bodies; hiding that would make the counters lie.
+        budget.#calls[scope] += Math.max(1, dispatched?.attempts ?? 1);
+        budget.#bytes[scope] += Math.max(bytes, dispatched?.sentBytes ?? bytes);
+        budget.#attempts += Math.max(1, dispatched?.attempts ?? 1);
       },
       release(): void {
         if (settled) return;

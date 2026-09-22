@@ -6,9 +6,10 @@ import type { ResolveTasksResult } from './metadata.js';
 import type { SelectionDefinition } from './tasks.js';
 import { REQUEST_BYTES, STATE_AND_QUESTION_BYTES } from './observations.js';
 import { AnalysisBudget, BudgetError } from './budget.js';
+import { RateController } from './concurrency.js';
 
-export type ContextError = 'jev-timeout' | 'jev-error' | 'invalid-response' | 'git-read-failed' | 'context-too-large'
-  | 'analysis-budget-exceeded';
+export type ContextError = 'jev-timeout' | 'jev-error' | 'invalid-response' | 'jev-rate-limited'
+  | 'git-read-failed' | 'context-too-large' | 'analysis-budget-exceeded';
 export interface ContextCall {
   paths: string[];
   request_hash: string;
@@ -41,6 +42,8 @@ type Request = JevApiOptions & {
    * never consume the allowance the decision itself needs.
    */
   budget?: AnalysisBudget;
+  /** Shared with the observation so both retreat together on a 429. */
+  rate?: RateController;
 };
 class ContextFailure extends Error {
   constructor(readonly code: ContextError) { super(code); }
@@ -125,6 +128,7 @@ function preparePass(paths: string[], evidence: Record<string, unknown>, selecte
 export async function resolveContextFiles(request: Request, evaluate = evaluateChoices, passCount: 1 | 2 | 3 = 2): Promise<ContextResolutionReport> {
   if (![1, 2, 3].includes(passCount)) throw new Error('invalid-context-pass-count');
   const { configured, resolved, repository, commit } = request;
+  const rate = request.rate ?? new RateController();
   const active = new Set(Object.keys(configured.tasks).filter(id => configured.tasks[id]!.resolve_context_files === true && !resolved.metadata.tasks[id]?.incomplete));
   const originalEvidence = new Map([...active].map(id => [id, structuredClone(resolved.selection.tasks[id]!.evidence)]));
   const anchors = Object.entries(resolved.jobContexts ?? {}).map(([id, job]) => ({ id, evidence: job.evidence, taskIds: job.taskIds.filter(id => active.has(id)) }));
@@ -185,7 +189,8 @@ export async function resolveContextFiles(request: Request, evaluate = evaluateC
               }
             }
             const started = performance.now();
-            reservation?.commit();
+            let dispatched: { attempts: number; sentBytes: number } | undefined;
+            const release = await rate.acquire();
             try {
               const result = await evaluate({ model: configured.model, state: input.state, questions: input.questions,
                 apiKey: request.apiKey, timeoutMs: Math.min(10000, remaining),
@@ -195,14 +200,24 @@ export async function resolveContextFiles(request: Request, evaluate = evaluateC
               validateChoicesResponse({ ...result, answers: Object.fromEntries(Object.entries(result.answers).map(([id, answer]) => [id, { ...answer, type: 'choice' }])) }, input.questions, configured.model);
               call.judgments = Object.fromEntries(input.paths.map(path => [path, result.answers[hash(path)]!]));
               call.model = result.model; call.usage = result.usage; call.status = 'completed';
+              if (result.transport) dispatched = { attempts: result.transport.attempts, sentBytes: result.transport.sent_bytes };
+              rate.noteSuccess();
             } catch (error) {
               failure = error instanceof JevError ? error.code : 'jev-error';
+              if (failure === 'jev-rate-limited') rate.noteRateLimit();
               call.status = 'failed'; call.error = failure;
-              if (error instanceof JevError) { call.model = error.metadata.model; call.usage = error.metadata.usage; }
-            } finally { call.duration_ms = performance.now() - started; }
+              if (error instanceof JevError) {
+                call.model = error.metadata.model; call.usage = error.metadata.usage;
+                if (error.metadata.transport) dispatched = { attempts: error.metadata.transport.attempts, sentBytes: error.metadata.transport.sent_bytes };
+              }
+            } finally {
+              release();
+              call.duration_ms = performance.now() - started;
+              reservation?.commit(dispatched);
+            }
           }
         }
-        await Promise.all(Array.from({ length: Math.min(3, prepared.length) }, worker));
+        await Promise.all(Array.from({ length: Math.max(1, Math.min(rate.ceiling, prepared.length)) }, worker));
         for (const call of pass.calls) if (call.status === 'not-started') call.error = failure ?? 'jev-timeout';
         if (failure) throw new ContextFailure(failure);
         const retained = new Map<string, ChoiceJudgment>();

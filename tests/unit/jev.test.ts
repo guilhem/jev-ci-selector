@@ -29,12 +29,17 @@ test('Choice evaluation sends the supplied questions and returns validated judgm
     assert.deepEqual(body.questions, input.questions);
     return Response.json(validChoices());
   });
-  assert.deepEqual(result, {
+  const { transport, ...judgment } = result;
+  assert.deepEqual(judgment, {
     model: 'jev-1.13.0', usage: { input_tokens: 100, output_tokens: 20 }, answers: {
       'src/ci.ts': { choice: 'inspect', confidence: 0.8, probabilities: { inspect: 0.7, ignore: 0.2, uncertain: 0.1 } },
       'src/app.ts': { choice: 'discard', confidence: 0.9, probabilities: { keep: 0.1, discard: 0.8, uncertain: 0.1 } },
     },
   });
+  // The transport is measured, not inferred from the reservation.
+  assert.equal(transport!.attempts, 1);
+  assert.deepEqual(transport!.statuses, [200]);
+  assert.ok(transport!.sent_bytes > 0);
 });
 
 test('Choice evaluation uses the configured API model alias while validating the expected model', async () => {
@@ -175,8 +180,10 @@ test('malformed, missing, extra and invalid answers cannot authorize skipping', 
     { ...valid(), answers: { helm: { type: 'noul', noul: 0.02 } } }];
   for (const variant of variants) assert.throws(() => validateChoicesResponse(variant, buildQuestions(selection(), ['helm']), 'jev-1.13.0'), JevError);
 });
-test('authentication errors, redirects, rate limits, server and network failures are not retried or exposed', async () => {
-  for (const options of [{}, customApi]) for (const status of [401, 403, 307, 308, 429, 500, 0]) {
+test('authentication errors, redirects, server and network failures are not retried or exposed', async () => {
+  // Without an explicit total budget a call affords no retry, so every failure
+  // is still a single attempt. Bodies never reach the error.
+  for (const options of [{}, customApi]) for (const status of [401, 403, 307, 308, 500, 0]) {
     let calls = 0;
     await assert.rejects(evaluateJev({ ...input(), ...options }, async (_url, init) => {
       calls++;
@@ -186,6 +193,48 @@ test('authentication errors, redirects, rate limits, server and network failures
     }), (error: unknown) => error instanceof JevError && error.code === 'jev-error' && !JSON.stringify(error).includes('SENTINEL'));
     assert.equal(calls, 1);
   }
+});
+
+test('a rate limit is named as one rather than hidden in a generic error', async () => {
+  let calls = 0;
+  await assert.rejects(evaluateJev({ ...input() }, async () => {
+    calls++;
+    return new Response('SECRET-SENTINEL', { status: 429 });
+  }), (error: unknown) => error instanceof JevError && error.code === 'jev-rate-limited'
+    && !JSON.stringify(error).includes('SENTINEL'));
+  assert.equal(calls, 1, 'no budget was granted, so no retry was bought');
+});
+
+test('retries are bought only when the wall clock can pay for them, and every attempt is counted', async () => {
+  // A total budget well above the per-attempt timeout affords two retries.
+  let calls = 0;
+  const result = await evaluateChoices({ ...choiceInput(), timeoutMs: 50, totalMs: 5000 }, async () => {
+    calls++;
+    if (calls === 1) return new Response('{}', { status: 429, headers: { 'retry-after-ms': '1' } });
+    return Response.json(validChoices());
+  });
+  assert.equal(calls, 2, 'the 429 was retried');
+  assert.equal(result.transport!.attempts, 2);
+  assert.deepEqual(result.transport!.statuses, [429, 200]);
+  assert.ok(result.transport!.sent_bytes > 0, 'both bodies are counted');
+
+  // A budget that cannot cover a second attempt buys none.
+  let tight = 0;
+  await assert.rejects(evaluateChoices({ ...choiceInput(), timeoutMs: 50, totalMs: 50 }, async () => {
+    tight++;
+    return new Response('{}', { status: 429 });
+  }), (error: unknown) => error instanceof JevError && error.code === 'jev-rate-limited');
+  assert.equal(tight, 1);
+});
+
+test('a persistent rate limit exhausts its retries and stays a rate limit', async () => {
+  let calls = 0;
+  await assert.rejects(evaluateChoices({ ...choiceInput(), timeoutMs: 50, totalMs: 5000 }, async () => {
+    calls++;
+    return new Response('{}', { status: 429, headers: { 'retry-after-ms': '1' } });
+  }), (error: unknown) => error instanceof JevError && error.code === 'jev-rate-limited'
+    && error.metadata.transport!.attempts === calls);
+  assert.equal(calls, 3, 'the original attempt plus two affordable retries');
 });
 test('timeout covers delayed headers and body without retries', async () => {
   for (const body of [false, true]) {

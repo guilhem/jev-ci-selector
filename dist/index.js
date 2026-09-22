@@ -36901,6 +36901,7 @@ var AnalysisBudget = class {
   #bytes = { preparation: 0, observation: 0 };
   #reservedCalls = 0;
   #reservedBytes = 0;
+  #attempts = 0;
   #reached = /* @__PURE__ */ new Set();
   constructor(limits) {
     for (const key of ["maxCollectedPatchBytes", "maxAnalysisBytes", "maxJevCalls"]) {
@@ -36922,6 +36923,7 @@ var AnalysisBudget = class {
       observation_bytes: this.#bytes.observation,
       jev_calls: this.#calls.preparation + this.#calls.observation,
       analysis_bytes: this.#bytes.preparation + this.#bytes.observation,
+      attempts: this.#attempts,
       limits_reached: [...this.#reached].sort()
     };
   }
@@ -37027,13 +37029,14 @@ var AnalysisBudget = class {
     const budget = this;
     return {
       bytes: bytes3,
-      commit() {
+      commit(dispatched) {
         if (settled) return;
         settled = true;
         budget.#reservedCalls -= 1;
         budget.#reservedBytes -= bytes3;
-        budget.#calls[scope] += 1;
-        budget.#bytes[scope] += bytes3;
+        budget.#calls[scope] += Math.max(1, dispatched?.attempts ?? 1);
+        budget.#bytes[scope] += Math.max(bytes3, dispatched?.sentBytes ?? bytes3);
+        budget.#attempts += Math.max(1, dispatched?.attempts ?? 1);
       },
       release() {
         if (settled) return;
@@ -38412,6 +38415,23 @@ function buildQuestions(selection, taskIds) {
     unresolved: "The supplied evidence does not establish either a verification relationship or independence, for example an opaque command or missing scope/dependency information."
   })]));
 }
+function transportMeter() {
+  const record3 = { attempts: 0, sent_bytes: 0, statuses: [] };
+  const observe = (fetchImpl) => async (url, init) => {
+    record3.attempts += 1;
+    const body = init?.body;
+    if (typeof body === "string") record3.sent_bytes += Buffer.byteLength(body, "utf8");
+    const response = await (fetchImpl ?? globalThis.fetch)(url, { ...init, redirect: "error" });
+    record3.statuses.push(response.status);
+    return response;
+  };
+  return { record: record3, observe };
+}
+function affordableRetries(remainingMs, attemptTimeoutMs) {
+  if (remainingMs > 3 * attemptTimeoutMs) return 2;
+  if (remainingMs > 1.5 * attemptTimeoutMs) return 1;
+  return 0;
+}
 function createJevClient(api, apiKey, requestedModel, timeoutMs, fetchImpl) {
   return new TypeSafeClient({
     apiKey,
@@ -38420,7 +38440,7 @@ function createJevClient(api, apiKey, requestedModel, timeoutMs, fetchImpl) {
     logLevel: "off",
     retry: { maxRetries: 0 },
     timeout: timeoutMs,
-    fetch: (url, init) => (fetchImpl ?? globalThis.fetch)(url, { ...init, redirect: "error" })
+    fetch: fetchImpl
   });
 }
 async function evaluateJev(input, fetchImpl) {
@@ -38429,20 +38449,35 @@ async function evaluateJev(input, fetchImpl) {
 }
 async function evaluateChoices(input, fetchImpl) {
   const { model, state, questions, apiKey, timeoutMs } = input;
+  const totalMs = Math.max(1, input.totalMs ?? timeoutMs);
   const api = resolveJevApi(input);
   if (!Object.keys(questions).length) throw new Error("empty-jev-request");
   const requestedModel = api.model ?? model;
-  const client = createJevClient(api, apiKey, requestedModel, timeoutMs, fetchImpl);
-  const signal = AbortSignal.timeout(timeoutMs);
+  const meter = transportMeter();
+  const client = createJevClient(api, apiKey, requestedModel, timeoutMs, meter.observe(fetchImpl));
+  const signal = AbortSignal.timeout(totalMs);
   try {
-    const response = await client.systemOne(
-      { model: requestedModel, state, questions },
-      { signal, timeout: timeoutMs, retry: { maxRetries: 0 } }
-    );
-    return validateChoicesResponse(response, questions, model);
+    const response = await client.systemOne({ model: requestedModel, state, questions }, {
+      signal,
+      timeout: timeoutMs,
+      retry: {
+        maxRetries: affordableRetries(totalMs, timeoutMs),
+        respectRetryAfter: true,
+        maxRetryAfterMs: Math.min(6e4, totalMs),
+        // A slow provider is slow on every attempt; retrying triples the spend
+        // for nothing. Transient transport faults are worth another try.
+        apiTimeoutError: false,
+        apiConnectionError: true
+      }
+    });
+    return { ...validateChoicesResponse(response, questions, model), transport: meter.record };
   } catch (error) {
-    if (error instanceof JevError) throw error;
-    throw new JevError(error instanceof APITimeoutError || signal.aborted ? "jev-timeout" : "jev-error");
+    if (error instanceof JevError) throw new JevError(error.code, { ...error.metadata, transport: meter.record });
+    const metadata = { model: null, usage: null, transport: meter.record };
+    if (error instanceof RateLimitError) throw new JevError("jev-rate-limited", metadata);
+    if (error instanceof APITimeoutError || signal.aborted) throw new JevError("jev-timeout", metadata);
+    if (error instanceof APIError && error.status === 429) throw new JevError("jev-rate-limited", metadata);
+    throw new JevError("jev-error", metadata);
   }
 }
 
@@ -40332,6 +40367,7 @@ var FALLBACK_REASONS = /* @__PURE__ */ new Set([
   "jev-timeout",
   "jev-error",
   "invalid-response",
+  "jev-rate-limited",
   "context-too-large",
   "metadata-unavailable",
   "observation-incomplete",
@@ -40602,6 +40638,7 @@ var report_schema_default = {
                 "jev-timeout",
                 "jev-error",
                 "invalid-response",
+                "jev-rate-limited",
                 "context-too-large",
                 "chunked-observation",
                 "observation-only",
@@ -40660,6 +40697,7 @@ var report_schema_default = {
         "jev-timeout",
         "jev-error",
         "invalid-response",
+        "jev-rate-limited",
         "context-too-large",
         "diff-too-large",
         "unrepresentable-change",
@@ -40724,7 +40762,8 @@ var report_schema_default = {
         "patch_bytes_read",
         "patch_bytes_delivered",
         "changes_read",
-        "changes_total"
+        "changes_total",
+        "attempts"
       ],
       properties: {
         manifest_entries: {
@@ -40821,6 +40860,9 @@ var report_schema_default = {
             "null"
           ],
           minimum: 0
+        },
+        attempts: {
+          $ref: "#/definitions/counter"
         }
       }
     }
@@ -40932,6 +40974,7 @@ var report_schema_default = {
             "jev-timeout",
             "jev-error",
             "invalid-response",
+            "jev-rate-limited",
             null
           ]
         },
@@ -41177,6 +41220,7 @@ var report_schema_default = {
             "jev-timeout",
             "jev-error",
             "invalid-response",
+            "jev-rate-limited",
             null
           ]
         },
@@ -41205,7 +41249,8 @@ var report_schema_default = {
         "invalid-response",
         "git-read-failed",
         "context-too-large",
-        "analysis-budget-exceeded"
+        "analysis-budget-exceeded",
+        "jev-rate-limited"
       ]
     },
     choiceJudgment: {
@@ -42119,6 +42164,66 @@ function splitDiff(diff, maxBytes, workingDirectories) {
   return chunks;
 }
 
+// src/concurrency.ts
+var INITIAL = 4;
+var CEILING = 8;
+var FLOOR = 1;
+var WIDEN_AFTER = 8;
+var RateController = class {
+  constructor(initial = INITIAL, ceiling = CEILING) {
+    this.ceiling = ceiling;
+    this.#limit = Math.max(FLOOR, Math.min(initial, ceiling));
+  }
+  ceiling;
+  #limit;
+  #active = 0;
+  #successes = 0;
+  #waiting = [];
+  #rateLimits = 0;
+  #peak = 0;
+  get limit() {
+    return this.#limit;
+  }
+  get stats() {
+    return { peak_concurrency: this.#peak, rate_limits: this.#rateLimits, final_limit: this.#limit };
+  }
+  /** Wait for a slot. The returned release must be called exactly once. */
+  async acquire() {
+    while (this.#active >= this.#limit) {
+      await new Promise((resolve) => this.#waiting.push(resolve));
+    }
+    this.#active += 1;
+    this.#peak = Math.max(this.#peak, this.#active);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      this.#active -= 1;
+      this.#admit();
+    };
+  }
+  /** A completed call. Widen only after a sustained run of them. */
+  noteSuccess() {
+    this.#successes += 1;
+    if (this.#successes >= WIDEN_AFTER && this.#limit < this.ceiling) {
+      this.#limit += 1;
+      this.#successes = 0;
+      this.#admit();
+    }
+  }
+  /** A refused call. Halve immediately: the ceiling is shared and moves. */
+  noteRateLimit() {
+    this.#rateLimits += 1;
+    this.#successes = 0;
+    this.#limit = Math.max(FLOOR, Math.floor(this.#limit / 2));
+  }
+  #admit() {
+    for (let free = this.#limit - this.#active; free > 0 && this.#waiting.length; free--) {
+      this.#waiting.shift()();
+    }
+  }
+};
+
 // src/observations.ts
 var hash = (value) => (0, import_node_crypto4.createHash)("sha256").update(value, "utf8").digest("hex");
 var bytes = (value) => Buffer.byteLength(JSON.stringify(value) ?? "", "utf8");
@@ -42202,6 +42307,7 @@ function batchesFor(taskIds, questions, model, state) {
 async function analyseChange(request, evaluate) {
   const { budget } = request;
   const stopWhenSettled = request.stopWhenSettled !== false;
+  const rate = request.rate ?? new RateController();
   const candidates = [...new Set(request.taskIds)].sort();
   const states = new Map(candidates.map((id) => [id, "pending"]));
   const taskErrors = /* @__PURE__ */ new Map();
@@ -42338,7 +42444,8 @@ async function analyseChange(request, evaluate) {
             continue;
           }
           const started = performance.now();
-          reservation.commit();
+          let dispatched2;
+          const release = await rate.acquire();
           try {
             const result = await evaluate({
               selection: request.selection,
@@ -42361,6 +42468,8 @@ async function analyseChange(request, evaluate) {
             call.status = "completed";
             call.model = result.model;
             call.usage = result.usage;
+            if (result.transport) dispatched2 = { attempts: result.transport.attempts, sentBytes: result.transport.sent_bytes };
+            rate.noteSuccess();
             for (const [id, answer] of Object.entries(validated.answers)) {
               if (answer.choice === "required" || answer.choice === "unresolved") settle(id, "settled-run");
               else if (answer.choice === "independent") slot.answered.add(id);
@@ -42370,16 +42479,21 @@ async function analyseChange(request, evaluate) {
             call.status = "failed";
             call.error = error.code;
             failure ??= error.code;
+            if (error.code === "jev-rate-limited") rate.noteRateLimit();
             call.model = error.metadata.model;
             call.usage = error.metadata.usage;
+            if (error.metadata.transport) dispatched2 = { attempts: error.metadata.transport.attempts, sentBytes: error.metadata.transport.sent_bytes };
             for (const id of taskIds) settle(id, "fallback-run", error.code);
           } finally {
+            release();
             call.duration_ms = performance.now() - started;
+            reservation.commit(dispatched2);
+            if (dispatched2) call.request_bytes = dispatched2.sentBytes;
           }
         }
       }
     };
-    const concurrency = Math.max(1, Math.min(request.concurrency ?? 3, unitChunks.length));
+    const concurrency = Math.max(1, Math.min(request.concurrency ?? rate.ceiling, unitChunks.length));
     await Promise.all(Array.from({ length: concurrency }, worker));
     const unneeded = decidedOnly();
     const discharged = candidates.filter((id) => states.get(id) === "pending" && unitChunks.length > 0 && unitChunks.every((slot) => slot.answered.has(id)));
@@ -42516,6 +42630,7 @@ function preparePass(paths, evidence, selected, model) {
 async function resolveContextFiles(request, evaluate = evaluateChoices, passCount = 2) {
   if (![1, 2, 3].includes(passCount)) throw new Error("invalid-context-pass-count");
   const { configured, resolved, repository, commit } = request;
+  const rate = request.rate ?? new RateController();
   const active = new Set(Object.keys(configured.tasks).filter((id) => configured.tasks[id].resolve_context_files === true && !resolved.metadata.tasks[id]?.incomplete));
   const originalEvidence = new Map([...active].map((id) => [id, structuredClone(resolved.selection.tasks[id].evidence)]));
   const anchors = Object.entries(resolved.jobContexts ?? {}).map(([id, job]) => ({ id, evidence: job.evidence, taskIds: job.taskIds.filter((id2) => active.has(id2)) }));
@@ -42593,7 +42708,8 @@ async function resolveContextFiles(request, evaluate = evaluateChoices, passCoun
               }
             }
             const started = performance.now();
-            reservation?.commit();
+            let dispatched;
+            const release = await rate.acquire();
             try {
               const result = await evaluate({
                 model: configured.model,
@@ -42609,20 +42725,26 @@ async function resolveContextFiles(request, evaluate = evaluateChoices, passCoun
               call.model = result.model;
               call.usage = result.usage;
               call.status = "completed";
+              if (result.transport) dispatched = { attempts: result.transport.attempts, sentBytes: result.transport.sent_bytes };
+              rate.noteSuccess();
             } catch (error) {
               failure = error instanceof JevError ? error.code : "jev-error";
+              if (failure === "jev-rate-limited") rate.noteRateLimit();
               call.status = "failed";
               call.error = failure;
               if (error instanceof JevError) {
                 call.model = error.metadata.model;
                 call.usage = error.metadata.usage;
+                if (error.metadata.transport) dispatched = { attempts: error.metadata.transport.attempts, sentBytes: error.metadata.transport.sent_bytes };
               }
             } finally {
+              release();
               call.duration_ms = performance.now() - started;
+              reservation?.commit(dispatched);
             }
           }
         }
-        await Promise.all(Array.from({ length: Math.min(3, prepared.length) }, worker));
+        await Promise.all(Array.from({ length: Math.max(1, Math.min(rate.ceiling, prepared.length)) }, worker));
         for (const call of pass.calls) if (call.status === "not-started") call.error = failure ?? "jev-timeout";
         if (failure) throw new ContextFailure(failure);
         const retained = /* @__PURE__ */ new Map();
@@ -42726,6 +42848,7 @@ var EMPTY_COUNTERS = {
   observation_bytes: 0,
   jev_calls: 0,
   analysis_bytes: 0,
+  attempts: 0,
   limits_reached: []
 };
 var UNIT_ENTRIES = 16;
@@ -42895,6 +43018,7 @@ async function planChange(inputs, context, dependencies = {}) {
     let contextResolution = {};
     if (manifest && repository && budget && analysisTaskIds.length) {
       const activeBudget = budget;
+      const rate = new RateController();
       const callStarted = performance.now();
       try {
         contextResolution = await resolveContextFiles({
@@ -42905,6 +43029,7 @@ async function planChange(inputs, context, dependencies = {}) {
           apiKey: inputs.apiKey,
           deadline: activeBudget.limits.deadline,
           budget: activeBudget,
+          rate,
           apiBaseUrl: api.baseURL,
           apiModel: requestedModel
         }, dependencies.evaluateContext ?? evaluateChoices);
@@ -42917,6 +43042,7 @@ async function planChange(inputs, context, dependencies = {}) {
           changeIds: manifest.entries.map((entry) => entry.id),
           patches: patchStream(repository, manifest.comparison, manifest.entries, activeBudget),
           budget: activeBudget,
+          rate,
           apiBaseUrl: api.baseURL,
           apiModel: requestedModel,
           apiKey: inputs.apiKey,

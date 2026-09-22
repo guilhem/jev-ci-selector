@@ -1,9 +1,22 @@
 import { InputError } from './input-error.js';
-import { APITimeoutError, choice, TypeSafeClient, type EntryType } from '@typesafe-ai/sdk';
+import { APIError, APITimeoutError, choice, RateLimitError, TypeSafeClient, type EntryType } from '@typesafe-ai/sdk';
 import type { ResolvedSelection } from './tasks.js';
 
 export interface Usage { input_tokens: number; output_tokens: number }
-export interface JevMetadata { model: string | null; usage: Usage | null }
+/**
+ * What one logical call really cost at the transport.
+ *
+ * The SDK may retry a request several times; a budget that charged the single
+ * reservation taken before dispatch would then under-count what was actually
+ * sent. These are measured from the bodies really written and the statuses
+ * really received, never inferred from the reservation.
+ */
+export interface TransportRecord {
+  attempts: number;
+  sent_bytes: number;
+  statuses: number[];
+}
+export interface JevMetadata { model: string | null; usage: Usage | null; transport?: TransportRecord }
 export interface JevResult extends JevMetadata { answers: Record<string, ChoiceJudgment> }
 export interface JevApiOptions { apiBaseUrl?: string; apiModel?: string }
 export interface ChoiceJudgment {
@@ -25,8 +38,9 @@ export function resolveJevApi(options: JevApiOptions) {
   return { baseURL: url.href.replace(/\/+$/, ''), model };
 }
 
+export type JevErrorCode = 'jev-timeout' | 'jev-error' | 'invalid-response' | 'jev-rate-limited';
 export class JevError extends Error {
-  constructor(public readonly code: 'jev-timeout' | 'jev-error' | 'invalid-response',
+  constructor(public readonly code: JevErrorCode,
     public readonly metadata: JevMetadata = { model: null, usage: null }) { super(code); }
 }
 const record = (value: unknown): value is Record<string, unknown> =>
@@ -105,12 +119,41 @@ export function buildQuestions(selection: ResolvedSelection, taskIds: string[]) 
 }
 
 type JevFetch = (url: string, init?: RequestInit) => Promise<Response>;
+
+/** Counts what the transport really wrote and received for one logical call. */
+function transportMeter() {
+  const record: TransportRecord = { attempts: 0, sent_bytes: 0, statuses: [] };
+  const observe = (fetchImpl: JevFetch | undefined): JevFetch => async (url, init) => {
+    record.attempts += 1;
+    const body = init?.body;
+    if (typeof body === 'string') record.sent_bytes += Buffer.byteLength(body, 'utf8');
+    const response = await (fetchImpl ?? globalThis.fetch)(url, { ...init, redirect: 'error' });
+    record.statuses.push(response.status);
+    return response;
+  };
+  return { record, observe };
+}
+
+/**
+ * How many retries the remaining time can actually pay for.
+ *
+ * The SDK applies its timeout per attempt and keeps no total retry budget, so
+ * an unconditional `maxRetries: 2` could spend three attempt-timeouts against a
+ * deadline that only affords one. Retries are therefore bought only when the
+ * clock can cover them.
+ */
+function affordableRetries(remainingMs: number, attemptTimeoutMs: number): number {
+  if (remainingMs > 3 * attemptTimeoutMs) return 2;
+  if (remainingMs > 1.5 * attemptTimeoutMs) return 1;
+  return 0;
+}
+
 function createJevClient(api: ReturnType<typeof resolveJevApi>, apiKey: string, requestedModel: string,
-  timeoutMs: number, fetchImpl?: JevFetch) {
+  timeoutMs: number, fetchImpl: JevFetch) {
   // Explicit settings prevent SDK environment variables from redirecting data or enabling body logs.
   return new TypeSafeClient({ apiKey, baseURL: api.baseURL,
     defaultModel: requestedModel, logLevel: 'off', retry: { maxRetries: 0 }, timeout: timeoutMs,
-    fetch: (url, init) => (fetchImpl ?? globalThis.fetch)(url, { ...init, redirect: 'error' }) });
+    fetch: fetchImpl });
 }
 
 export async function evaluateJev(input: JevApiOptions & {
@@ -122,19 +165,40 @@ export async function evaluateJev(input: JevApiOptions & {
 
 export async function evaluateChoices(input: JevApiOptions & {
   model: string; state: EntryType; questions: Record<string, ReturnType<typeof choice>>; apiKey: string; timeoutMs: number;
+  /** Wall-clock budget for this call including its retries. Defaults to `timeoutMs`. */
+  totalMs?: number;
 }, fetchImpl?: JevFetch): Promise<JevResult> {
   const { model, state, questions, apiKey, timeoutMs } = input;
+  const totalMs = Math.max(1, input.totalMs ?? timeoutMs);
   const api = resolveJevApi(input);
   if (!Object.keys(questions).length) throw new Error('empty-jev-request');
   const requestedModel = api.model ?? model;
-  const client = createJevClient(api, apiKey, requestedModel, timeoutMs, fetchImpl);
-  const signal = AbortSignal.timeout(timeoutMs);
+  const meter = transportMeter();
+  const client = createJevClient(api, apiKey, requestedModel, timeoutMs, meter.observe(fetchImpl));
+  // The signal is the only total retry budget the SDK honours: it cancels the
+  // request and any pending retry once the wall clock is spent.
+  const signal = AbortSignal.timeout(totalMs);
   try {
-    const response: unknown = await client.systemOne({ model: requestedModel, state, questions },
-      { signal, timeout: timeoutMs, retry: { maxRetries: 0 } });
-    return validateChoicesResponse(response, questions, model);
+    const response: unknown = await client.systemOne({ model: requestedModel, state, questions }, {
+      signal, timeout: timeoutMs,
+      retry: {
+        maxRetries: affordableRetries(totalMs, timeoutMs),
+        respectRetryAfter: true,
+        maxRetryAfterMs: Math.min(60_000, totalMs),
+        // A slow provider is slow on every attempt; retrying triples the spend
+        // for nothing. Transient transport faults are worth another try.
+        apiTimeoutError: false,
+        apiConnectionError: true,
+      },
+    });
+    return { ...validateChoicesResponse(response, questions, model), transport: meter.record };
   } catch (error) {
-    if (error instanceof JevError) throw error;
-    throw new JevError(error instanceof APITimeoutError || signal.aborted ? 'jev-timeout' : 'jev-error');
+    if (error instanceof JevError) throw new JevError(error.code, { ...error.metadata, transport: meter.record });
+    const metadata = { model: null, usage: null, transport: meter.record };
+    if (error instanceof RateLimitError) throw new JevError('jev-rate-limited', metadata);
+    if (error instanceof APITimeoutError || signal.aborted) throw new JevError('jev-timeout', metadata);
+    // A 429 that outlived its retries can also surface as a plain APIError.
+    if (error instanceof APIError && error.status === 429) throw new JevError('jev-rate-limited', metadata);
+    throw new JevError('jev-error', metadata);
   }
 }

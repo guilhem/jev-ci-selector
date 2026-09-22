@@ -218,7 +218,7 @@ async function evaluateCase(item: ContextCase, passCount: PassCount, mode: 'offl
       return result;
     } catch (error) {
       const metadata = error instanceof JevError ? error.metadata : { model: null, usage: null };
-      finalCalls.push({ request_hash: requestHash, task_ids: [...request.taskIds].sort(), status: 'failed', model: metadata.model, usage: metadata.usage, duration_ms: performance.now() - callStart, error: error instanceof JevError ? error.code : 'jev-error' });
+      finalCalls.push({ request_hash: requestHash, task_ids: [...request.taskIds].sort(), status: 'failed', model: metadata.model, usage: metadata.usage, duration_ms: performance.now() - callStart, error: error instanceof JevError ? error.code as never : 'jev-error' });
       throw error;
     }
   };

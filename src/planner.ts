@@ -16,6 +16,7 @@ import {
 import { resolveContextFiles, type ContextResolutionReport } from './context.js';
 import { evaluateChoices } from './jev.js';
 import { AnalysisBudget, BudgetError, PATCH_UNIT_BYTES, type BudgetCounters } from './budget.js';
+import { RateController } from './concurrency.js';
 
 export interface Inputs extends JevApiOptions, SelectionDefinition {
   testedRef?: 'head' | 'merge';
@@ -86,7 +87,7 @@ const EMPTY_COUNTERS: BudgetCounters = {
   manifest_entries: null, patches_requested: 0, patches_read: 0,
   patch_bytes_read: 0, patch_bytes_delivered: 0,
   preparation_calls: 0, preparation_bytes: 0, observation_calls: 0, observation_bytes: 0,
-  jev_calls: 0, analysis_bytes: 0, limits_reached: [],
+  jev_calls: 0, analysis_bytes: 0, attempts: 0, limits_reached: [],
 };
 
 /** Entries grouped per read. Large files end up isolated by the halving retry. */
@@ -305,10 +306,13 @@ export async function planChange(inputs: Inputs, context: Context, dependencies:
     let contextResolution: ContextResolutionReport = {};
     if (manifest && repository && budget && analysisTaskIds.length) {
       const activeBudget = budget;
+      // One controller for preparation and observation together: a burst in one
+      // must not cause rate limiting the other pays for.
+      const rate = new RateController();
       const callStarted = performance.now();
       try {
         contextResolution = await resolveContextFiles({ configured: restrict(configured, analysisTaskIds), resolved,
-          repository, commit: metadataSha, apiKey: inputs.apiKey, deadline: activeBudget.limits.deadline, budget: activeBudget,
+          repository, commit: metadataSha, apiKey: inputs.apiKey, deadline: activeBudget.limits.deadline, budget: activeBudget, rate,
           apiBaseUrl: api.baseURL, apiModel: requestedModel }, dependencies.evaluateContext ?? evaluateChoices);
         // Preparation can settle a task too: an incomplete context makes it
         // mandatory. Drop it before a single patch byte is collected.
@@ -318,7 +322,7 @@ export async function planChange(inputs: Inputs, context: Context, dependencies:
           selection, taskIds: analysisTaskIds, workingDirectories: resolved.workingDirectories,
           changeIds: manifest.entries.map(entry => entry.id),
           patches: patchStream(repository, manifest.comparison, manifest.entries, activeBudget),
-          budget: activeBudget, apiBaseUrl: api.baseURL, apiModel: requestedModel, apiKey: inputs.apiKey,
+          budget: activeBudget, rate, apiBaseUrl: api.baseURL, apiModel: requestedModel, apiKey: inputs.apiKey,
           stopWhenSettled: inputs.mode !== 'shadow',
           state: { base_sha: manifest.comparison.diffBaseSha, head_sha: context.headSha, tested_sha: context.testedSha },
         }, dependencies.evaluate ?? evaluateJev);

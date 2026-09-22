@@ -2,10 +2,11 @@ import { createHash } from 'node:crypto';
 import { splitDiff, ChunkError } from './chunks.js';
 import { buildQuestions, validateChoicesResponse, JevError, type Usage, type evaluateJev, type ChoiceJudgment } from './jev.js';
 import { AnalysisBudget, BudgetError } from './budget.js';
+import { RateController } from './concurrency.js';
 import type { Reason } from './policy.js';
 import type { ResolvedSelection } from './tasks.js';
 
-type ObservationError = 'jev-timeout' | 'jev-error' | 'invalid-response';
+type ObservationError = 'jev-timeout' | 'jev-error' | 'invalid-response' | 'jev-rate-limited';
 type CallStatus = 'completed' | 'failed' | 'not-started' | 'not-needed';
 export interface ObservationCall {
   task_ids: string[];
@@ -82,6 +83,8 @@ export interface AnalysisRequest {
   apiModel?: string;
   maxGroupBytes?: number;
   concurrency?: number;
+  /** Shared with context preparation so both retreat together on a 429. */
+  rate?: RateController;
   /**
    * Stop asking about a task once its execution is acquired, and stop pulling
    * patch text once every task is settled. Disabled by the evaluation harness,
@@ -203,6 +206,7 @@ function batchesFor(taskIds: string[], questions: ReturnType<typeof buildQuestio
 export async function analyseChange(request: AnalysisRequest, evaluate: typeof evaluateJev): Promise<AnalysisOutcome> {
   const { budget } = request;
   const stopWhenSettled = request.stopWhenSettled !== false;
+  const rate = request.rate ?? new RateController();
   const candidates = [...new Set(request.taskIds)].sort();
   const states = new Map<string, TaskState>(candidates.map(id => [id, 'pending' as TaskState]));
   const taskErrors = new Map<string, Reason>();
@@ -337,7 +341,8 @@ export async function analyseChange(request: AnalysisRequest, evaluate: typeof e
               continue;
             }
             const started = performance.now();
-            reservation.commit();
+            let dispatched: { attempts: number; sentBytes: number } | undefined;
+            const release = await rate.acquire();
             try {
               const result = await evaluate({ selection: request.selection, taskIds, state: slot.state as never,
                 apiKey: request.apiKey, timeoutMs: Math.min(10000, remaining),
@@ -349,6 +354,8 @@ export async function analyseChange(request: AnalysisRequest, evaluate: typeof e
               buildQuestions(request.selection, taskIds), request.selection.model);
               slot.record.judgments = { ...slot.record.judgments, ...validated.answers };
               call.status = 'completed'; call.model = result.model; call.usage = result.usage;
+              if (result.transport) dispatched = { attempts: result.transport.attempts, sentBytes: result.transport.sent_bytes };
+              rate.noteSuccess();
               for (const [id, answer] of Object.entries(validated.answers)) {
                 if (answer.choice === 'required' || answer.choice === 'unresolved') settle(id, 'settled-run');
                 else if (answer.choice === 'independent') slot.answered.add(id);
@@ -356,14 +363,24 @@ export async function analyseChange(request: AnalysisRequest, evaluate: typeof e
             } catch (error) {
               if (!(error instanceof JevError)) throw error;
               call.status = 'failed'; call.error = error.code; failure ??= error.code;
+              if (error.code === 'jev-rate-limited') rate.noteRateLimit();
               call.model = error.metadata.model; call.usage = error.metadata.usage;
+              if (error.metadata.transport) dispatched = { attempts: error.metadata.transport.attempts, sentBytes: error.metadata.transport.sent_bytes };
               // Scope the failure to the tasks this call was carrying.
               for (const id of taskIds) settle(id, 'fallback-run', error.code);
-            } finally { call.duration_ms = performance.now() - started; }
+            } finally {
+              release();
+              call.duration_ms = performance.now() - started;
+              // Charge what the transport really wrote, retries included.
+              reservation.commit(dispatched);
+              if (dispatched) call.request_bytes = dispatched.sentBytes;
+            }
           }
         }
       };
-      const concurrency = Math.max(1, Math.min(request.concurrency ?? 3, unitChunks.length));
+      // The controller gates each dispatch, so the worker count only needs to
+      // be able to saturate it.
+      const concurrency = Math.max(1, Math.min(request.concurrency ?? rate.ceiling, unitChunks.length));
       await Promise.all(Array.from({ length: concurrency }, worker));
 
       // A group nobody needed any more is a success of the decision, not a
@@ -478,6 +495,9 @@ export async function observeChange(request: ObservationRequest, evaluate: typeo
     ...(request.apiBaseUrl ? { apiBaseUrl: request.apiBaseUrl } : {}),
     ...(request.apiModel ? { apiModel: request.apiModel } : {}),
     apiKey: request.apiKey, budget, state: shared,
+    // The evaluation harness characterises this path; its historical
+    // concurrency is part of what the recorded campaigns describe.
+    rate: new RateController(3, 3),
     stopWhenSettled: false, throwOnSizeError: true,
     patches: {
       next: async () => {

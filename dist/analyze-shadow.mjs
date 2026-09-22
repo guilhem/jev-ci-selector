@@ -7069,6 +7069,7 @@ var report_schema_default = {
                 "jev-timeout",
                 "jev-error",
                 "invalid-response",
+                "jev-rate-limited",
                 "context-too-large",
                 "chunked-observation",
                 "observation-only",
@@ -7127,6 +7128,7 @@ var report_schema_default = {
         "jev-timeout",
         "jev-error",
         "invalid-response",
+        "jev-rate-limited",
         "context-too-large",
         "diff-too-large",
         "unrepresentable-change",
@@ -7191,7 +7193,8 @@ var report_schema_default = {
         "patch_bytes_read",
         "patch_bytes_delivered",
         "changes_read",
-        "changes_total"
+        "changes_total",
+        "attempts"
       ],
       properties: {
         manifest_entries: {
@@ -7288,6 +7291,9 @@ var report_schema_default = {
             "null"
           ],
           minimum: 0
+        },
+        attempts: {
+          $ref: "#/definitions/counter"
         }
       }
     }
@@ -7399,6 +7405,7 @@ var report_schema_default = {
             "jev-timeout",
             "jev-error",
             "invalid-response",
+            "jev-rate-limited",
             null
           ]
         },
@@ -7644,6 +7651,7 @@ var report_schema_default = {
             "jev-timeout",
             "jev-error",
             "invalid-response",
+            "jev-rate-limited",
             null
           ]
         },
@@ -7672,7 +7680,8 @@ var report_schema_default = {
         "invalid-response",
         "git-read-failed",
         "context-too-large",
-        "analysis-budget-exceeded"
+        "analysis-budget-exceeded",
+        "jev-rate-limited"
       ]
     },
     choiceJudgment: {
