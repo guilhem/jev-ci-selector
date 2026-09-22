@@ -6904,14 +6904,12 @@ var report_schema_default = {
     "durations_ms",
     "usage",
     "tasks",
-    "skip_below",
     "tested_ref",
     "diff_base_sha",
     "job_metadata",
     "observation_error",
     "observation",
-    "context_resolution",
-    "judgment"
+    "context_resolution"
   ],
   properties: {
     version: {
@@ -7046,8 +7044,6 @@ var report_schema_default = {
               enum: [
                 "always",
                 "path-match",
-                "jev-below-threshold",
-                "jev-at-or-above-threshold",
                 "jev-independent",
                 "jev-not-independent",
                 "shadow-mode",
@@ -7137,17 +7133,6 @@ var report_schema_default = {
     selection_hash: {
       type: "string",
       pattern: "^[a-f0-9]{64}$"
-    },
-    skip_below: {
-      type: "number",
-      minimum: 0,
-      maximum: 1
-    },
-    judgment: {
-      enum: [
-        "noul",
-        "choice"
-      ]
     }
   },
   definitions: {
@@ -7183,17 +7168,6 @@ var report_schema_default = {
         }
       ]
     },
-    probabilities: {
-      type: "object",
-      propertyNames: {
-        pattern: "^[A-Za-z_][A-Za-z0-9_-]{0,63}$"
-      },
-      additionalProperties: {
-        type: "number",
-        minimum: 0,
-        maximum: 1
-      }
-    },
     observationChunk: {
       type: "object",
       additionalProperties: false,
@@ -7205,7 +7179,7 @@ var report_schema_default = {
         "state_hash",
         "diff_bytes",
         "status",
-        "probabilities",
+        "judgments",
         "model",
         "usage",
         "duration_ms",
@@ -7241,16 +7215,6 @@ var report_schema_default = {
             "completed",
             "failed",
             "not-started"
-          ]
-        },
-        probabilities: {
-          anyOf: [
-            {
-              type: "null"
-            },
-            {
-              $ref: "#/definitions/probabilities"
-            }
           ]
         },
         model: {
@@ -7292,7 +7256,10 @@ var report_schema_default = {
           }
         },
         judgments: {
-          type: "object",
+          type: [
+            "object",
+            "null"
+          ],
           propertyNames: {
             pattern: "^[A-Za-z_][A-Za-z0-9_-]{0,63}$"
           },

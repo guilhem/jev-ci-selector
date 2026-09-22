@@ -1,7 +1,6 @@
 import { createHash } from 'node:crypto';
 import { splitDiff, ChunkError } from './chunks.js';
-import { buildQuestions, buildChoiceQuestions, validateChoicesResponse, JevError, type Usage, type evaluateJev, questionIdsForTask, type QuestionMode, type ChoiceJudgment } from './jev.js';
-import type { Judgment } from './tasks.js';
+import { buildQuestions, validateChoicesResponse, JevError, type Usage, type evaluateJev, type ChoiceJudgment } from './jev.js';
 
 type ObservationError = 'jev-timeout' | 'jev-error' | 'invalid-response';
 export interface ObservationCall {
@@ -21,8 +20,7 @@ export interface ObservationChunk {
   diff_bytes: number;
   paths?: string[];
   status: 'completed' | 'failed' | 'not-started';
-  probabilities: Record<string, number> | null;
-  judgments?: Record<string, ChoiceJudgment>;
+  judgments: Record<string, ChoiceJudgment> | null;
   model: string | null;
   usage: Usage | null;
   duration_ms: number | null;
@@ -51,7 +49,7 @@ export const REQUEST_BYTES = 128 * 1024;
 const MAX_CHUNKS = 64;
 
 function prepareStates(request: ObservationRequest) {
-  const questions = buildQuestions(request.selection, request.taskIds, request.questionMode);
+  const questions = buildQuestions(request.selection, request.taskIds);
   const longestQuestion = Math.max(0, ...Object.values(questions).map(bytes));
   const { diff, changed_paths: _allPaths, ...shared } = request.state;
   // Prefer ~20 KiB groups; reduce them when a job's real metadata needs more room.
@@ -76,12 +74,12 @@ function prepareStates(request: ObservationRequest) {
   throw new ObservationSizeError('context-too-large');
 }
 
-function questionBatches(taskIds: string[], questions: ReturnType<typeof buildQuestions>, state: unknown, mode: QuestionMode = 'single'): string[][] {
+function questionBatches(taskIds: string[], questions: ReturnType<typeof buildQuestions>, state: unknown): string[][] {
   const batches: string[][] = [];
   let batch: string[] = [];
   for (const id of [...taskIds].sort()) {
     const candidate = [...batch, id];
-    if (batch.length && bytes(state) + bytes(Object.fromEntries(candidate.flatMap(id => questionIdsForTask(id, mode).map(key => [key, questions[key]])))) > REQUEST_BYTES) {
+    if (batch.length && bytes(state) + bytes(Object.fromEntries(candidate.map(id => [id, questions[id]]))) > REQUEST_BYTES) {
       batches.push(batch); batch = [];
     }
     batch.push(id);
@@ -100,13 +98,12 @@ const singleModel = (models: Array<string | null>): string | null => {
 };
 
 export async function observeChange(request: ObservationRequest, evaluate: typeof evaluateJev) {
-  if (request.selection.judgment === 'choice') request = { ...request, questionMode: 'single' };
   const { states, questions } = prepareStates(request);
   const observation: Observation = { strategy: states.length === 1 ? 'whole-diff' : 'chunked-diff', status: 'incomplete',
     chunks: states.map((part, index) => ({ index, start_byte: part.startByte, end_byte: part.endByte, paths: part.paths,
       diff_hash: hash(part.diff), state_hash: hash(JSON.stringify(part.state)), diff_bytes: Buffer.byteLength(part.diff),
-      status: 'not-started', probabilities: null, model: null, usage: null, duration_ms: null, error: null,
-      requests: questionBatches(request.taskIds, questions, part.state, request.questionMode).map(task_ids => ({ task_ids,
+      status: 'not-started', judgments: null, model: null, usage: null, duration_ms: null, error: null,
+      requests: questionBatches(request.taskIds, questions, part.state).map(task_ids => ({ task_ids,
         status: 'not-started', model: null, usage: null, duration_ms: null, error: null })) })) };
   const calls = observation.chunks.flatMap(chunk => chunk.requests!.map(call => ({ chunk, call })));
   const deadline = performance.now() + request.timeoutMs;
@@ -122,16 +119,10 @@ export async function observeChange(request: ObservationRequest, evaluate: typeo
         const result = await evaluate({ ...request, taskIds: call.task_ids, state: states[chunk.index]!.state,
           timeoutMs: Math.min(10000, remaining) });
         // Injected evaluators must honor the same per-request answer contract as the SDK.
-        if (request.selection.judgment === 'choice') {
-          const validated = validateChoicesResponse({ ...result,
-            answers: Object.fromEntries(Object.entries(result.judgments ?? {}).map(([id, answer]) => [id, { ...answer, type: 'choice' }])) },
-          buildChoiceQuestions(request.selection, call.task_ids), request.selection.model);
-          chunk.judgments = { ...chunk.judgments, ...validated.answers };
-        } else {
-          if (Object.keys(result.probabilities).sort().join('\0') !== call.task_ids.flatMap(id => questionIdsForTask(id, request.questionMode)).sort().join('\0') ||
-            Object.values(result.probabilities).some(value => !Number.isFinite(value) || value < 0 || value > 1)) throw new JevError('invalid-response');
-          chunk.probabilities = { ...chunk.probabilities, ...result.probabilities };
-        }
+        const validated = validateChoicesResponse({ ...result,
+          answers: Object.fromEntries(Object.entries(result.answers ?? {}).map(([id, answer]) => [id, { ...answer, type: 'choice' }])) },
+        buildQuestions(request.selection, call.task_ids), request.selection.model);
+        chunk.judgments = { ...chunk.judgments, ...validated.answers };
         call.status = 'completed';
         call.model = result.model; call.usage = result.usage;
       } catch (error) {
@@ -159,21 +150,16 @@ export async function observeChange(request: ObservationRequest, evaluate: typeo
   observation.status = observation.chunks.every(chunk => chunk.status === 'completed') ? 'complete' : 'incomplete';
   // Compose boolean decisions, never a synthetic global probability. A failed batch
   // does not erase complete evidence for other jobs sharing the same group.
-  const decisions = decisionsFromObservation(observation, request.taskIds, request.selection.skip_below, request.questionMode, request.selection.judgment);
+  const decisions = decisionsFromObservation(observation, request.taskIds);
   return { observation, decisions, failure, model: singleModel(calls.map(({ call }) => call.model)),
     usage: addUsage(calls.map(({ call }) => call.usage)) };
 }
 
 /** Boolean composition only: raw judgments remain unchanged. */
-export function decisionsFromObservation(observation: Observation, taskIds: string[], threshold: number, mode: QuestionMode = 'single', judgment: Judgment = 'noul') {
+export function decisionsFromObservation(observation: Observation, taskIds: string[]) {
   return Object.fromEntries(taskIds.map(id => {
-    if (judgment === 'choice') {
-      const choices = observation.chunks.map(chunk => chunk.judgments?.[id]?.choice);
-      return [id, choices.some(value => value === 'required' || value === 'unresolved') ? true
-        : choices.length > 0 && choices.every(value => value === 'independent') ? false : null];
-    }
-    const scores = observation.chunks.flatMap(chunk => questionIdsForTask(id, mode).map(key => chunk.probabilities?.[key]));
-    return [id, scores.some(score => score !== undefined && score >= threshold) ? true
-      : scores.length > 0 && scores.every(score => score !== undefined) ? false : null];
+    const choices = observation.chunks.map(chunk => chunk.judgments?.[id]?.choice);
+    return [id, choices.some(value => value === 'required' || value === 'unresolved') ? true
+      : choices.length > 0 && choices.every(value => value === 'independent') ? false : null];
   }));
 }

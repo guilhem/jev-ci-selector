@@ -10,11 +10,11 @@ test('shadow measurement joins by exact SHA and distinguishes regressions, flaky
   const directory = await mkdtemp(join(tmpdir(), 'jev-shadow-test-'));
   try {
     const tasks = Object.fromEntries(['build', 'e2e', 'helm', 'prepare', 'unit'].map(id => [id, {
-      proposed_run: id === 'unit', run: true, reasons: [id === 'unit' ? 'always' : 'jev-below-threshold', 'shadow-mode'],
+      proposed_run: id === 'unit', run: true, reasons: [id === 'unit' ? 'always' : 'jev-independent', 'shadow-mode'],
     }]));
-    const report = { version: 7, judgment: 'noul', metadata_sha: 'a'.repeat(40), base_sha: 'a'.repeat(40), head_sha: 'b'.repeat(40), tested_sha: 'c'.repeat(40),
+    const report = { version: 7, metadata_sha: 'a'.repeat(40), base_sha: 'a'.repeat(40), head_sha: 'b'.repeat(40), tested_sha: 'c'.repeat(40),
       tested_ref: 'merge', diff_base_sha: 'a'.repeat(40), job_metadata: {}, observation: null, observation_error: null,
-      selection_hash: 'd'.repeat(64), skip_below: 0.05, diff_hash: 'e'.repeat(64), diff_bytes: 1, changed_path_count: 1, mode: 'shadow', status: 'planned',
+      selection_hash: 'd'.repeat(64), diff_hash: 'e'.repeat(64), diff_bytes: 1, changed_path_count: 1, mode: 'shadow', status: 'planned',
       model: { requested: 'provider/alias', expected: 'jev-1.13.0', returned: 'jev-1.13.0' }, durations_ms: { collection: 1, jev: 1, total: 2 },
       usage: { input_tokens: 1, output_tokens: 1 }, tasks, context_resolution: {} };
     validateReport(report);

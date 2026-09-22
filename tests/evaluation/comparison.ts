@@ -11,8 +11,6 @@ export interface ComparisonDelta {
 
 interface SummaryRow {
   context: string;
-  questions: string;
-  threshold: number;
   runs: number;
   incomplete_runs: number;
   metrics: {
@@ -39,18 +37,17 @@ interface CampaignManifest {
   cases: Array<{ id: string; split: string; caseFingerprint: string }>;
   variants: unknown[];
   repeats: number;
-  thresholds: number[];
   sdk: { package: string; version: string; model: string | null };
   selection?: unknown;
 }
 
 interface ComparableSettings {
+  version: number;
   split: string | null;
   corpusFingerprint: string;
   cases: CampaignManifest['cases'];
   variants: unknown[];
   repeats: number;
-  thresholds: number[];
   sdk: CampaignManifest['sdk'];
   selection?: unknown;
 }
@@ -93,12 +90,12 @@ export interface CampaignComparison {
 
 function settings(manifest: CampaignManifest): ComparableSettings {
   const result: ComparableSettings = {
+    version: manifest.version,
     split: manifest.split,
     corpusFingerprint: manifest.corpusFingerprint,
     cases: [...manifest.cases].sort((left, right) => left.id.localeCompare(right.id)),
     variants: manifest.variants,
     repeats: manifest.repeats,
-    thresholds: [...manifest.thresholds].sort((left, right) => left - right),
     sdk: manifest.sdk,
   };
   if (manifest.split === 'validation') result.selection = manifest.selection;
@@ -108,7 +105,7 @@ function settings(manifest: CampaignManifest): ComparableSettings {
 function guard(baseline: ComparableSettings | null, current: ComparableSettings): { comparable: boolean; reasons: string[] } {
   if (!baseline) return { comparable: false, reasons: ['baseline-not-found'] };
   const reasons: string[] = [];
-  for (const key of ['split', 'corpusFingerprint', 'cases', 'variants', 'repeats', 'thresholds', 'sdk', 'selection'] as const) {
+  for (const key of ['version', 'split', 'corpusFingerprint', 'cases', 'variants', 'repeats', 'sdk', 'selection'] as const) {
     if (canonicalJson(baseline[key] ?? null) !== canonicalJson(current[key] ?? null)) reasons.push(`settings:${key}`);
   }
   return { comparable: reasons.length === 0, reasons };
@@ -123,7 +120,7 @@ function sumRows(rows: SummaryRow[], field: 'relevantMisses' | 'correctIrrelevan
 }
 
 function rowKey(row: SummaryRow): string {
-  return `${row.context}/${row.questions}/${row.threshold}`;
+  return row.context;
 }
 
 export function compareCampaignData(
@@ -201,13 +198,13 @@ export async function compareCampaigns(baselinePath: string | null, currentPath:
   return compareCampaignData(baselinePath, currentPath, baselineManifest, currentManifest, baselineSummary, currentSummary);
 }
 
-export async function resolveBaselineCampaign(root: string, split: 'calibration' | 'validation', explicitPath?: string): Promise<string | null> {
-  const candidate = resolve(explicitPath ?? join(root, 'recordings', split));
+export async function resolveBaselineCampaign(explicitPath?: string): Promise<string | null> {
+  if (!explicitPath) return null;
+  const candidate = resolve(explicitPath);
   try {
     await access(join(candidate, 'manifest.json'));
     return candidate;
   } catch (error) {
-    if (explicitPath) throw new Error(`baseline-not-found:${candidate}`);
-    return null;
+    throw new Error(`baseline-not-found:${candidate}`);
   }
 }

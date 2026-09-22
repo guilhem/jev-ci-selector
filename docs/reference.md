@@ -23,8 +23,6 @@ GitHub passes strings. Validation and normalization precede Git or HTTP access, 
 | `tasks` | Required | YAML table of task objects; no enclosing `tasks:` key |
 | `mode` | `enforce` | `enforce` applies selection; `shadow` keeps every task |
 | `model` | `jev-1.13.0` | Canonical version expected in the response, `jev-X.Y.Z` |
-| `skip-below` | `0.05` | Finite decimal in `[0, 1]`; strict exclusion threshold for Noul; unused with Choice |
-| `judgment` | `noul` | `noul` uses the threshold; experimental `choice` requires explicit independence |
 | `api-base-url` | `https://api.typesafe.ai` | HTTPS Jev System One root |
 | `api-model` | `model` | Provider identifier, possibly an alias |
 | `api-key` | Empty | Provider Bearer key; absent means no call and all tasks |
@@ -36,9 +34,9 @@ GitHub passes strings. Validation and normalization precede Git or HTTP access, 
 | `timeout-ms` | `10000` | Integer from 1 to 2147483647; shared context-preparation and final evaluation deadline |
 | `max-diff-bytes` | `65536` | Positive safe integer; complete UTF-8 diff limit |
 
-Boolean inputs accept only `true` and `false`; quote them in YAML. Integers use decimal integer syntax, without permissive suffix parsing. The threshold accepts decimal syntax, not NaN, infinity or suffixes. Zero is a valid threshold and prevents Noul-based exclusion; it has no effect on Choice.
+Boolean inputs accept only `true` and `false`; quote them in YAML. Integers use decimal integer syntax, without permissive suffix parsing.
 
-There are no per-task providers, budgets or thresholds, no file path interpretation of `tasks`, and no configuration source precedence.
+There are no per-task providers or budgets, no file path interpretation of `tasks`, and no configuration source precedence.
 
 ## Tasks
 
@@ -95,9 +93,9 @@ Task definitions are inputs of the executed workflow, not data reread from the b
 
 A `workflow_dispatch` with `pull-request` evaluates that open PR using the same pipeline. Other events keep every task without a Jev request. This includes push, schedule and merge groups; semantic selection on those events is not provided.
 
-With the default `judgment: noul`, an optional task is excluded only when all required observations are complete and their scores are strictly below `skip-below`. Equality retains the task. With experimental `judgment: choice`, each group is classified as `required`, `independent` or `unresolved`. Only `independent` for every group permits exclusion. `required` and `unresolved` retain the task; missing or invalid answers trigger the existing incomplete-observation fallback. The provider's selected option controls the decision; its raw distribution and confidence are preserved, without a numeric threshold or local argmax. Validate this opt-in in shadow on representative changes before using enforce.
+Jev classifies each change group as `required`, `independent` or `unresolved` for each task. Only `independent` for every group permits exclusion. `required` and `unresolved` retain the task; missing or invalid answers retain affected tasks through the incomplete-observation fallback. The provider's selected option controls the decision; its raw distribution and confidence are preserved without a numeric threshold or local argmax. Use shadow mode to assess selection on representative changes.
 
-`always`, matching task paths and workflow changes impose execution in both judgments. Workflow `needs` remains the only execution dependency mechanism: keep prerequisites mandatory where necessary.
+`always`, matching task paths and workflow changes impose execution. Workflow `needs` remains the only execution dependency mechanism: keep prerequisites mandatory where necessary.
 
 Forks, missing key or consent, and `force-all` bypass Jev and keep all tasks. Unusable diffs, deadlines and incompatible or incomplete responses retain tasks conservatively. Sources that are too large, unreadable or incomplete retain affected tasks; deterministic policy remains authoritative. Preparation failure is scoped to the affected resolved task: it is marked to run, its synthetic `always` reason is removed, `context-resolution-incomplete` is added, and the plan becomes `fallback` unless an existing bypass already controls it. Complete or explicitly unrelated tasks may still be skipped. Final observation incompleteness keeps the existing global fallback behavior. A requested but unavailable metadata reference retains the affected task; omitting references deliberately is valid. Shadow mode keeps all effective outputs true while recording proposals, and enforce mode applies the same conservative policy decisions.
 
@@ -124,14 +122,14 @@ Use `steps.select.outputs.unit == 'true'` within a job, or forward it through jo
 
 ## Report v7
 
-The report is persisted and validated before outputs are published. The [strict schema](../schemas/report.schema.json) is authoritative; historical report versions are rejected and the current analyzer accepts only v7. Version 7 identifies the final judgment and adds raw task Choice answers while keeping the report source-free.
+The report is persisted and validated before outputs are published. The [strict schema](../schemas/report.schema.json) is authoritative; historical report versions are rejected and the current analyzer accepts only v7. Version 7 records raw task Choice answers and removes the numeric selection threshold while keeping the report source-free.
 
 | Group | Fields |
 | --- | --- |
 | Version | `version: 7` |
 | Commits | `base_sha`, `head_sha`, `tested_sha`, `tested_ref`, `diff_base_sha` |
 | Metadata | `metadata_sha`, `job_metadata` |
-| Definition | `selection_hash`, `skip_below`, `judgment` |
+| Definition | `selection_hash` |
 | Diff | `diff_hash`, `diff_bytes`, `changed_path_count` |
 | Execution | `mode`, `status`, `durations_ms`, `usage` |
 | Model | `model.requested`, `model.expected`, `model.returned` |
@@ -139,11 +137,11 @@ The report is persisted and validated before outputs are published. The [strict 
 | Observations | `observation`, `observation_error` |
 | Context resolution | `context_resolution` |
 
-`metadata_sha` is the reference revision for metadata even when no task requests it. `selection_hash` is SHA-256 of canonical JSON `{ model, skip_below, tasks }` after normalization and defaults: recursively sorted object keys, preserved array order. Choice adds `judgment: "choice"` to that object; omitted and explicit Noul retain the same identity. YAML formatting does not change it.
+`metadata_sha` is the reference revision for metadata even when no task requests it. `selection_hash` is SHA-256 of canonical JSON `{ model, tasks }` after normalization and defaults: recursively sorted object keys, preserved array order. YAML formatting does not change it.
 
-Each task decision contains `proposed_run`, `run` and `reasons`. Scores live in observations by group, not in a synthetic global task probability. Observations include groups, requests, scores, errors, models, usages and durations. `context_resolution` records task IDs, complete or incomplete status, context errors, trusted source paths with SHA-256 hashes and preparation passes. Calls record paths, request hashes, status, judgments, model, usage, duration and a fixed error code. It contains no file contents, raw source, diffs, secrets or provider error text. An empty object represents disabled or bypassed context resolution.
+Each task decision contains `proposed_run`, `run` and `reasons`. Judgments live in observations by group. Observations include groups, requests, judgments, errors, models, usages and durations. `context_resolution` records task IDs, complete or incomplete status, context errors, trusted source paths with SHA-256 hashes and preparation passes. Calls record paths, request hashes, status, judgments, model, usage, duration and a fixed error code. It contains no file contents, raw source, diffs, secrets or provider error text. An empty object represents disabled or bypassed context resolution.
 
-For Choice, each observed chunk has `probabilities: null` and a `judgments` map of task IDs to `{ choice, probabilities, confidence }`. The exact three probability keys are `required`, `independent` and `unresolved`. Model-based policy reasons are `jev-independent` or `jev-not-independent`; Noul retains its threshold reasons. No cross-group probability is synthesized.
+Each observed chunk has a nullable `judgments` map of task IDs to `{ choice, probabilities, confidence }`. The exact three probability keys are `required`, `independent` and `unresolved`. Model-based policy reasons are `jev-independent` or `jev-not-independent`. No cross-group probability is synthesized.
 
 Context judgments use the `inspect`/`ignore`/`uncertain` or `keep`/`discard`/`uncertain` option sets, with bounded numeric probabilities and confidence. Preparation sources that are too large, unreadable or incomplete do not authorize skipping. The root `usage` includes preparation and final evaluation usage. Stable preparation bodies and request hashes make externally managed caching possible, but the action has no persistent cache and does not claim a performance result.
 

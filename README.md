@@ -86,11 +86,11 @@ If preparation is incomplete, affected tasks run and the report records `context
 
 When opting into discovery, consider `timeout-ms: '60000'` for the shared preparation and evaluation budget. The input default remains 10 seconds; larger trees can need a longer budget. Without opt-in, only job metadata and explicit context are used.
 
-A `false` output is a policy decision, not a guarantee that the task cannot detect a regression. The default threshold `0.05` is experimental. Changes to workflows retain all declared tasks. An invalid task definition fails selection without publishing a plan.
+A `false` output is a policy decision, not a guarantee that the task cannot detect a regression. Changes to workflows retain all declared tasks. An invalid task definition fails selection without publishing a plan.
 
 For precise descriptions and explicit context, use the [describe-ci-jobs skill](skills/describe-ci-jobs/SKILL.md). It follows the job's commands, tool configuration and local actions to describe its actual verification scope, independently of the current PR.
 
-To try the experimental categorical judgment, add `judgment: choice` alongside `mode: shadow`. Jev classifies each change group against each task as `required`, `independent` or `unresolved`. Only `independent` in every group permits skipping; `required` and `unresolved` retain the task. Raw choices, distributions and confidence appear in report v7. `skip-below` applies only to the default `judgment: noul`. Both judgments use the same explicit context and optional discovery.
+Jev classifies each change group against each task as `required`, `independent` or `unresolved`. Only `independent` in every group permits skipping; `required` and `unresolved` retain the task. Raw choices, distributions and confidence appear in report v7. There is no threshold to tune.
 
 ## Observe or customize
 

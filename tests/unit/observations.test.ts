@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { selection } from '../fixtures/selection.js';
+import { selection, judgment } from '../fixtures/selection.js';
 import { evaluateJev, buildQuestions, JevError, type JevResult } from '../../src/jev.js';
 import { patch } from '../fixtures/diff.js';
 import { observeChange } from '../../src/observations.js';
@@ -26,8 +26,8 @@ function request(diff: string, timeoutMs = 1_000): ObserveInput {
   };
 }
 
-function response(input: EvaluateInput, probability = 0, usage = { input_tokens: 3, output_tokens: 2 }): JevResult {
-  return { probabilities: Object.fromEntries(input.taskIds.map(id => [id, probability])), model: 'jev-1.13.0', usage };
+function response(input: EvaluateInput, choice: Parameters<typeof judgment>[0] = 'independent', usage = { input_tokens: 3, output_tokens: 2 }): JevResult {
+  return { answers: Object.fromEntries(input.taskIds.map(id => [id, judgment(choice)])), model: 'jev-1.13.0', usage };
 }
 
 function chunkState(input: EvaluateInput): ChunkState {
@@ -75,7 +75,7 @@ test('limits chunk scheduling to three, stops launching after failure, and retai
     if (started.length === 3) releaseThree();
     await threeStarted;
     if (index === 0) throw new JevError('jev-error', { model: 'jev-1.13.0', usage: { input_tokens: 11, output_tokens: 7 } });
-    if (index === 1 || index === 2) return response(input, 0.4, { input_tokens: 2, output_tokens: 1 });
+    if (index === 1 || index === 2) return response(input, 'required', { input_tokens: 2, output_tokens: 1 });
     throw new Error(`unexpected chunk ${index}`);
   });
   const result = await resultPromise;
@@ -92,16 +92,16 @@ test('limits chunk scheduling to three, stops launching after failure, and retai
   assert.equal(result.decisions.check, true);
 });
 
-test('retains raw group scores and composes only a boolean decision', async () => {
+test('retains raw group judgments and composes only a boolean decision', async () => {
   const diff = patch(1600);
   const result = await observeChange(request(diff), async input => {
     const index = chunkState(input).chunk!.index;
-    return response(input, index === 1 ? 0.9 : 0.01);
+    return response(input, index === 1 ? 'required' : 'independent');
   });
 
   assert.equal(result.observation.status, 'complete');
   assert.equal(result.decisions.check, true);
-  assert.ok(result.observation.chunks.some(chunk => chunk.probabilities?.check === 0.9));
+  assert.ok(result.observation.chunks.some(chunk => chunk.judgments?.check?.choice === 'required'));
   assert.ok(result.observation.chunks.every(chunk => chunk.status === 'completed'));
   assert.ok(!Object.hasOwn(result, 'probabilities'));
 });
@@ -146,14 +146,14 @@ test('batches real-sized independent questions and preserves other jobs after a 
   const result = await observeChange(value, async input => {
     calls.push(input.taskIds);
     if (input.taskIds.includes('d')) throw new JevError('jev-error');
-    return response(input, 0.01);
+    return response(input, 'independent');
   });
   assert.ok(calls.length > 1);
   assert.deepEqual(calls.flat().sort(), value.taskIds);
   assert.equal(result.decisions.a, false);
   assert.equal(result.decisions.d, null);
   assert.equal(result.observation.status, 'incomplete');
-  assert.equal(result.observation.chunks[0]!.probabilities?.a, 0.01);
+  assert.equal(result.observation.chunks[0]!.judgments?.a?.choice, 'independent');
   assert.ok(result.observation.chunks[0]!.requests!.some(call => call.status === 'failed'));
 });
 
@@ -165,70 +165,44 @@ test('group states exclude unrelated PR paths and repeated evaluations produce i
     const state = call.state as { changed_paths: string[]; diff: string; chunk: { preceding_diff_headers: string } };
     assert.equal(state.changed_paths.length, 1);
     assert.ok((state.diff + state.chunk.preceding_diff_headers).includes(state.changed_paths[0]!));
-    return response(call, state.changed_paths[0]!.startsWith('frontend') ? 0.2 : 0.01);
+    return response(call, state.changed_paths[0]!.startsWith('frontend') ? 'required' : 'independent');
   }));
   assert.deepEqual(outputs[0]!.decisions, outputs[1]!.decisions);
   assert.equal(outputs[0]!.decisions.check, true);
 });
 
-test('split judgments compose across dimensions and groups without changing raw scores', async () => {
-  const input = { ...request(patch(200)), questionMode: 'split' as const, maxGroupBytes: 1024 };
-  const result = await observeChange(input, async call => ({
-    probabilities: { 'check::behavior': 0.01, 'check::verification': chunkState(call).chunk!.index === 1 ? 0.7 : 0.02 },
-    model: 'jev-1.13.0', usage: { input_tokens: 1, output_tokens: 2 },
-  }));
-  assert.ok(result.observation.chunks.length > 1);
-  assert.equal(result.decisions.check, true);
-  assert.deepEqual(result.observation.chunks[1]!.probabilities, { 'check::behavior': 0.01, 'check::verification': 0.7 });
-  const low = await observeChange(input, async () => ({
-    probabilities: { 'check::behavior': 0.01, 'check::verification': 0.02 }, model: 'jev-1.13.0', usage: null,
-  }));
-  assert.equal(low.decisions.check, false);
-  const missing = await observeChange(input, async () => ({ probabilities: { 'check::behavior': 0.01 }, model: 'jev-1.13.0', usage: null }));
-  assert.equal(missing.decisions.check, null);
-  assert.equal(missing.failure, 'invalid-response');
-});
-
-test('split-question batches respect serialized request limits and keep both dimensions together', async () => {
-  const value = { ...request(patch()), questionMode: 'split' as const };
-  value.selection.tasks = Object.fromEntries(['alpha', 'beta', 'gamma'].map(id => [id, { evidence: { description: `${id}: ${'scope '.repeat(4500)}` } }]));
-  value.taskIds = ['alpha', 'beta', 'gamma'];
+test('question batches respect serialized request limits through the SDK', async () => {
+  const value = request(patch());
+  value.selection.tasks = Object.fromEntries(['alpha', 'beta', 'gamma', 'delta'].map(id => [id, { evidence: { description: `${id}: ${'scope '.repeat(7400)}` } }]));
+  value.taskIds = ['alpha', 'beta', 'gamma', 'delta'];
   let calls = 0;
   const result = await observeChange(value, call => evaluateJev(call, async (_url, init) => {
     calls++;
     const body = JSON.parse(init!.body as string);
     assert.ok(Buffer.byteLength(JSON.stringify(body.state)) + Buffer.byteLength(JSON.stringify(body.questions)) <= 128 * 1024);
     for (const id of call.taskIds) {
-      assert.ok(body.questions[`${id}::behavior`]);
-      assert.ok(body.questions[`${id}::verification`]);
+      assert.equal(body.questions[id].type, 'choice');
     }
-    return Response.json({ model: 'jev-1.13.0', answers: Object.fromEntries(Object.keys(body.questions).map(id => [id, { type: 'noul', noul: 0.01 }])), usage: { input_tokens: 1, output_tokens: 1 } });
+    return Response.json({ model: 'jev-1.13.0', answers: Object.fromEntries(Object.keys(body.questions).map(id => [id, { type: 'choice', ...judgment() }])), usage: { input_tokens: 1, output_tokens: 1 } });
   }));
   assert.ok(calls > 1);
-  assert.deepEqual(result.decisions, { alpha: false, beta: false, gamma: false });
+  assert.deepEqual(result.decisions, { alpha: false, beta: false, gamma: false, delta: false });
 });
 
 
-test('strict thresholds retain equality and zero threshold', async () => {
-  for (const [score, expected] of [[0, false], [0.04999, false], [0.05, true], [1, true]] as const) {
-    const result = await observeChange(request(patch()), async input => response(input, score));
-    assert.equal(result.decisions.check, expected);
-  }
-  const input = request(patch()); input.selection.skip_below = 0;
-  assert.equal((await observeChange(input, async call => response(call, 0))).decisions.check, true);
-});
-test('malformed scores cannot justify exclusion', async () => {
-  for (const score of [undefined, null, '0.01', NaN, Infinity, -0.1, 1.1]) {
-    const result = await observeChange(request(patch()), async () => ({ probabilities: { check: score } as never, model: 'jev-1.13.0', usage: null }));
-    assert.notEqual(result.decisions.check, false);
+test('malformed injected judgments cannot justify exclusion', async () => {
+  for (const answer of [undefined, null, 'independent', { ...judgment(), choice: 'other' },
+    { ...judgment(), confidence: NaN }, { ...judgment(), probabilities: { independent: 1 } }]) {
+    const result = await observeChange(request(patch()), async () => ({ answers: { check: answer } as never,
+      model: 'jev-1.13.0', usage: { input_tokens: 1, output_tokens: 1 } }));
+    assert.equal(result.decisions.check, null);
+    assert.equal(result.failure, 'invalid-response');
     assert.equal(result.observation.status, 'incomplete');
   }
 });
 
 test('Choice needs independence in every group; required, unresolved and incomplete evidence retain the task', async () => {
   const input = { ...request(patch(200)), maxGroupBytes: 1024 };
-  input.selection.judgment = 'choice';
-  input.selection.skip_below = 0; // Noul's threshold must not govern a Choice.
   for (const [answer, expected] of [['independent', false], ['required', true], ['unresolved', true], ['missing', null], ['invalid', null], ['timeout', null]] as const) {
     const result = await observeChange(input, call => evaluateJev(call, async (_url, init) => {
       const body = JSON.parse(init!.body as string);
@@ -243,7 +217,7 @@ test('Choice needs independence in every group; required, unresolved and incompl
     }));
     assert.ok(result.observation.chunks.length > 1);
     assert.equal(result.decisions.check, expected, answer);
-    assert.ok(result.observation.chunks.every(chunk => chunk.probabilities === null));
+    assert.ok(result.observation.chunks.every(chunk => !Object.hasOwn(chunk, 'probabilities')));
     if (expected === null) assert.equal(result.observation.status, 'incomplete');
     else {
       assert.equal(result.observation.status, 'complete');

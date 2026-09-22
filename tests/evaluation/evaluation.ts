@@ -8,13 +8,12 @@ import { execFile } from 'node:child_process';
 import { parseSelectionInputs, type SelectionDefinition, type ResolvedSelection } from '../../src/tasks.js';
 import { resolveTasks, type SelectionMetadata, type ResolveTasksResult } from '../../src/metadata.js';
 import { actionOutputs } from '../../src/report.js';
-import { globalPathReason, selectTasks, type ExecutionPlan, type ForceAllReason, type TaskDecision } from '../../src/policy.js';
+import { globalPathReason, selectTasks, type ExecutionPlan, type TaskDecision } from '../../src/policy.js';
 import { decisionsFromObservation, observeChange, ObservationSizeError, type Observation } from '../../src/observations.js';
 import { splitDiff } from '../../src/chunks.js';
-import { evaluateJev, type JevResult, type QuestionMode } from '../../src/jev.js';
+import { evaluateJev, type JevResult } from '../../src/jev.js';
 
 const execFileAsync = promisify(execFile);
-export const THRESHOLDS = [0.05, 0.1, 0.2, 0.3, 0.5] as const;
 export const NATURAL_GROUP_BYTES = 48 * 1024;
 export const PARTITIONED_GROUP_BYTES = 8 * 1024;
 export const DEFAULT_REPORT_PATH = 'evaluation-report.json';
@@ -69,7 +68,6 @@ export interface ExternalAction {
 
 export interface EvaluationVariant {
   context: ContextVariant;
-  questionMode: QuestionMode;
   grouping: GroupingVariant;
   maxGroupBytes: number;
 }
@@ -104,7 +102,7 @@ export class ReplayStaleError extends Error {
   }
 }
 
-export interface ThresholdMetrics {
+export interface SelectionMetrics {
   relevant: number;
   relevantMisses: number;
   irrelevant: number;
@@ -114,18 +112,17 @@ export interface ThresholdMetrics {
   mismatches: number;
 }
 
-export interface ThresholdEvaluation {
-  threshold: number;
+export interface PolicyEvaluation {
   decisions: Record<string, boolean | null>;
   proposed: Record<string, boolean | null>;
   effective: Record<string, boolean>;
   tasks: { proposed: Record<string, TaskDecision>; effective: Record<string, TaskDecision> };
   actionOutputs: { proposed: Record<string, string>; effective: Record<string, string> };
-  metrics: ThresholdMetrics;
+  metrics: SelectionMetrics;
 }
 
 export interface EvaluationRecord {
-  version: 1;
+  version: 2;
   runId: string;
   source: {
     caseId: string;
@@ -145,30 +142,29 @@ export interface EvaluationRecord {
   observation: Observation | null;
   observationError: string | null;
   policy: { bypass: boolean; reason: string | null };
-  thresholds: Record<string, ThresholdEvaluation>;
+  evaluation: PolicyEvaluation;
   error: string | null;
 }
 
 export interface Selection {
-  version: 1;
+  version: 2;
   sourceSplit: 'calibration';
   corpusFingerprint: string;
   qualified: boolean;
-  selected: { context: ContextVariant; questionMode: QuestionMode; threshold: number };
-  metrics: ThresholdMetrics & { runs: number; completeRuns: number; failedRuns: number; variant: string };
+  selected: { context: ContextVariant };
+  metrics: SelectionMetrics & { runs: number; completeRuns: number; failedRuns: number; variant: string };
   exploratory: boolean;
   caseIds?: string[];
 }
 
 export interface CampaignManifest {
-  version: 1;
+  version: 2;
   command: 'live' | 'replay';
   split: EvaluationSplit | null;
   corpusFingerprint: string;
   cases: Array<{ id: string; split: EvaluationSplit; caseFingerprint: string }>;
   variants: EvaluationVariant[];
   repeats: number;
-  thresholds: number[];
   sdk: { package: string; version: string; model: string | null };
   created: string;
   updated: string;
@@ -377,8 +373,8 @@ function effectiveMap(plan: ExecutionPlan): Record<string, boolean> {
   return { ...plan.run };
 }
 
-export function metricsForLabels(expected: Record<string, ExpectedLabel>, proposed: Record<string, boolean | null>): ThresholdMetrics {
-  const metrics: ThresholdMetrics = { relevant: 0, relevantMisses: 0, irrelevant: 0, correctIrrelevantOmissions: 0, irrelevantRetained: 0, unknown: 0, mismatches: 0 };
+export function metricsForLabels(expected: Record<string, ExpectedLabel>, proposed: Record<string, boolean | null>): SelectionMetrics {
+  const metrics: SelectionMetrics = { relevant: 0, relevantMisses: 0, irrelevant: 0, correctIrrelevantOmissions: 0, irrelevantRetained: 0, unknown: 0, mismatches: 0 };
   for (const [id, label] of Object.entries(expected)) {
     const value = proposed[id];
     if (label.relevance === 'unknown') { metrics.unknown += 1; continue; }
@@ -394,7 +390,7 @@ export function metricsForLabels(expected: Record<string, ExpectedLabel>, propos
   return metrics;
 }
 
-function mergeMetrics(values: ThresholdMetrics[]): ThresholdMetrics {
+function mergeMetrics(values: SelectionMetrics[]): SelectionMetrics {
   return values.reduce((total, item) => ({ relevant: total.relevant + item.relevant, relevantMisses: total.relevantMisses + item.relevantMisses,
     irrelevant: total.irrelevant + item.irrelevant, correctIrrelevantOmissions: total.correctIrrelevantOmissions + item.correctIrrelevantOmissions,
     irrelevantRetained: total.irrelevantRetained + item.irrelevantRetained, unknown: total.unknown + item.unknown, mismatches: total.mismatches + item.mismatches }),
@@ -496,7 +492,7 @@ async function observationFor(
   let evaluationError: string | null = null;
   try {
     const request = { selection: resolved.selection, taskIds, workingDirectories: resolved.resolved.workingDirectories,
-      ...(apiBaseUrl ? { apiBaseUrl } : {}), ...(apiModel ? { apiModel } : {}), apiKey, timeoutMs: 120_000, questionMode: variant.questionMode, maxGroupBytes: variant.maxGroupBytes,
+      ...(apiBaseUrl ? { apiBaseUrl } : {}), ...(apiModel ? { apiModel } : {}), apiKey, timeoutMs: 120_000, maxGroupBytes: variant.maxGroupBytes,
       state: { base_sha: loaded.baseSha, head_sha: loaded.headSha, tested_sha: loaded.testedSha, changed_paths: loaded.changedPaths, diff: loaded.diff } };
     result = await observeChange(request, evaluate);
   } catch (error) {
@@ -515,72 +511,49 @@ async function observationFor(
   return { result, calls, stale: replayCalls ? (transport as ReplayTransport).stale() : null, evaluationError };
 }
 
-export function thresholdEvaluations(
+export function policyEvaluation(
   loaded: LoadedCase,
-  variant: EvaluationVariant,
   configured: SelectionDefinition,
   resolved: ResolveTasksResult,
   result: Awaited<ReturnType<typeof observeChange>> | null,
-): Record<string, ThresholdEvaluation> {
+): PolicyEvaluation {
   const taskIds = Object.keys(resolved.selection.tasks).sort();
   const bypass = globalPathReason(loaded.changedPaths);
-  const semanticPaths = withoutPolicyPaths(loaded.changedPaths);
-  const values: Record<string, ThresholdEvaluation> = {};
-  for (const threshold of THRESHOLDS) {
-    const decisions = result ? decisionsFromObservation(result.observation, taskIds, threshold, variant.questionMode, resolved.selection.judgment) : {};
-    const semantic = applyMetadataPolicy(selectTasks({ selection: resolved.selection, changedPaths: semanticPaths, decisions, observationError: result?.failure as any,
-      mode: 'enforce' }), resolved.metadata, configured);
-    const effective = applyMetadataPolicy(selectTasks({ selection: resolved.selection, changedPaths: loaded.changedPaths, decisions, observationError: result?.failure as any,
-      mode: 'shadow', ...(bypass ? { forceAllReason: bypass as ForceAllReason } : {}) }), resolved.metadata, configured);
-    const proposed = proposedMap(semantic);
-    values[String(threshold)] = { threshold, decisions, proposed, effective: effectiveMap(effective),
-      tasks: { proposed: semantic.tasks, effective: effective.tasks },
-      actionOutputs: { proposed: actionOutputs(semantic, loaded.testedSha, DEFAULT_REPORT_PATH), effective: actionOutputs(effective, loaded.testedSha, DEFAULT_REPORT_PATH) },
-      metrics: metricsForLabels(loaded.definition.expected, proposed) };
-  }
-  return values;
-}
-
-function variantKey(variant: Pick<EvaluationVariant, 'context' | 'questionMode'>): string {
-  return `${variant.context}/${variant.questionMode}`;
+  const decisions = result ? decisionsFromObservation(result.observation, taskIds) : {};
+  const semantic = applyMetadataPolicy(selectTasks({ selection: resolved.selection, changedPaths: withoutPolicyPaths(loaded.changedPaths), decisions,
+    ...(result?.failure ? { observationError: result.failure } : {}), mode: 'enforce' }), resolved.metadata, configured);
+  const effective = applyMetadataPolicy(selectTasks({ selection: resolved.selection, changedPaths: loaded.changedPaths, decisions,
+    ...(result?.failure ? { observationError: result.failure } : {}), mode: 'shadow', ...(bypass ? { forceAllReason: bypass } : {}) }), resolved.metadata, configured);
+  const proposed = proposedMap(semantic);
+  return { decisions, proposed, effective: effectiveMap(effective),
+    tasks: { proposed: semantic.tasks, effective: effective.tasks },
+    actionOutputs: { proposed: actionOutputs(semantic, loaded.testedSha, DEFAULT_REPORT_PATH), effective: actionOutputs(effective, loaded.testedSha, DEFAULT_REPORT_PATH) },
+    metrics: metricsForLabels(loaded.definition.expected, proposed) };
 }
 
 export function chooseSelection(records: EvaluationRecord[], corpusFingerprintValue: string, caseIds?: string[]): Selection {
-  const candidates = new Map<string, { context: ContextVariant; questionMode: QuestionMode; metrics: ThresholdMetrics; runs: number; completeRuns: number; failedRuns: number }>();
-  const successful = (record: EvaluationRecord): boolean => record.observation?.status === 'complete' && record.observationError === null && record.error === null &&
-    Object.values(record.thresholds).every(value => Object.values(value.decisions).every(decision => decision !== null));
+  const candidates = new Map<ContextVariant, { context: ContextVariant; metrics: SelectionMetrics; runs: number; completeRuns: number; failedRuns: number }>();
   for (const record of records) {
-    const key = variantKey(record.variant);
-    for (const value of Object.values(record.thresholds)) {
-      const candidateKey = `${key}/${value.threshold}`;
-      const current = candidates.get(candidateKey) ?? { context: record.variant.context, questionMode: record.variant.questionMode,
-        metrics: { relevant: 0, relevantMisses: 0, irrelevant: 0, correctIrrelevantOmissions: 0, irrelevantRetained: 0, unknown: 0, mismatches: 0 }, runs: 0, completeRuns: 0, failedRuns: 0 };
-      current.runs += 1;
-      if (successful(record)) { current.metrics = mergeMetrics([current.metrics, value.metrics]); current.completeRuns += 1; }
-      else current.failedRuns += 1;
-      candidates.set(candidateKey, current);
-    }
+    const current = candidates.get(record.variant.context) ?? { context: record.variant.context,
+      metrics: mergeMetrics([]), runs: 0, completeRuns: 0, failedRuns: 0 };
+    current.runs++;
+    if (record.observation?.status === 'complete' && record.observationError === null && record.error === null &&
+      Object.values(record.evaluation.decisions).every(decision => decision !== null)) {
+      current.metrics = mergeMetrics([current.metrics, record.evaluation.metrics]); current.completeRuns++;
+    } else current.failedRuns++;
+    candidates.set(record.variant.context, current);
   }
   if (!candidates.size) throw new Error('no-evaluation-metrics');
-  const order = (item: { context: ContextVariant; questionMode: QuestionMode }): number =>
-    (item.context === 'description' ? 0 : 2) + (item.questionMode === 'single' ? 0 : 1);
-  const entries = [...candidates.entries()].map(([key, value]) => ({ key, ...value, threshold: Number(key.split('/').at(-1)) }));
-  entries.sort((left, right) => {
-    const leftQualified = left.failedRuns === 0 && left.metrics.relevantMisses === 0 && left.metrics.correctIrrelevantOmissions > 0;
-    const rightQualified = right.failedRuns === 0 && right.metrics.relevantMisses === 0 && right.metrics.correctIrrelevantOmissions > 0;
-    if (leftQualified !== rightQualified) return leftQualified ? -1 : 1;
-    if (left.failedRuns !== right.failedRuns) return left.failedRuns - right.failedRuns;
-    if (!leftQualified && left.metrics.relevantMisses !== right.metrics.relevantMisses) return left.metrics.relevantMisses - right.metrics.relevantMisses;
-    if (left.metrics.correctIrrelevantOmissions !== right.metrics.correctIrrelevantOmissions) return right.metrics.correctIrrelevantOmissions - left.metrics.correctIrrelevantOmissions;
-    if (left.threshold !== right.threshold) return left.threshold - right.threshold;
-    return order(left) - order(right);
-  });
+  const qualifies = (item: { failedRuns: number; metrics: SelectionMetrics }) =>
+    item.failedRuns === 0 && item.metrics.relevantMisses === 0 && item.metrics.correctIrrelevantOmissions > 0;
+  const entries = [...candidates.values()].sort((left, right) =>
+    Number(qualifies(right)) - Number(qualifies(left)) || left.failedRuns - right.failedRuns ||
+    left.metrics.relevantMisses - right.metrics.relevantMisses ||
+    right.metrics.correctIrrelevantOmissions - left.metrics.correctIrrelevantOmissions || left.context.localeCompare(right.context));
   const selected = entries[0]!;
-  return { version: 1, sourceSplit: 'calibration', corpusFingerprint: corpusFingerprintValue,
-    qualified: selected.failedRuns === 0 && selected.metrics.relevantMisses === 0 && selected.metrics.correctIrrelevantOmissions > 0,
-    exploratory: !(selected.failedRuns === 0 && selected.metrics.relevantMisses === 0 && selected.metrics.correctIrrelevantOmissions > 0),
-    selected: { context: selected.context, questionMode: selected.questionMode, threshold: selected.threshold },
-    metrics: { ...selected.metrics, runs: selected.runs, completeRuns: selected.completeRuns, failedRuns: selected.failedRuns, variant: `${selected.context}/${selected.questionMode}` },
+  return { version: 2, sourceSplit: 'calibration', corpusFingerprint: corpusFingerprintValue,
+    qualified: qualifies(selected), exploratory: !qualifies(selected), selected: { context: selected.context },
+    metrics: { ...selected.metrics, runs: selected.runs, completeRuns: selected.completeRuns, failedRuns: selected.failedRuns, variant: selected.context },
     ...(caseIds ? { caseIds: [...caseIds].sort() } : {}) };
 }
 
@@ -590,7 +563,7 @@ export function replayComparable(record: EvaluationRecord): unknown {
     return { ...replayCall, duration_ms: null };
   }),
     observation: record.observation ? stripDurations(record.observation) : null, observationError: record.observationError,
-    policy: record.policy, thresholds: record.thresholds, error: record.error });
+    policy: record.policy, evaluation: record.evaluation, error: record.error });
 }
 
 function stripDurations(value: unknown): unknown {
@@ -617,20 +590,20 @@ export async function evaluateRecord(
   const resolved = await resolveEvaluationSelection(loaded, variant.context);
   const observed = await observationFor(loaded, variant, resolved, apiKey, apiBaseUrl, apiModel, replayCalls);
   if (observed.stale) throw observed.stale;
-  const thresholds = thresholdEvaluations(loaded, variant, resolved.configured, resolved.resolved, observed.result);
+  const evaluation = policyEvaluation(loaded, resolved.configured, resolved.resolved, observed.result);
   const bypass = globalPathReason(loaded.changedPaths);
-  return { version: 1, runId: `${loaded.definition.id}-${variant.context}-${variant.questionMode}-${variant.grouping}-${repeat}`,
+  return { version: 2, runId: `${loaded.definition.id}-${variant.context}-${variant.grouping}-${repeat}`,
     source: caseSource(loaded), variant, repeat, date: { started, finished: new Date().toISOString() },
     sdk: { package: '@typesafe-ai/sdk', version: sdkVersion(), model: observed.result?.model ?? null, requestedModel: apiModel ?? resolved.selection.model },
     calls: observed.calls, observation: observed.result?.observation ?? null, observationError: observed.result?.failure ?? observed.evaluationError,
-    policy: { bypass: !!bypass, reason: bypass?.code ?? null }, thresholds, error: observed.evaluationError };
+    policy: { bypass: !!bypass, reason: bypass?.code ?? null }, evaluation, error: observed.evaluationError };
 }
 
 export function variantsForCalibration(): EvaluationVariant[] {
   const result: EvaluationVariant[] = [];
-  for (const context of ['description', 'enriched'] as const) for (const questionMode of ['single', 'split'] as const) {
-    result.push({ context, questionMode, grouping: 'natural', maxGroupBytes: NATURAL_GROUP_BYTES });
-    result.push({ context, questionMode, grouping: 'partitioned', maxGroupBytes: PARTITIONED_GROUP_BYTES });
+  for (const context of ['description', 'enriched'] as const) {
+    result.push({ context, grouping: 'natural', maxGroupBytes: NATURAL_GROUP_BYTES });
+    result.push({ context, grouping: 'partitioned', maxGroupBytes: PARTITIONED_GROUP_BYTES });
   }
   return result;
 }
@@ -644,9 +617,9 @@ export function variantForCase(variant: EvaluationVariant, diffBytes: number): E
 }
 
 export function variantsForValidation(selection: Selection): EvaluationVariant[] {
-  const { context, questionMode } = selection.selected;
-  return [{ context, questionMode, grouping: 'natural', maxGroupBytes: NATURAL_GROUP_BYTES },
-    { context, questionMode, grouping: 'partitioned', maxGroupBytes: PARTITIONED_GROUP_BYTES }];
+  const { context } = selection.selected;
+  return [{ context, grouping: 'natural', maxGroupBytes: NATURAL_GROUP_BYTES },
+    { context, grouping: 'partitioned', maxGroupBytes: PARTITIONED_GROUP_BYTES }];
 }
 
 export async function writeJson(path: string, value: unknown): Promise<void> {
@@ -660,17 +633,16 @@ export async function createOutputDirectory(path: string): Promise<string> {
 }
 
 export function assertSelection(selection: unknown, corpusFingerprintValue: string): asserts selection is Selection {
-  if (!isRecord(selection) || selection.version !== 1 || selection.sourceSplit !== 'calibration' ||
+  if (!isRecord(selection) || selection.version !== 2 || selection.sourceSplit !== 'calibration' ||
     selection.corpusFingerprint !== corpusFingerprintValue || typeof selection.qualified !== 'boolean' || !isRecord(selection.selected) ||
-    !['description', 'enriched'].includes(selection.selected.context as string) || !['single', 'split'].includes(selection.selected.questionMode as string) ||
-    !THRESHOLDS.includes(selection.selected.threshold as never) ||
+    !['description', 'enriched'].includes(selection.selected.context as string) ||
     (selection.caseIds !== undefined && (!Array.isArray(selection.caseIds) || selection.caseIds.some(id => typeof id !== 'string') || new Set(selection.caseIds).size !== selection.caseIds.length))) {
     throw new Error('stale-selection');
   }
 }
 
 export function assertReplayRecordSource(record: EvaluationRecord, loaded: LoadedCase): void {
-  if (record.source.caseId !== loaded.definition.id || record.source.caseFingerprint !== loaded.caseFingerprint ||
+  if (record.version !== 2 || record.source.caseId !== loaded.definition.id || record.source.caseFingerprint !== loaded.caseFingerprint ||
     record.source.diffSha256 !== sha256(loaded.diff)) throw new ReplayStaleError(`source:${loaded.definition.id}`);
 }
 
@@ -685,9 +657,9 @@ export async function runLiveCampaign(options: CampaignOptions): Promise<{ manif
   }
   const variants = options.split === 'calibration' ? variantsForCalibration() : variantsForValidation(options.selection!);
   const output = await createOutputDirectory(options.output);
-  const manifest: CampaignManifest = { version: 1, command: 'live', split: options.split, corpusFingerprint: fingerprint,
+  const manifest: CampaignManifest = { version: 2, command: 'live', split: options.split, corpusFingerprint: fingerprint,
     cases: loaded.map(item => ({ id: item.definition.id, split: item.definition.split, caseFingerprint: item.caseFingerprint })), variants, repeats: 3,
-    thresholds: [...THRESHOLDS], sdk: { package: '@typesafe-ai/sdk', version: sdkVersion(), model: options.apiModel ?? null },
+    sdk: { package: '@typesafe-ai/sdk', version: sdkVersion(), model: options.apiModel ?? null },
     created: new Date().toISOString(), updated: new Date().toISOString(), runs: [],
     ...(options.split === 'validation' ? { selection: options.selection } : {}) };
   await mkdir(join(output, 'runs'));
@@ -713,7 +685,7 @@ export async function runLiveCampaign(options: CampaignOptions): Promise<{ manif
 
 async function readManifest(campaign: string): Promise<CampaignManifest> {
   const value: unknown = JSON.parse(await readFile(join(campaign, 'manifest.json'), 'utf8'));
-  if (!isRecord(value) || value.version !== 1 || !Array.isArray(value.runs) || typeof value.corpusFingerprint !== 'string') throw new Error('invalid-campaign');
+  if (!isRecord(value) || value.version !== 2 || !Array.isArray(value.runs) || typeof value.corpusFingerprint !== 'string') throw new Error('invalid-campaign');
   return value as unknown as CampaignManifest;
 }
 
@@ -742,4 +714,28 @@ export async function replayCampaign(root: string, campaignPath: string, caseIds
     checked += 1;
   }
   return { checked, stale: 0 };
+}
+
+/** Current provider evidence; historical Noul campaigns are archives only. */
+export async function replayChoiceRegressions(path: string): Promise<{ checked: number; stale: number }> {
+  const recordings = JSON.parse(await readFile(path, 'utf8'));
+  if (!Array.isArray(recordings.cases) || !recordings.cases.length) throw new Error('invalid-choice-recordings');
+  for (const recorded of recordings.cases) {
+    const original = recorded.calls[0].request;
+    const selection = { model: original.model, tasks: Object.fromEntries(Object.entries(original.questions)
+      .map(([id, question]: [string, any]) => [id, { evidence: question.instructions.task }])) };
+    let calls = 0;
+    const result = await observeChange({ selection, taskIds: Object.keys(selection.tasks), state: original.state,
+      apiKey: 'replay-key', timeoutMs: 1000 }, input => evaluateJev(input, async (_url, init) => {
+      const captured = recorded.calls[calls++];
+      // These recordings store structured requests, not their serialized bytes.
+      if (!captured || canonicalJson(JSON.parse(bodyText(init?.body))) !== canonicalJson(captured.request)) {
+        throw new ReplayStaleError(`body:${recorded.id}`);
+      }
+      return Response.json(captured.response);
+    }));
+    if (calls !== recorded.calls.length || result.observation.status !== 'complete' ||
+      canonicalJson(result.decisions) !== canonicalJson(recorded.expected)) throw new ReplayStaleError(`choice:${recorded.id}`);
+  }
+  return { checked: recordings.cases.length, stale: 0 };
 }

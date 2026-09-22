@@ -1,3 +1,4 @@
+import { judgment } from '../fixtures/selection.js';
 import { createHash } from 'node:crypto';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
@@ -93,13 +94,13 @@ function offlineContextEvaluator(item: ContextCase): ContextEvaluate {
 
 function offlineFinalEvaluator(item: ContextCase): (request: FinalRequest) => Promise<JevResult> {
   return async request => {
-    const probabilities = Object.fromEntries(request.taskIds.map(taskId => {
+    const answers = Object.fromEntries(request.taskIds.map(taskId => {
       const files = ((request.selection.tasks[taskId]?.evidence.contextFiles ?? []) as Array<{ path?: unknown }>);
       const available = new Set(files.flatMap(file => typeof file.path === 'string' ? [file.path] : []));
       const complete = (item.expectedContext[taskId] ?? []).every(path => available.has(path));
-      return [taskId, item.expectedTasks[taskId] === 'relevant' && complete ? 0.95 : 0.01];
+      return [taskId, judgment(item.expectedTasks[taskId] === 'relevant' && complete ? 'required' : 'independent')];
     }));
-    return { model: request.selection.model, usage: { input_tokens: request.taskIds.length, output_tokens: request.taskIds.length }, probabilities };
+    return { model: request.selection.model, usage: { input_tokens: request.taskIds.length, output_tokens: request.taskIds.length }, answers };
   };
 }
 
@@ -166,7 +167,7 @@ function repositoryFor(item: ContextCase, commit: string) {
 }
 
 async function freshResolution(item: ContextCase): Promise<{ configured: SelectionDefinition; resolved: ResolveTasksResult; repository: ReturnType<typeof repositoryFor>; commit: string }> {
-  const configured: SelectionDefinition = { model: MODEL, skip_below: 0.05, tasks: item.tasks };
+  const configured: SelectionDefinition = { model: MODEL, tasks: item.tasks };
   const commit = sha256(item.id).slice(0, 40);
   const repository = repositoryFor(item, commit);
   const resolved = await resolveTasks(configured, { repository: `synthetic/${item.id}`, commit, readFile: repository.readFile });
@@ -208,7 +209,7 @@ async function evaluateCase(item: ContextCase, passCount: PassCount, mode: 'offl
   const finalCalls: FinalCall[] = [];
   const finalStart = performance.now();
   const finalEvaluator = async (request: FinalRequest): Promise<JevResult> => {
-    const questions = buildQuestions(request.selection, request.taskIds, request.questionMode);
+    const questions = buildQuestions(request.selection, request.taskIds);
     const requestHash = sha256(canonical({ model: request.apiModel ?? request.selection.model, state: request.state, questions }));
     const callStart = performance.now();
     try {
@@ -259,7 +260,7 @@ function summarize(records: CaseRecord[]) {
     return { pass_count: passCount, cases: rows.length, complete: rows.length - incomplete, incomplete,
       metrics: { needed_files: rows.reduce((sum, row) => sum + row.metrics.needed_files, 0), recalled_files: rows.reduce((sum, row) => sum + row.metrics.recalled_files, 0), incorrect_skips: rows.reduce((sum, row) => sum + row.metrics.incorrect_skips.length, 0), irrelevant_retained: rows.reduce((sum, row) => sum + row.metrics.irrelevant_retained.length, 0) } };
   });
-  return { version: 1, cases: [...new Set(records.map(record => record.case_id))].sort(), waves, interpretation: 'File recall and final incorrect skips are reported. Offline probabilities are fixture-wiring signals only, never model-quality measurements. No model score or CI savings is calculated. An unavailable or failed stage remains incomplete.' };
+  return { version: 1, cases: [...new Set(records.map(record => record.case_id))].sort(), waves, interpretation: 'File recall and final incorrect skips are reported. Offline judgments are fixture-wiring signals only, never model-quality measurements. No model score or CI savings is calculated. An unavailable or failed stage remains incomplete.' };
 }
 
 async function writeJson(path: string, value: unknown): Promise<void> { await writeFile(path, `${JSON.stringify(value, null, 2)}\n`, 'utf8'); }

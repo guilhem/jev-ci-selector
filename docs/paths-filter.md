@@ -20,6 +20,6 @@ Use `steps.changes.outputs.backend == 'true'`, or expose that value as a job out
 
 This is not pattern-language compatibility. Descriptions explain verification scope; positive `force_paths` globs only impose execution. A path that does not match can still be relevant. There are no negative filter rules, changed-file-list outputs or claim of identical event behavior. Events outside PR evaluation retain every task without calling Jev.
 
-`enforce` is the default. For an observational comparison, explicitly set `mode: shadow`: effective outputs remain true and proposals appear in the job summary. Model scores and the threshold do not guarantee an error rate. Keep essential tasks under `always: true` and execution prerequisites in `needs`.
+`enforce` is the default. For an observational comparison, explicitly set `mode: shadow`: effective outputs remain true and proposals appear in the job summary. Model judgments do not guarantee an error rate. Keep essential tasks under `always: true` and execution prerequisites in `needs`.
 
 See the [complete contract](reference.md) and [minimal integration](../README.md#quick-start). Release references in examples are publication targets, not claims of an already available tag.

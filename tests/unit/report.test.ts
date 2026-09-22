@@ -6,9 +6,9 @@ import schema from '../../schemas/report.schema.json';
 
 function report(): Report {
   return {
-    version: 7, judgment: 'noul', metadata_sha: 'a'.repeat(40), base_sha: 'a'.repeat(40), head_sha: 'b'.repeat(40),
+    version: 7, metadata_sha: 'a'.repeat(40), base_sha: 'a'.repeat(40), head_sha: 'b'.repeat(40),
     tested_sha: 'c'.repeat(40), tested_ref: 'merge', diff_base_sha: null,
-    selection_hash: 'd'.repeat(64), skip_below: 0.05, diff_hash: null, diff_bytes: null, changed_path_count: null,
+    selection_hash: 'd'.repeat(64), diff_hash: null, diff_bytes: null, changed_path_count: null,
     mode: 'shadow', status: 'bypassed', model: { requested: 'provider/alias', expected: 'jev-1.13.0', returned: null },
     durations_ms: { collection: 1, jev: null, total: 1 }, usage: null,
     tasks: { unit: { proposed_run: null, run: true, reasons: ['missing-api-key'] } },
@@ -26,12 +26,10 @@ test('v7 requires complete provenance and rejects historical versions and fields
     delete missing[field];
     assert.throws(() => validateReport(missing), /invalid-report/, field);
   }
-  for (const key of ['config_sha', 'config_source', 'catalog_hash', 'diff']) {
+  for (const key of ['config_sha', 'config_source', 'catalog_hash', 'diff', 'skip_below', 'judgment']) {
     assert.throws(() => validateReport({ ...value, [key]: 'private source' }));
   }
   assert.throws(() => validateReport({ ...value, tasks: { unit: { ...value.tasks.unit, probability: 0.1 } } }));
-  for (const skip_below of [0, 1]) validateReport({ ...value, skip_below });
-  for (const skip_below of [-0.1, 1.1, NaN, Infinity, '0.05']) assert.throws(() => validateReport({ ...value, skip_below }));
   for (const requested of ['invalid model', 'alias\n', 'm'.repeat(129)]) {
     assert.throws(() => validateReport({ ...value, model: { ...value.model, requested } }));
   }
@@ -104,14 +102,15 @@ test('context resolution is strict, source-free, and reports both choice vocabul
   assert.match(summary(report()), /Context resolution: not-run \(disabled or bypassed\)/);
 });
 
-test('observation scores remain source-free and appear below decisions in collapsible details', () => {
+test('observation judgments remain source-free and appear below decisions in collapsible details', () => {
+  const answer = { choice: 'independent', probabilities: { required: 0.02, independent: 0.93, unresolved: 0.05 }, confidence: 0.82 };
   const chunk = {
     index: 0, start_byte: 0, end_byte: 32, diff_hash: 'e'.repeat(64), state_hash: 'f'.repeat(64), diff_bytes: 32,
-    status: 'completed' as const, probabilities: { unit: 0.02 }, model: 'jev-1.13.0',
+    status: 'completed' as const, judgments: { unit: answer }, model: 'jev-1.13.0',
     usage: { input_tokens: 10, output_tokens: 2 }, duration_ms: 12, error: null,
   };
   const value: Report = { ...report(), observation: { strategy: 'chunked-diff', status: 'incomplete', chunks: [chunk,
-    { ...chunk, index: 1, status: 'failed', probabilities: null, model: null, usage: null, duration_ms: 100, error: 'jev-timeout' },
+    { ...chunk, index: 1, status: 'failed', judgments: null, model: null, usage: null, duration_ms: 100, error: 'jev-timeout' },
   ] } };
   validateReport(value);
   for (const key of ['diff', 'path', 'raw']) {
@@ -123,14 +122,15 @@ test('observation scores remain source-free and appear below decisions in collap
   assert.ok(text.indexOf('| unit |') < text.indexOf('<details>'));
   assert.match(text, /<summary>Selection details<\/summary>/);
   assert.match(text, /Observation status: incomplete \(chunked-diff\)/);
-  assert.match(text, /unit=0\.02/);
+  assert.match(text, /unit=independent/);
+  assert.match(text, /independent=0\.93/);
+  assert.match(text, /confidence=0\.82/);
   assert.match(text, /jev-timeout/);
   assert.match(text, /No cross-chunk aggregate/);
   assert.match(text, /<\/details>/);
   assert.match(summary(report()), /not-collected/);
-  const answer = { choice: 'independent', probabilities: { required: 0.02, independent: 0.93, unresolved: 0.05 }, confidence: 0.82 };
-  const withChoice = (judgment: unknown) => ({ ...report(), judgment: 'choice', observation: {
-    strategy: 'whole-diff', status: 'complete', chunks: [{ ...chunk, probabilities: null, judgments: { unit: judgment } }],
+  const withChoice = (judgment: unknown) => ({ ...report(), observation: {
+    strategy: 'whole-diff', status: 'complete', chunks: [{ ...chunk, judgments: { unit: judgment } }],
   } });
   validateReport(withChoice(answer));
   for (const invalid of [{ ...answer, choice: 'ignore' }, { ...answer, content: 'private source' },

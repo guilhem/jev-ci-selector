@@ -17,8 +17,8 @@ From the repository root:
 npm run eval:replay
 ```
 
-Replay uses the committed responses without a network connection or API key. It
-checks that each response belongs to the exact recorded request. Changes to the
+Replay checks two committed live Choice regressions without a network connection
+or API key. It checks that each response belongs to the complete recorded request. Changes to the
 context or questions make the affected recordings explicitly stale.
 
 Use `npm run eval:live` explicitly to record a new campaign with the configured
@@ -35,13 +35,14 @@ live API observations.
 
 Compare results only for matching corpus inputs and trial settings. A campaign
 from different examples cannot qualify the synthetic corpus. Context changes
-require new measurements before selecting a threshold or drawing a conclusion.
+require new measurements before selecting a context strategy or drawing a conclusion.
 
 Reports separate proposed selection from effective policy outputs. Shadow mode
 keeps every task. Synthetic relevance results do not demonstrate runtime savings
 or accuracy on a consuming repository; that needs its own shadow observations and
 actual CI outcomes. See the [shadow guide](shadow-mode.md).
 
-The corpus calibration selected `0.10`, while the action default remains `0.05`.
-The lower production default is intentionally more conservative and is not a
-claim that the synthetic calibration generalizes to every repository.
+Current campaigns use Choice only and compare context and grouping variants.
+The archived Noul campaigns and their calibration thresholds are historical
+results, not qualification of the current action. The current runner rejects
+those campaigns; its default replay checks the frozen Choice evidence instead.

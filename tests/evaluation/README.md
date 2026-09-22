@@ -28,7 +28,7 @@ The corpus has this shape:
 
 Each snapshot contains `repository/`, `external-actions.json`, and
 `action-inputs.json`. The latter stores raw action input strings: `tasks` as YAML,
-`model`, and `skip-below`. The repository contains referenced workflows, action
+`model`. The repository contains referenced workflows, action
 metadata, package manifests, and context files. The runner uses the production
 `parseSelectionInputs` and `resolveTasks` functions; it does not execute files.
 Expected relevance labels are annotations made by code inspection before Jev
@@ -41,27 +41,24 @@ Replay is offline and uses the exact request bodies captured from the SDK:
 npm run eval:replay -- --campaign tests/evaluation/recordings/<campaign>
 ```
 
-With no `--campaign`, replay requires and checks both committed baselines at
-`tests/evaluation/recordings/calibration` and
-`tests/evaluation/recordings/validation`. Pass `--campaign <path>` to check one
-campaign explicitly. Replay matches the serialized SDK body and its SHA-256
-before returning the stored structured response. A changed corpus, source
-fingerprint, request, response, or derived observation fails explicitly as a
-stale replay. Measured durations are ignored only in the final deterministic
-comparison.
+With no `--campaign`, replay checks the two frozen live Choice regressions in
+`recordings/choice-regressions.json`. It compares each complete structured
+request and the resulting decisions. These cover a verification dependency and
+a local action input; they are regression evidence, not broad qualification.
 
-The inline-input migration changed fixture fingerprints and removed obsolete
-null task probability fields from derived policy results. It did not rerun the
-provider. `recordings/migration-proof.json` contains SHA-256 digests of each
-campaign's original calls (including serialized bodies and responses), complete
-observations, SDK/model metadata, and dates. The integration test checks these
-digests as well as replaying every request through the current production code.
-The replay source, request, and output equality guards remain strict.
+Pass `--campaign <path>` to replay a current v2 campaign. This matches the
+serialized SDK body and SHA-256, source fingerprint and derived observation;
+only measured durations are excluded from the deterministic comparison.
+
+The v1 Noul campaigns under `recordings/calibration` and `recordings/validation`
+are historical archives. They are unchanged and their provider-evidence digests
+are checked against `migration-proof.json`. The current runner rejects them;
+passing archive integrity checks does not validate Choice.
 
 Live evaluation requires an explicit API key in `JEV_API_KEY`, `JEV_KEY_API`, or
 `TYPESAFE_API_KEY`; it does not load `.env`. Calibration evaluates description
-and enriched context, single and split questions, natural and 8 KiB partitioned
-grouping, and three repeats. Natural grouping uses a 48 KiB target; large diffs
+and enriched context, natural and 8 KiB partitioned grouping, and three repeats.
+All current evaluations use Choice, with no threshold or question-mode option. Natural grouping uses a 48 KiB target; large diffs
 may still produce several actual groups. Use `--case id` for a smoke run.
 
 ```sh
@@ -69,21 +66,19 @@ npm run eval:live -- --split calibration --output /tmp/jev-calibration
 npm run eval:live -- --split validation --selection /tmp/jev-calibration/selection.json --output /tmp/jev-validation
 ```
 
-Live output must be a new directory. When the committed
-`tests/evaluation/recordings/<split>` baseline exists, `eval:live` compares the
-new campaign with it; use `--baseline <campaign>` to select another previous
-campaign explicitly. The baseline is read-only and is never replaced. Each
+Live output must be a new directory. Use `--baseline <campaign>` to compare
+against an explicit previous v2 Choice campaign. There is no default baseline. The baseline is read-only and is never replaced. Each
 live output contains `manifest.json`, `summary.json`, `comparison.json`,
 `selection.json` for calibration, and one structured JSON record per run under
 `runs/`. `comparison.json` reports relevant misses, useful omissions, repeat and
 partition stability, token totals, latency deltas, and a comparable-settings
-guard. Incompatible corpus, case, variant, repeat, threshold, SDK, or frozen
+guard. Incompatible corpus, case, variant, repeat, SDK, or frozen
 validation-selection settings leave deltas null and explain the guard reason.
 Partial observations and sanitized error codes are persisted. Records
 contain no HTTP headers, credentials, or private provider error bodies. The
 selection maximizes correctly omitted irrelevant tasks while requiring zero
 relevant misses across all calibration repeats and groupings; ties use the
-lowest threshold and stable context/question ordering. If no variant qualifies,
+stable context ordering. If no variant qualifies,
 the best exploratory choice is recorded with `qualified: false`.
 
 ## Context-resolution comparison
@@ -96,12 +91,12 @@ experiment annotations, not real pull requests, and no case source is
 executed.
 
 The harness runs one, two, and three preparation waves on a fresh selection for
-each case, then uses the existing `observeChange` Noul evaluator on the same
+each case, then uses the existing `observeChange` Choice evaluator on the same
 annotated diff. Offline mode supplies deterministic evaluators; live mode calls
 the Jev API. Results report file recall and final incorrect skips, with no model
 score or CI savings metric.
 
-Offline probabilities are fixture-wiring signals only: they verify that context
+Offline judgments are fixture-wiring signals only: they verify that context
 availability reaches the existing final evaluator and are never a measurement
 of model quality.
 

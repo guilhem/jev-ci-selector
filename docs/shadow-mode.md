@@ -43,7 +43,7 @@ Inspect proposed skips, missed failures, manually relevant tasks and skipped/can
 
 ## Choosing a mode
 
-Selection is applied by default. Explicit shadow mode is useful for evaluating suitability before consuming exclusions. Assess provider failures, flaky tests, infrastructure incidents and tasks known to be relevant. The threshold is a policy setting, not an accuracy guarantee. `force-all: 'true'` returns every task without a Jev request.
+Selection is applied by default. Explicit shadow mode is useful for evaluating suitability before consuming exclusions. Assess provider failures, flaky tests, infrastructure incidents and tasks known to be relevant. An independence judgment does not guarantee that a task cannot detect a regression. `force-all: 'true'` returns every task without a Jev request.
 
 ## Manual PR observation
 

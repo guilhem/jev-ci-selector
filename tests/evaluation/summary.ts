@@ -1,13 +1,13 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { EvaluationRecord, Selection, ThresholdMetrics } from './evaluation.js';
+import type { EvaluationRecord, Selection, SelectionMetrics } from './evaluation.js';
 
-const emptyMetrics = (): ThresholdMetrics => ({ relevant: 0, relevantMisses: 0, irrelevant: 0,
+const emptyMetrics = (): SelectionMetrics => ({ relevant: 0, relevantMisses: 0, irrelevant: 0,
   correctIrrelevantOmissions: 0, irrelevantRetained: 0, unknown: 0, mismatches: 0 });
 
 export function summarizeRecords(records: EvaluationRecord[], selection?: Selection) {
-  const rows = new Map<string, { context: string; questions: string; threshold: number; runs: number;
-    incomplete_runs: number; metrics: ThresholdMetrics; repeat_disagreements: number; partition_disagreements: number }>();
+  const rows = new Map<string, { context: string; runs: number;
+    incomplete_runs: number; metrics: SelectionMetrics; repeat_disagreements: number; partition_disagreements: number }>();
   const repetitions = new Map<string, { row: string; values: Set<string> }>();
   const partitions = new Map<string, { row: string; values: Map<string, string> }>();
   let inputTokens = 0, outputTokens = 0, elapsedMs = 0, calls = 0;
@@ -22,28 +22,26 @@ export function summarizeRecords(records: EvaluationRecord[], selection?: Select
       if (typeof input === 'number' && Number.isSafeInteger(input) && input >= 0) inputTokens += input;
       if (typeof output === 'number' && Number.isSafeInteger(output) && output >= 0) outputTokens += output;
     }
-    for (const value of Object.values(record.thresholds)) {
-      const key = `${record.variant.context}/${record.variant.questionMode}/${value.threshold}`;
-      const row = rows.get(key) ?? { context: record.variant.context, questions: record.variant.questionMode,
-        threshold: value.threshold, runs: 0, incomplete_runs: 0, metrics: emptyMetrics(), repeat_disagreements: 0, partition_disagreements: 0 };
-      row.runs++;
-      if (record.observation?.status !== 'complete' || record.observationError || record.error) row.incomplete_runs++;
-      for (const metric of Object.keys(row.metrics) as Array<keyof ThresholdMetrics>) row.metrics[metric] += value.metrics[metric];
-      rows.set(key, row);
-      for (const [task, decision] of Object.entries(value.decisions)) {
-        const repeatKey = `${key}/${record.source.caseId}/${record.variant.grouping}/${task}`;
-        const repeated = repetitions.get(repeatKey) ?? { row: key, values: new Set<string>() };
-        repeated.values.add(String(decision)); repetitions.set(repeatKey, repeated);
-        const partitionKey = `${key}/${record.source.caseId}/${record.repeat}/${task}`;
-        const partition = partitions.get(partitionKey) ?? { row: key, values: new Map<string, string>() };
-        partition.values.set(record.variant.grouping, String(decision)); partitions.set(partitionKey, partition);
-      }
+    const value = record.evaluation;
+    const key = record.variant.context;
+    const row = rows.get(key) ?? { context: record.variant.context, runs: 0, incomplete_runs: 0, metrics: emptyMetrics(), repeat_disagreements: 0, partition_disagreements: 0 };
+    row.runs++;
+    if (record.observation?.status !== 'complete' || record.observationError || record.error) row.incomplete_runs++;
+    for (const metric of Object.keys(row.metrics) as Array<keyof SelectionMetrics>) row.metrics[metric] += value.metrics[metric];
+    rows.set(key, row);
+    for (const [task, decision] of Object.entries(value.decisions)) {
+      const repeatKey = `${key}/${record.source.caseId}/${record.variant.grouping}/${task}`;
+      const repeated = repetitions.get(repeatKey) ?? { row: key, values: new Set<string>() };
+      repeated.values.add(String(decision)); repetitions.set(repeatKey, repeated);
+      const partitionKey = `${key}/${record.source.caseId}/${record.repeat}/${task}`;
+      const partition = partitions.get(partitionKey) ?? { row: key, values: new Map<string, string>() };
+      partition.values.set(record.variant.grouping, String(decision)); partitions.set(partitionKey, partition);
     }
   }
   for (const item of repetitions.values()) if (item.values.size > 1) rows.get(item.row)!.repeat_disagreements++;
   for (const item of partitions.values()) if (item.values.size === 2 && new Set(item.values.values()).size > 1) rows.get(item.row)!.partition_disagreements++;
-  const comparison = [...rows.values()].sort((a, b) => `${a.context}/${a.questions}`.localeCompare(`${b.context}/${b.questions}`) || a.threshold - b.threshold);
-  const chosen = selection ? rows.get(`${selection.selected.context}/${selection.selected.questionMode}/${selection.selected.threshold}`) ?? null : null;
+  const comparison = [...rows.values()].sort((a, b) => a.context.localeCompare(b.context));
+  const chosen = selection ? rows.get(selection.selected.context) ?? null : null;
   return {
     runs: records.length, cases: [...new Set(records.map(record => record.source.caseId))], models: [...models].sort(),
     calls, tokens: { input: inputTokens, output: outputTokens },
@@ -59,7 +57,8 @@ export function summarizeRecords(records: EvaluationRecord[], selection?: Select
 }
 
 export async function summarizeCampaign(directory: string) {
-  const manifest = JSON.parse(await readFile(join(directory, 'manifest.json'), 'utf8')) as { runs: string[]; selection?: Selection; split: string };
+  const manifest = JSON.parse(await readFile(join(directory, 'manifest.json'), 'utf8')) as { version: number; runs: string[]; selection?: Selection; split: string };
+  if (manifest.version !== 2) throw new Error('invalid-campaign');
   const records: EvaluationRecord[] = await Promise.all(manifest.runs.map(async path => JSON.parse(await readFile(join(directory, path), 'utf8'))));
   return { split: manifest.split, ...summarizeRecords(records, manifest.selection) };
 }

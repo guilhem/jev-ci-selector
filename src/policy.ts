@@ -4,7 +4,7 @@ import { validateResolvedSelection, type ResolvedSelection } from './tasks.js';
 export type Mode = 'shadow' | 'enforce';
 export type Status = 'planned' | 'bypassed' | 'fallback';
 export const REASONS = [
-  'always', 'path-match', 'jev-below-threshold', 'jev-at-or-above-threshold',
+  'always', 'path-match',
   'jev-independent', 'jev-not-independent',
   'shadow-mode', 'force-all', 'protected-path', 'fork',
   'missing-api-key', 'external-context-disabled', 'non-pull-request',
@@ -62,8 +62,8 @@ export function selectTasks(input: {
       if (decisions[id] == null) {
         proposed.add(id); reasons[id]!.push(input.observationError ?? 'observation-incomplete');
       } else if (decisions[id]) {
-        proposed.add(id); reasons[id]!.push(selection.judgment === 'choice' ? 'jev-not-independent' : 'jev-at-or-above-threshold');
-      } else reasons[id]!.push(selection.judgment === 'choice' ? 'jev-independent' : 'jev-below-threshold');
+        proposed.add(id); reasons[id]!.push('jev-not-independent');
+      } else reasons[id]!.push('jev-independent');
     }
   }
   const tasks: Record<string, TaskDecision> = {};

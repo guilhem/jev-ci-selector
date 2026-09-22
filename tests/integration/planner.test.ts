@@ -7,6 +7,7 @@ import { type SelectionDefinition } from '../../src/tasks.js';
 import { ChangeError } from '../../src/changes.js';
 import { evaluateJev, JevError } from '../../src/jev.js';
 import { actionOutputs, summary } from '../../src/report.js';
+import { judgment } from '../fixtures/selection.js';
 import { patch } from '../fixtures/diff.js';
 
 const inputs: Inputs = { ...routingSelection(), mode: 'enforce', githubToken: 'github-private', apiKey: 'typesafe-private',
@@ -15,7 +16,7 @@ const context: Context = { eventName: 'pull_request', repository: 'acme/example'
   baseSha: 'a'.repeat(40), headSha: 'b'.repeat(40), testedSha: 'c'.repeat(40), fork: false };
 const customApi = { apiBaseUrl: 'https://opencode.ai/zen/', apiModel: 'jev-1.13-free' };
 function routingSelection(): SelectionDefinition {
-  const result: SelectionDefinition = { model: 'jev-1.13.0', skip_below: 0.05, tasks: {
+  const result: SelectionDefinition = { model: 'jev-1.13.0', tasks: {
     unit: { description: 'Does this change affect unit checks?', jobs: [{ workflow: '.github/workflows/ci.yml', job: 'unit' }], always: true },
     helm: { description: 'Does this change affect chart rendering?', jobs: [{ workflow: '.github/workflows/ci.yml', job: 'helm' }], force_paths: ['charts/**'] },
     e2e: { description: 'Does this change affect network routing?', jobs: [{ workflow: '.github/workflows/ci.yml', job: 'e2e' }] },
@@ -59,7 +60,7 @@ function fixture(options: { paths?: string[]; diff?: string; failure?: Error; je
     evaluate: async request => {
       calls.evaluate++; assert.equal(request.selection.model, 'jev-1.13.0');
       if (options.jevFailure) throw options.jevFailure;
-      return { probabilities: Object.fromEntries(request.taskIds.map(id => [id, 0])), model: 'jev-1.13.0', usage: { input_tokens: 100, output_tokens: 20 } };
+      return { answers: Object.fromEntries(request.taskIds.map(id => [id, judgment()])), model: 'jev-1.13.0', usage: { input_tokens: 100, output_tokens: 20 } };
     },
   };
   return { calls, dependencies };
@@ -83,7 +84,7 @@ test('planner uses only base metadata, tested merge SHA, source-free report and 
 test('Choice reaches the SDK with explicit job scope and preserves enforce, shadow, protected paths and incomplete fallback', async () => {
   for (const scenario of ['enforce', 'shadow', 'workflow', 'missing'] as const) {
     const f = fixture({ paths: scenario === 'workflow' ? ['.github/workflows/ci.yml'] : ['source.txt'] });
-    const configured = { ...inputs, judgment: 'choice' as const, mode: scenario === 'shadow' ? 'shadow' as const : 'enforce' as const };
+    const configured = { ...inputs, mode: scenario === 'shadow' ? 'shadow' as const : 'enforce' as const };
     configured.tasks = { ...configured.tasks, helm: { ...configured.tasks.helm!, context_files: ['ci/check.conf'] } };
     const create = f.dependencies.createRepository!;
     const { plan, report } = await planChange(configured, context, {
@@ -108,7 +109,6 @@ test('Choice reaches the SDK with explicit job scope and preserves enforce, shad
           })) });
       }),
     });
-    assert.equal(report.judgment, 'choice');
     assert.ok(!JSON.stringify(report).includes('PRIVATE-SCOPE-SENTINEL'));
     assert.deepEqual(Object.keys(report.context_resolution), []);
     if (scenario === 'enforce') {
@@ -125,7 +125,7 @@ test('Choice reaches the SDK with explicit job scope and preserves enforce, shad
 });
 test('opt-in context resolution feeds the final evaluation and reports all inference usage', async () => {
   const f = fixture();
-  const definition: SelectionDefinition = { model: 'jev-1.13.0', skip_below: 0.05, tasks: {
+  const definition: SelectionDefinition = { model: 'jev-1.13.0', tasks: {
     helm: { resolve_context_files: true, description: 'Renders charts', jobs: [{ workflow: '.github/workflows/ci.yml', job: 'helm' }] },
   } };
   const create = f.dependencies.createRepository!;
@@ -147,7 +147,7 @@ test('opt-in context resolution feeds the final evaluation and reports all infer
     evaluate: async request => {
       finalBudget = request.timeoutMs;
       assert.ok(JSON.stringify(request.selection.tasks.helm!.evidence).includes('PRIVATE-CONFIG-SENTINEL'));
-      return { model: 'jev-1.13.0', usage: { input_tokens: 30, output_tokens: 3 }, probabilities: { helm: 0.9 } };
+      return { model: 'jev-1.13.0', usage: { input_tokens: 30, output_tokens: 3 }, answers: { helm: judgment('required') } };
     },
   });
   assert.equal(plan.tasks.helm!.run, true);
@@ -182,7 +182,7 @@ test('context reports preserve literal Git paths whether ignored or retained and
       evaluate: async request => {
         const files = request.selection.tasks.check!.evidence.contextFiles as Array<{ path: string }>;
         assert.deepEqual(files.map(file => file.path), retained ? [path] : []);
-        return { model: 'jev-1.13.0', usage: null, probabilities: { check: 0 } };
+        return { model: 'jev-1.13.0', usage: { input_tokens: 1, output_tokens: 1 }, answers: { check: judgment() } };
       },
     });
     assert.equal(plan.status, 'planned');
@@ -202,7 +202,7 @@ test('context reports preserve literal Git paths whether ignored or retained and
 });
 test('a preparation failure keeps its job while an explicitly configured unrelated task may still skip', async () => {
   const f = fixture();
-  const definition: SelectionDefinition = { model: 'jev-1.13.0', skip_below: 0.05, tasks: {
+  const definition: SelectionDefinition = { model: 'jev-1.13.0', tasks: {
     helm: { resolve_context_files: true, description: 'Renders charts', jobs: [{ workflow: '.github/workflows/ci.yml', job: 'helm' }] },
     build: { description: 'Builds', resolve_context_files: false },
   } };
@@ -231,7 +231,7 @@ test('custom API selection reports the sent alias and pinned version and falls b
         const body = JSON.parse(init!.body as string);
         assert.equal(body.model, customApi.apiModel);
         return Response.json({ model: returnedModel,
-          answers: Object.fromEntries(request.taskIds.map(id => [id, { type: 'noul', noul: 0 }])),
+          answers: Object.fromEntries(request.taskIds.map(id => [id, { type: 'choice', ...judgment() }])),
           usage: { input_tokens: 10, output_tokens: 1 } });
       }),
     });
@@ -355,22 +355,22 @@ test('enforce groups large observations and manual metadata reads use workflow S
   assert.equal(manualResult.report.metadata_sha, metadataSha);
 });
 
-test('chunked shadow observation retains raw scores and proposes a task when any chunk is high', async () => {
+test('chunked shadow observation retains raw judgments and proposes a task when any chunk requires it', async () => {
   const f = fixture({ diff: patch(1600) });
   const evaluate = async (request: Parameters<NonNullable<PlannerDependencies['evaluate']>>[0]) => {
     const state = request.state as { chunk?: { index: number } };
-    const score = state.chunk?.index === 1 ? 0.9 : 0.01;
-    return { probabilities: Object.fromEntries(request.taskIds.map(id => [id, score])),
+    const answer = judgment(state.chunk?.index === 1 ? 'required' : 'independent');
+    return { answers: Object.fromEntries(request.taskIds.map(id => [id, answer])),
       model: 'jev-1.13.0', usage: { input_tokens: 5, output_tokens: 2 } };
   };
   const { plan, report } = await planChange({ ...inputs, mode: 'shadow' }, context, { ...f.dependencies, evaluate });
   assert.equal(report.observation?.strategy, 'chunked-diff');
-  assert.ok(report.observation?.chunks.some(chunk => chunk.probabilities?.prepare === 0.9));
+  assert.ok(report.observation?.chunks.some(chunk => chunk.judgments?.prepare?.choice === 'required'));
   assert.equal(plan.tasks.prepare!.proposed_run, true);
 });
 
 test('routing jobs keep native workflow dependencies out of selector policy and never publish their contents', async () => {
-  const source = stringify({ model: 'jev-1.13.0', skip_below: 0.05, tasks: {
+  const source = stringify({ model: 'jev-1.13.0', tasks: {
     compile: { description: 'Does this change affect compilation?', jobs: [{ workflow: '.github/workflows/check.yml', job: 'build' }] },
     verify: { description: 'Does this change affect tests?', jobs: [{ workflow: '.github/workflows/check.yml', job: 'tests' }], context_files: ['test.config.ts'] },
   } });
@@ -387,7 +387,7 @@ test('routing jobs keep native workflow dependencies out of selector policy and 
     } }),
     evaluate: async request => {
       assert.match(JSON.stringify(request.selection.tasks.verify!.evidence), /PRIVATE-CONFIG-SENTINEL/);
-      return { probabilities: { compile: 0.01, verify: 0.8 }, model: 'jev-1.13.0', usage: { input_tokens: 1, output_tokens: 1 } };
+      return { answers: { compile: judgment(), verify: judgment('required') }, model: 'jev-1.13.0', usage: { input_tokens: 1, output_tokens: 1 } };
     },
   });
   assert.equal(plan.run.compile, false);
@@ -398,7 +398,7 @@ test('routing jobs keep native workflow dependencies out of selector policy and 
 });
 
 test('missing job metadata keeps the affected task and records the evidence gap', async () => {
-  const source = stringify({ model: 'jev-1.13.0', skip_below: 0.05,
+  const source = stringify({ model: 'jev-1.13.0',
     tasks: { verify: { description: 'Does this change affect tests?', jobs: [{ workflow: '.github/workflows/missing.yml', job: 'verify' }] } } });
   const f = fixture();
   const originalCreate = f.dependencies.createRepository!;

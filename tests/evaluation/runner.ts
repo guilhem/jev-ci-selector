@@ -1,7 +1,7 @@
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { assertSelection, corpusFingerprint, loadCases, readCorpus, replayCampaign, runLiveCampaign, writeJson, type Selection } from './evaluation.js';
+import { assertSelection, corpusFingerprint, loadCases, readCorpus, replayCampaign, replayChoiceRegressions, runLiveCampaign, writeJson, type Selection } from './evaluation.js';
 import { compareCampaigns, resolveBaselineCampaign } from './comparison.js';
 import { summarizeCampaign } from './summary.js';
 
@@ -22,21 +22,17 @@ async function main(): Promise<void> {
   const args = argumentMap(rest);
   const root = resolve(args.get('corpus-root') ?? 'tests/evaluation');
   if (command === 'replay') {
-    const campaigns = args.get('campaign')
-      ? [resolve(args.get('campaign')!)]
-      : [join(root, 'recordings', 'calibration'), join(root, 'recordings', 'validation')];
-    const results = [];
-    for (const campaign of campaigns) {
-      const result = await replayCampaign(root, campaign, args.get('case')?.split(',').filter(Boolean));
-      results.push({ campaign, ...result, summary: await summarizeCampaign(campaign) });
-    }
-    process.stdout.write(`${JSON.stringify({ mode: 'replay', campaigns: results, checked: results.reduce((total, item) => total + item.checked, 0), stale: 0 })}\n`);
+    const campaign = args.get('campaign');
+    const result = campaign
+      ? await replayCampaign(root, resolve(campaign), args.get('case')?.split(',').filter(Boolean))
+      : await replayChoiceRegressions(join(root, 'recordings', 'choice-regressions.json'));
+    process.stdout.write(`${JSON.stringify({ mode: 'replay', ...result })}\n`);
     return;
   }
   if (command !== 'live') throw new Error('usage: runner.ts replay|live');
   const split = args.get('split');
   if (split !== 'calibration' && split !== 'validation') throw new Error('live-requires-split');
-  const baseline = await resolveBaselineCampaign(root, split, args.get('baseline'));
+  const baseline = await resolveBaselineCampaign(args.get('baseline'));
   const key = process.env.JEV_API_KEY || process.env.JEV_KEY_API || process.env.TYPESAFE_API_KEY || '';
   if (!key.trim()) throw new Error('live-requires-api-key');
   let selection: Selection | undefined;

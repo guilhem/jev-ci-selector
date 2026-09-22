@@ -1,6 +1,6 @@
 import { parseTasks } from '../../src/tasks.js';
 import { parse, stringify } from 'yaml';
-function fixtureSelection(source: string): SelectionDefinition { const value = parse(source); return { model: value.model, skip_below: value.skip_below, tasks: parseTasks(stringify(value.tasks)) }; }
+function fixtureSelection(source: string): SelectionDefinition { const value = parse(source); return { model: value.model, tasks: parseTasks(stringify(value.tasks)) }; }
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { validateResolvedSelection, type SelectionDefinition } from '../../src/tasks.js';
@@ -77,7 +77,7 @@ function resolverFiles() {
 test('resolves workflow, actions, scripts, context, provenance, and same-workflow needs', async () => {
   const input: SelectionDefinition = {
     model: 'jev-1.13.0',
-    skip_below: 0.05,
+
     tasks: {
       prepare: { description: 'Does this change affect generated files?', jobs: [{ workflow: '.github/workflows/ci.yml', job: 'prepare' }] },
       unit: { description: 'Does this change affect unit behavior?', jobs: [{ workflow: '.github/workflows/ci.yml', job: 'unit' }], context_files: ['vitest.config.mts'] },
@@ -110,7 +110,7 @@ test('resolves workflow, actions, scripts, context, provenance, and same-workflo
 test('unresolved metadata is explicit and prevents omission through normalized always', async () => {
   const input: SelectionDefinition = {
     model: 'jev-1.13.0',
-    skip_below: 0.05,
+
     tasks: { missing: { description: 'Does this change affect the missing unit job?', jobs: [{ workflow: '.github/workflows/missing.yml', job: 'unit' }], context_files: ['missing.ts'] } },
   };
   const result = await resolveTasks(input, {
@@ -125,7 +125,6 @@ test('unresolved metadata is explicit and prevents omission through normalized a
 
 test('aggregates deduplicated job references and expands an omitted job to all workflow jobs', async () => {
   const input = fixtureSelection(`model: jev-1.13.0
-skip_below: 0.05
 tasks:
   all:
     description: Does this change affect any CI job?
@@ -148,7 +147,6 @@ tasks:
 
 test('composite bodies are opaque and are not expanded into model metadata', async () => {
   const selection = fixtureSelection(`model: jev-1.13.0
-skip_below: 0.05
 tasks:
   unit:
     description: Does this change affect unit behavior?
@@ -179,14 +177,14 @@ tasks:
 });
 
 test('metadata resolution rejects the abandoned public selection shape', async () => {
-  const input = { version: 1, model: 'jev-1.13.0', skip_below: 0.05, tasks: { unit: { always: true } } };
+  const input = { version: 1, model: 'jev-1.13.0', tasks: { unit: { always: true } } };
   await assert.rejects(resolveTasks(input as unknown as SelectionDefinition, {
     repository: 'acme/project', commit: 'base-sha', readFile: () => { throw new Error('unused'); },
   }), /invalid-input/);
 });
 
 async function resolveFixture(body: string, files: Record<string, string> = {}) {
-  const input = fixtureSelection('model: jev-1.13.0\nskip_below: 0.05\ntasks:\n  unit:\n    description: Does this change affect unit behavior?\n    jobs:\n      - workflow: .github/workflows/ci.yml\n        job: unit\n');
+  const input = fixtureSelection('model: jev-1.13.0\ntasks:\n  unit:\n    description: Does this change affect unit behavior?\n    jobs:\n      - workflow: .github/workflows/ci.yml\n        job: unit\n');
   return resolveTasks(input, { repository: 'acme/project', commit: 'trusted', readFile: (_sha, file) => {
     if (file === '.github/workflows/ci.yml') return body;
     if (files[file] === undefined) throw new Error('missing');
@@ -267,7 +265,7 @@ runs:
   main: index.js
 `,
   };
-  const result = await resolveTasks({ model: 'jev-1.13.0', skip_below: 0.1, tasks: {
+  const result = await resolveTasks({ model: 'jev-1.13.0', tasks: {
     check: { description: 'Shared checks', jobs: [{ workflow: '.github/workflows/ci.yml' }] },
   } }, { repository: 'acme/project', commit: 'trusted', readFile: async (_commit, path) => {
     if (!(path in files)) throw new Error('missing');
@@ -281,7 +279,7 @@ runs:
 
 test('description-only tasks are complete and resolve without file access', async () => {
   let reads = 0;
-  const result = await resolveTasks({ model: 'jev-1.13.0', skip_below: 0.05, tasks: { unit: { description: 'Checks business rules.' } } }, {
+  const result = await resolveTasks({ model: 'jev-1.13.0', tasks: { unit: { description: 'Checks business rules.' } } }, {
     repository: 'acme/project', commit: 'trusted', readFile: async () => { reads++; throw new Error('unexpected'); },
   });
   assert.equal(reads, 0);

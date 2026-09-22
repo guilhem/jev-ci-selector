@@ -3,11 +3,11 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { createHash } from 'node:crypto';
-import { canonicalJson, loadCase, readCorpus, replayCampaign, resolveEvaluationSelection } from '../evaluation/evaluation.js';
+import { canonicalJson, loadCase, readCorpus, replayCampaign, replayChoiceRegressions, resolveEvaluationSelection } from '../evaluation/evaluation.js';
 
 const root = resolve('tests/evaluation');
 
-test('input migration preserves the frozen provider evidence from both original campaigns', async () => {
+test('historical Noul archives preserve their original provider evidence', async () => {
   const proof = JSON.parse(await readFile(join(root, 'recordings/migration-proof.json'), 'utf8'));
   for (const campaign of ['calibration', 'validation']) {
     const directory = join(root, 'recordings', campaign);
@@ -38,17 +38,13 @@ test('committed corpus has eight applicable diffs, complete trusted snapshots an
   }
 });
 
-test('committed provider recordings replay offline and preserve the frozen validation choice', async () => {
+test('current Choice evidence replays offline and historical campaigns are rejected by the current runner', async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () => { throw new Error('Unexpected network access during committed replay'); };
   try {
-    const calibration = join(root, 'recordings/calibration');
-    const validation = join(root, 'recordings/validation');
-    const choice = JSON.parse(await readFile(join(calibration, 'selection.json'), 'utf8'));
-    const validationManifest = JSON.parse(await readFile(join(validation, 'manifest.json'), 'utf8'));
-    assert.deepEqual(validationManifest.selection, choice);
-    assert.deepEqual(await replayCampaign(root, calibration), { checked: 96, stale: 0 });
-    assert.deepEqual(await replayCampaign(root, validation), { checked: 24, stale: 0 });
+    assert.deepEqual(await replayChoiceRegressions(join(root, 'recordings/choice-regressions.json')), { checked: 2, stale: 0 });
+    await assert.rejects(replayCampaign(root, join(root, 'recordings/calibration')), /invalid-campaign/);
+    await assert.rejects(replayCampaign(root, join(root, 'recordings/validation')), /invalid-campaign/);
   } finally {
     globalThis.fetch = originalFetch;
   }

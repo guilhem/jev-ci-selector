@@ -15,7 +15,7 @@ test('offline context comparison measures bounded preparation waves', async () =
 test('recall stays per task and fallback is not an incorrect model skip', () => {
   const item = syntheticCases()[0]!;
   const annotated = { ...item, expectedContext: { unit: ['tools/run_unit.py'], docs: ['tools/run_unit.py'] } };
-  const selection = { model: 'jev-1.13.0', skip_below: 0.05, tasks: {
+  const selection = { model: 'jev-1.13.0', tasks: {
     unit: { always: true, evidence: { description: 'unit' } },
     docs: { evidence: { description: 'docs' } },
   } };

@@ -1,8 +1,6 @@
 const constraints = {
   tasks: 'a YAML mapping of task objects with nonempty descriptions and valid optional job references, paths and booleans',
   model: 'a canonical Jev version in the form jev-X.Y.Z',
-  judgment: 'one of "noul" or "choice"',
-  'skip-below': 'a finite decimal number from 0 to 1',
   mode: 'one of "shadow" or "enforce"',
   'tested-ref': 'one of "head" or "merge"',
   'allow-external-context': '"true" or "false"',

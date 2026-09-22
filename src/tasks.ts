@@ -14,11 +14,10 @@ export interface TaskDefinition {
   force_paths?: string[];
 }
 export type TaskDefinitions = Record<string, TaskDefinition>;
-export type Judgment = 'noul' | 'choice';
-export interface SelectionDefinition { model: string; skip_below: number; judgment?: Judgment; tasks: TaskDefinitions }
+export interface SelectionDefinition { model: string; tasks: TaskDefinitions }
 export interface TaskEvidence { description: string; [key: string]: unknown }
 export interface ResolvedTask { always?: boolean; force_paths?: string[]; evidence: TaskEvidence }
-export interface ResolvedSelection { model: string; skip_below: number; judgment?: Judgment; tasks: Record<string, ResolvedTask> }
+export interface ResolvedSelection { model: string; tasks: Record<string, ResolvedTask> }
 
 const validateSchema = new Ajv({ allErrors: true, strict: true }).compile<TaskDefinitions>(schema);
 const reservedIds = new Set(schema.definitions.taskId.not.enum.map(id => id.toLowerCase()));
@@ -39,18 +38,16 @@ export function validateTasks(value: unknown): asserts value is TaskDefinitions 
 
 function validateSettings(value: Record<string, unknown>): void {
   if (typeof value.model !== 'string' || !/^jev-[0-9]+\.[0-9]+\.[0-9]+(?![\s\S])/.test(value.model)) throw new InputError('model');
-  if (typeof value.skip_below !== 'number' || !Number.isFinite(value.skip_below) || value.skip_below < 0 || value.skip_below > 1) throw new InputError('skip-below');
-  if (value.judgment !== undefined && value.judgment !== 'noul' && value.judgment !== 'choice') throw new InputError('judgment');
 }
 
 export function validateSelection(value: unknown): asserts value is SelectionDefinition {
-  if (!record(value) || Object.keys(value).some(key => !['model', 'skip_below', 'judgment', 'tasks'].includes(key))) throw new InputError('tasks');
+  if (!record(value) || Object.keys(value).some(key => !['model', 'tasks'].includes(key))) throw new InputError('tasks');
   validateSettings(value);
   validateTasks(value.tasks);
 }
 
 export function validateResolvedSelection(value: unknown): asserts value is ResolvedSelection {
-  if (!record(value) || !record(value.tasks) || Object.keys(value).some(key => !['model', 'skip_below', 'judgment', 'tasks'].includes(key))) throw new InputError('tasks');
+  if (!record(value) || !record(value.tasks) || Object.keys(value).some(key => !['model', 'tasks'].includes(key))) throw new InputError('tasks');
   validateSettings(value);
   validateIds(value.tasks);
   const definitions: Record<string, unknown> = {};
@@ -77,9 +74,7 @@ export function parseTasks(source: string): TaskDefinitions {
 
 export function parseSelectionInputs(getInput: (name: string) => string): SelectionDefinition {
   const model = getInput('model').trim() || 'jev-1.13.0';
-  const threshold = getInput('skip-below').trim() || '0.05';
-  if (!/^(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?![\s\S])/.test(threshold)) throw new InputError('skip-below');
-  const selection = { model, skip_below: Number(threshold), judgment: getInput('judgment').trim() || 'noul', tasks: parseTasks(getInput('tasks')) };
+  const selection = { model, tasks: parseTasks(getInput('tasks')) };
   validateSelection(selection);
   return selection;
 }
@@ -93,6 +88,5 @@ function canonical(value: unknown): unknown {
 export function selectionHash(selection: SelectionDefinition): string {
   const tasks = Object.fromEntries(Object.entries(selection.tasks).map(([id, task]) => [id, { ...task, always: task.always ?? false,
     resolve_context_files: task.resolve_context_files ?? false }]));
-  return createHash('sha256').update(JSON.stringify(canonical({ model: selection.model, skip_below: selection.skip_below,
-    ...(selection.judgment === 'choice' ? { judgment: 'choice' } : {}), tasks }))).digest('hex');
+  return createHash('sha256').update(JSON.stringify(canonical({ model: selection.model, tasks }))).digest('hex');
 }

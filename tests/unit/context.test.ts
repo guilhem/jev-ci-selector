@@ -26,7 +26,7 @@ function response(request: ChoiceRequest, decide: (path: string, request: Choice
 }
 async function setup(options: { tasks?: SelectionDefinition['tasks']; contents?: Record<string, string>; commit?: string } = {}) {
   const contents: Record<string, string> = options.contents ?? files;
-  const configured: SelectionDefinition = { model: 'jev-1.13.0', skip_below: 0.05, tasks: options.tasks ?? {
+  const configured: SelectionDefinition = { model: 'jev-1.13.0', tasks: options.tasks ?? {
     unit: { resolve_context_files: true, description: 'Checks behavior', jobs: [{ workflow, job: 'check' }], context_files: ['explicit.md'] },
   } };
   const commit = options.commit ?? 'a'.repeat(40);

@@ -1,3 +1,4 @@
+import { judgment } from '../fixtures/selection.js';
 import { parse, stringify } from 'yaml';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -50,7 +51,7 @@ test('distributed bundle runs against real Git objects, publishes shadow/enforce
           GITHUB_EVENT_PATH: eventPath, GITHUB_OUTPUT: output, GITHUB_STEP_SUMMARY: summary, RUNNER_TEMP: root,
           INPUT_TASKS: stringify(tasks), 'INPUT_API-KEY': 'SECRET-SENTINEL', 'INPUT_GITHUB-TOKEN': 'TOKEN-SENTINEL', 'INPUT_ALLOW-EXTERNAL-CONTEXT': 'true',
           FIXTURE_REMOTE: pathToFileURL(remote).href,
-          FIXTURE_RESPONSE: JSON.stringify({ model: 'jev-1.13.0', answers: { helm: { type: 'noul', noul: 0 }, unit: { type: 'noul', noul: 0 } }, usage: { input_tokens: 10, output_tokens: 1 } }),
+          FIXTURE_RESPONSE: JSON.stringify({ model: 'jev-1.13.0', answers: { helm: { type: 'choice', ...judgment() }, unit: { type: 'choice', ...judgment() } }, usage: { input_tokens: 10, output_tokens: 1 } }),
           ...overrides },
       });
       assert.ok(!(`${result.stdout}${result.stderr}`).includes('SENTINEL'));
@@ -79,19 +80,8 @@ test('distributed bundle runs against real Git objects, publishes shadow/enforce
     assert.equal(customReport.version, 7);
     assert.deepEqual(customReport.model, { requested: 'jev-1.13-free', expected: 'jev-1.13.0', returned: 'jev-1.13.0' });
     assert.ok(!JSON.stringify(customReport).includes('SENTINEL'));
-    const chosen = await run({ INPUT_MODE: 'enforce', INPUT_JUDGMENT: 'choice', FIXTURE_RESPONSE: JSON.stringify({
-      model: 'jev-1.13.0', usage: { input_tokens: 10, output_tokens: 1 },
-      answers: Object.fromEntries(['helm', 'unit'].map(id => [id, { type: 'choice', choice: 'independent', confidence: 0.9,
-        probabilities: { required: 0.02, independent: 0.96, unresolved: 0.02 } }])),
-    }) });
-    assert.equal(chosen.result.status, 0, chosen.result.stdout + chosen.result.stderr);
-    assert.equal(chosen.outputs.status, 'planned');
-    assert.deepEqual(JSON.parse(chosen.outputs.run!), { helm: false, unit: true });
-    const choiceReport = JSON.parse(await readFile(chosen.outputs['report-path']!, 'utf8')); validateReport(choiceReport);
-    assert.equal(choiceReport.judgment, 'choice');
-    assert.equal(choiceReport.observation!.chunks[0]!.judgments!.helm!.choice, 'independent');
     const wrongModel = await run({ ...api, FIXTURE_RESPONSE: JSON.stringify({ model: 'jev-1.13.1',
-      answers: { helm: { type: 'noul', noul: 0 } }, usage: { input_tokens: 10, output_tokens: 1 } }) });
+      answers: { helm: { type: 'choice', ...judgment() } }, usage: { input_tokens: 10, output_tokens: 1 } }) });
     assert.equal(wrongModel.result.status, 0); assert.equal(wrongModel.outputs.status, 'fallback');
     assert.equal(wrongModel.outputs.helm, 'true'); assert.equal(wrongModel.outputs.unit, 'true');
     const invalidApi = await run({ 'INPUT_API-BASE-URL': 'https://user:SECRET-SENTINEL@api.test', FIXTURE_RESPONSE: '' });
@@ -124,7 +114,7 @@ test('distributed bundle runs against real Git objects, publishes shadow/enforce
     assert.equal(summaryUnavailable.outputs.helm, 'true');
     assert.equal(summaryUnavailable.outputs['has-tasks'], 'true');
     const empty = await run({ INPUT_TASKS: stringify({ helm: tasks.helm }), INPUT_MODE: 'enforce',
-      FIXTURE_RESPONSE: JSON.stringify({ model: 'jev-1.13.0', answers: { helm: { type: 'noul', noul: 0 } }, usage: { input_tokens: 10, output_tokens: 1 } }) });
+      FIXTURE_RESPONSE: JSON.stringify({ model: 'jev-1.13.0', answers: { helm: { type: 'choice', ...judgment() } }, usage: { input_tokens: 10, output_tokens: 1 } }) });
     assert.equal(empty.result.status, 0);
     assert.equal(empty.outputs.helm, 'false'); assert.equal(empty.outputs.unit, undefined);
     assert.equal(empty.outputs['has-tasks'], 'false'); assert.deepEqual(JSON.parse(empty.outputs.selected!), []);
@@ -151,8 +141,8 @@ test('distributed bundle runs against real Git objects, publishes shadow/enforce
       FIXTURE_PULL_REQUEST: JSON.stringify({ state: 'open', merge_commit_sha: largeMerge,
         base: { sha: base, repo }, head: { sha: largeHead, repo } }),
       FIXTURE_REQUESTS: requestsPath,
-      FIXTURE_RESPONSE: JSON.stringify({ model: 'jev-1.13.0', answers: { helm: { type: 'noul', noul: 0.01 },
-        unit: { type: 'noul', noul: 0.8 } }, usage: { input_tokens: 10, output_tokens: 1 } }),
+      FIXTURE_RESPONSE: JSON.stringify({ model: 'jev-1.13.0', answers: { helm: { type: 'choice', ...judgment() },
+        unit: { type: 'choice', ...judgment('required') } }, usage: { input_tokens: 10, output_tokens: 1 } }),
     });
     assert.equal(manual.result.status, 0, manual.result.stdout + manual.result.stderr);
     const report: unknown = JSON.parse(await readFile(manual.outputs['report-path']!, 'utf8')); validateReport(report);
@@ -163,7 +153,7 @@ test('distributed bundle runs against real Git objects, publishes shadow/enforce
     assert.equal(report.observation?.strategy, 'chunked-diff');
     assert.ok(report.diff_bytes! > 65536);
     assert.deepEqual(JSON.parse(manual.outputs.run!), { helm: true, unit: true });
-    const requests = (await readFile(requestsPath, 'utf8')).trim().split('\n').map(line => JSON.parse(line)).filter(request => Object.values(request.questions).every((question: any) => question.type === 'noul'));
+    const requests = (await readFile(requestsPath, 'utf8')).trim().split('\n').map(line => JSON.parse(line)).filter(request => Object.values(request.questions).every((question: any) => question.type === 'choice' && Object.hasOwn(question.criteria, 'independent')));
     assert.equal(requests.length, report.observation!.chunks.length);
     assert.ok(requests.length > 1 && requests.length <= 32);
     const reconstructed = requests.map(request => request.state.diff).join('');
@@ -173,7 +163,7 @@ test('distributed bundle runs against real Git objects, publishes shadow/enforce
       assert.deepEqual(Object.keys(request.questions).sort(), ['helm', 'unit']);
       assert.match(JSON.stringify(request.questions.unit), /Reviewed backend verification scope/);
     }
-    for (const chunk of report.observation!.chunks) assert.deepEqual(chunk.probabilities, { helm: 0.01, unit: 0.8 });
+    for (const chunk of report.observation!.chunks) assert.deepEqual(chunk.judgments, { helm: judgment(), unit: judgment('required') });
     assert.ok(!JSON.stringify(report).includes('SENTINEL'));
     assert.ok(!(await readFile(join(root, 'summary'), 'utf8')).includes('SENTINEL'));
   } finally { await rm(root, { recursive: true, force: true }); }
