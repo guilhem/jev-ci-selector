@@ -533,3 +533,47 @@ test('symlinks and type changes are represented from the object database, never 
     assert.match(unit.diff, /becomes-link\.txt/);
   });
 });
+
+test('interrupted reads report the bytes stdout actually carried', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'jev-git-bytes-test-'));
+  const fakeGit = join(root, 'git');
+  // Emit a known prefix, then hang. A timeout must not erase what was received.
+  await writeFile(fakeGit, '#!/bin/sh\nprintf "0123456789"\nsleep 30\n', { mode: 0o755 });
+  const runGitFrom = (GitRepository as unknown as {
+    runGitFrom: (cwd: string, env: NodeJS.ProcessEnv, args: string[], maxStdoutBytes?: number, timeoutMs?: number) => Promise<Buffer>;
+  }).runGitFrom;
+  const env = { ...process.env, PATH: `${root}:${process.env.PATH ?? ''}` };
+  try {
+    const timedOut = await runGitFrom(root, env, ['hang'], undefined, 150).then(() => undefined, (error: unknown) => error);
+    assert.match((timedOut as Error).message, /git timed out/);
+    assert.equal((timedOut as { stdoutBytes: number }).stdoutBytes, 10,
+      'a timeout after partial output still reports those bytes');
+
+    // The chunk that crosses the cap is reported as received, not clamped down
+    // to the cap: the report shows the overshoot instead of hiding it.
+    const overshot = await runGitFrom(root, env, ['hang'], 4, 150).then(() => undefined, (error: unknown) => error);
+    assert.match((overshot as Error).message, /output limit/);
+    assert.equal((overshot as { stdoutBytes: number }).stdoutBytes, 10);
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('a read interrupted after partial output charges what it delivered', async () => {
+  const value = await fixture(async (work) => {
+    const isFeature = await access(join(work, 'feature marker.txt')).then(() => true).catch(() => false);
+    if (!isFeature) await writeFile(join(work, 'base.txt'), 'base\n');
+    if (isFeature) await writeFile(join(work, 'wide.txt'), 'padding line\n'.repeat(400));
+  });
+  await withRepository(value, async repository => {
+    await repository.fetchCommit(value.base);
+    const comparison = await repository.verifyComparison({ baseSha: value.base, headSha: value.head, testedSha: value.tested });
+    const manifest = await repository.collectManifest(comparison);
+    const wide = manifest.entries.filter(entry => entry.newPath === 'wide.txt');
+    const capped = await repository.readPatch(comparison, wide, { maxUnitBytes: 256 });
+    assert.equal(capped.issue, 'too-large');
+    assert.equal(capped.diff, '', 'no truncated prefix is delivered');
+    assert.equal(capped.bytes, 0, 'nothing was delivered');
+    assert.ok(capped.bytesRead > 256, 'the bytes received are reported, overshoot included');
+  });
+});

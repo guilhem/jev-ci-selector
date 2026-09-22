@@ -16,6 +16,19 @@ export const REASONS = [
   'context-resolution-incomplete',
 ] as const;
 export type Reason = typeof REASONS[number];
+
+/**
+ * Reasons that mean "kept because the evidence was missing or unusable", as
+ * opposed to a positive decision or a configured rule. A task carrying one of
+ * these is part of the fallback, whatever its proposal ended up being.
+ */
+export const FALLBACK_REASONS: ReadonlySet<Reason> = new Set<Reason>([
+  'git-fetch-failed', 'git-read-failed', 'sha-incoherent', 'diff-too-large',
+  'binary-change', 'submodule-change', 'unrepresentable-change', 'manifest-incomplete',
+  'analysis-budget-exceeded', 'patch-unavailable', 'coverage-incomplete',
+  'jev-timeout', 'jev-error', 'invalid-response', 'context-too-large',
+  'metadata-unavailable', 'observation-incomplete', 'context-resolution-incomplete',
+]);
 export interface ForceAllReason { status: 'bypassed' | 'fallback'; code: Reason }
 export interface TaskDecision { proposed_run: boolean | null; run: boolean; reasons: Reason[] }
 export interface ExecutionPlan {

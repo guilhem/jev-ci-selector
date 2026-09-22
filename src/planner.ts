@@ -7,7 +7,7 @@ import {
 } from './changes.js';
 import { validateSelection, selectionHash, type SelectionDefinition } from './tasks.js';
 import { evaluateJev, resolveJevApi, type JevMetadata, type JevApiOptions } from './jev.js';
-import { globalPathReason, preselectTasks, selectTasks, type ForceAllReason, type Mode, type Reason } from './policy.js';
+import { FALLBACK_REASONS, globalPathReason, preselectTasks, selectTasks, type ForceAllReason, type Mode, type Reason } from './policy.js';
 import { validateReport, MAX_REPORT_CHUNKS, type Report } from './report.js';
 import {
   analyseChange, ObservationSizeError, PATCH_UNIT_LIMIT_REASON,
@@ -343,7 +343,11 @@ export async function planChange(inputs: Inputs, context: Context, dependencies:
       if (!configured.tasks[id]?.always) plan.tasks[id]!.reasons = plan.tasks[id]!.reasons.filter(reason => reason !== 'always');
       const contextIncomplete = info.missing.some(item => item.startsWith('context-resolution:'));
       plan.tasks[id]!.reasons.push(contextIncomplete ? 'context-resolution-incomplete' : 'metadata-unavailable');
-      if (contextIncomplete && plan.status === 'planned') plan.status = 'fallback';
+      // Unusable metadata retains a task for want of evidence just as an
+      // incomplete context does. Both are degraded outcomes, so both report
+      // `fallback`; leaving one as `planned` would announce a scope of `none`
+      // while a task was in fact being kept.
+      if (plan.status === 'planned') plan.status = 'fallback';
     }
     if (observation?.strategy === 'chunked-diff') {
       for (const id of analysisTaskIds) plan.tasks[id]!.reasons.push('chunked-observation');
@@ -352,9 +356,16 @@ export async function planChange(inputs: Inputs, context: Context, dependencies:
       for (const id of analysisTaskIds) plan.tasks[id]!.reasons.push('observation-only');
     }
     const counters: BudgetCounters = budget?.counters ?? EMPTY_COUNTERS;
-    // A partial fallback names exactly the tasks left without a qualified
-    // proposal, whether the gap came from the analysis or from their metadata.
-    const retained = Object.keys(plan.tasks).filter(id => plan.tasks[id]!.proposed_run === null).sort();
+    // A partial fallback names the tasks kept for missing evidence, read from
+    // their explicit reasons. `proposed_run` cannot serve here: a task made
+    // mandatory by unusable metadata still carries a proposal of true, so it
+    // would disappear from a fallback it is precisely the cause of.
+    const retained = Object.keys(plan.tasks)
+      .filter(id => plan.tasks[id]!.reasons.some(reason => FALLBACK_REASONS.has(reason))).sort();
+    // Every task gets a state, including those settled before any analysis, so
+    // the registry never contradicts the plan it accompanies.
+    const states: Record<string, TaskState> = Object.fromEntries(Object.keys(plan.tasks).sort().map(id => [id,
+      taskStates[id] ?? (retained.includes(id) ? 'fallback-run' : plan.tasks[id]!.run ? 'settled-run' : 'settled-skip')]));
     const report: Report = {
       version: 8, tested_ref: inputs.testedRef ?? 'merge', context_resolution: contextResolution,
       diff_base_sha: manifest?.comparison.diffBaseSha ?? (inputs.testedRef === 'head' ? null : context.baseSha),
@@ -376,10 +387,11 @@ export async function planChange(inputs: Inputs, context: Context, dependencies:
         changes_total: manifest?.entries.length ?? null,
         analysed_tasks: [...analysisTaskIds].sort(),
         required_without_analysis: Object.keys(plan.tasks).filter(id => !analysisTaskIds.includes(id)).sort(),
-        task_states: taskStates,
+        task_states: states,
         coverage: coverage ?? {},
         fallback_scope: plan.status !== 'fallback' ? 'none' : forced ? 'global' : 'partial',
         fallback_tasks: plan.status !== 'fallback' ? [] : forced ? Object.keys(plan.tasks).sort() : retained,
+
       },
       mode: plan.mode, status: plan.status, model: { requested: requestedModel, expected: selection.model, returned: metadata.model },
       durations_ms: { collection: collectionMs, jev: jevMs, total: performance.now() - started },

@@ -98,8 +98,10 @@ export interface PatchUnit {
   /** Bytes of the complete patch delivered; 0 whenever `issue` is set. */
   bytes: number;
   /**
-   * Bytes Git really produced for this attempt, including one that was then
-   * rejected. For an interrupted read this is a lower bound, never exact.
+   * Bytes received on this attempt's stdout, including an attempt that was then
+   * rejected. This measures what Git delivered, not the work it performed
+   * internally, and an interrupted read can exceed `maxUnitBytes` by the last
+   * chunk received.
    */
   bytesRead: number;
   issue: EntryIssueCode | null;
@@ -137,8 +139,20 @@ export interface CollectOptions {
   testedRef?: TestedRef;
 }
 
-class GitCommandError extends Error {}
-class OutputLimitError extends Error {}
+/**
+ * Both carry `stdoutBytes`: bytes actually received on stdout before the
+ * command was interrupted. It is a measure of what Git delivered to us, not of
+ * the work Git performed internally, and the last chunk received may already
+ * exceed the cap — that overshoot is reported rather than clamped away.
+ */
+class GitCommandError extends Error {
+  constructor(message: string, readonly stdoutBytes = 0) { super(message); }
+}
+class OutputLimitError extends Error {
+  constructor(message: string, readonly stdoutBytes = 0) { super(message); }
+}
+const stdoutBytesOf = (error: unknown): number =>
+  error instanceof OutputLimitError || error instanceof GitCommandError ? error.stdoutBytes : 0;
 
 const SHA_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
 const ZERO_SHA_PATTERN = /^(?:0{40}|0{64})$/;
@@ -575,12 +589,14 @@ export class GitRepository {
         ...paths,
       ], limits.maxUnitBytes, limits.timeoutMs);
     } catch (error) {
-      // An interrupted read still cost the bytes Git emitted before the kill.
-      // The cap is the only lower bound available for it.
-      if (error instanceof OutputLimitError) return { ...unit, issue: 'too-large', bytesRead: limits.maxUnitBytes };
-      return { ...unit, issue: 'git-read-failed' };
+      // An interrupted read still delivered bytes before the kill, a timeout
+      // after partial output included. Report what stdout actually carried,
+      // overshoot beyond the cap included.
+      const bytesRead = stdoutBytesOf(error);
+      if (error instanceof OutputLimitError) return { ...unit, issue: 'too-large', bytesRead };
+      return { ...unit, issue: 'git-read-failed', bytesRead };
     }
-    if (patch.length > limits.maxUnitBytes) return { ...unit, issue: 'too-large', bytesRead: limits.maxUnitBytes };
+    if (patch.length > limits.maxUnitBytes) return { ...unit, issue: 'too-large', bytesRead: patch.length };
     // Everything below was produced in full, so it is charged in full even when
     // the result is rejected.
     const read = { ...unit, bytesRead: patch.length };
@@ -851,17 +867,17 @@ export class GitRepository {
       child.once('error', () => {
         if (!settled) {
           finish(termination === 'timeout'
-            ? new GitCommandError('git timed out')
+            ? new GitCommandError('git timed out', bytes)
             : termination === 'output-limit'
-              ? new OutputLimitError('output limit')
-              : new GitCommandError('git failed'));
+              ? new OutputLimitError('output limit', bytes)
+              : new GitCommandError('git failed', bytes));
         }
       });
       child.once('close', (code) => {
         if (settled) return;
-        if (termination === 'timeout') finish(new GitCommandError('git timed out'));
-        else if (termination === 'output-limit') finish(new OutputLimitError('output limit'));
-        else if (code !== 0) finish(new GitCommandError('git failed'));
+        if (termination === 'timeout') finish(new GitCommandError('git timed out', bytes));
+        else if (termination === 'output-limit') finish(new OutputLimitError('output limit', bytes));
+        else if (code !== 0) finish(new GitCommandError('git failed', bytes));
         else finish(undefined, Buffer.concat(chunks));
       });
     });

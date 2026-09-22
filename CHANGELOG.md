@@ -22,6 +22,10 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   unless a complete diff was built; the inventory is identified by
   `manifest.hash`, and observation groups carry `change_ids` and `unit_index`
   instead of offsets into a global diff.
+- A task retained because its job metadata could not be read now reports
+  `fallback` like one retained for an incomplete context. Both are degraded
+  outcomes; reporting one as `planned` announced a fallback scope of `none`
+  while a task was in fact being kept. Effective outputs are unchanged.
 - A missing decision no longer forces every output to `true`. Missing evidence
   is scoped to the tasks it concerns, so a task with a complete decision keeps
   it while the root status reports `fallback`.

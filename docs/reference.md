@@ -32,7 +32,7 @@ GitHub passes strings. Validation and normalization precede Git or HTTP access, 
 | `pull-request` | Empty | Open PR number for `workflow_dispatch`; add `pull-requests: read` |
 | `force-all` | `'false'` | All tasks, no Jev request |
 | `timeout-ms` | `10000` | Integer from 1 to 2147483647; shared context-preparation and analysis deadline, started once the inventory is built |
-| `max-collected-patch-bytes` | `1048576` | Positive safe integer; UTF-8 patch bytes Git actually produced, rejected and retried attempts included |
+| `max-collected-patch-bytes` | `1048576` | Positive safe integer; patch bytes received on stdout, rejected and retried attempts included |
 | `max-analysis-bytes` | `524288` | Positive safe integer; complete request JSON sent to the API, preparation and observation together |
 | `max-jev-calls` | `16` | Positive safe integer; API calls dispatched, failures included |
 
@@ -42,7 +42,9 @@ Boolean inputs accept only `true` and `false`; quote them in YAML. Integers use 
 
 Every budget counts what it names: real UTF-8 or JSON bytes produced or sent, and calls actually dispatched. None of them is a token count or an estimate of one. Beyond these three, the inventory ceiling, the per-unit patch ceiling, the per-request ceilings and the Git timeouts are fixed constants, centralized in `src/budget.ts` and `src/observations.ts`.
 
-`max-collected-patch-bytes` bounds the **work**, not the useful context: a read that Git interrupted, and a patch produced in full but then rejected as binary or unrepresentable, are both charged. The report separates the two, as `analysis.patch_bytes_read` and `analysis.patch_bytes_delivered`. An interrupted read contributes a lower bound, never an exact size.
+`max-collected-patch-bytes` bounds the **work**, not the useful context: a read that Git interrupted, and a patch produced in full but then rejected as binary or unrepresentable, are both charged. The report separates the two, as `analysis.patch_bytes_read` and `analysis.patch_bytes_delivered`.
+
+`patch_bytes_read` counts bytes received on the command's standard output, a timeout after partial output included. It measures what Git delivered, not the work Git performed internally, and the chunk that crosses a ceiling is reported as received rather than clamped to that ceiling — so a read can be charged slightly more than its cap, and the report shows the overshoot instead of hiding it.
 
 `timeout-ms` keeps its historical meaning — the shared deadline for context preparation and analysis — and its clock starts once the comparison is verified and the inventory is built. A slow fetch therefore cannot silently consume the analysis allowance. Git commands keep their own separate timeouts, and no read or call is started once the deadline has passed.
 
@@ -174,7 +176,9 @@ Version 8 follows the removal of the whole-diff step. `diff_hash` and `diff_byte
 
 Each task decision contains `proposed_run`, `run` and `reasons`. Judgments live in observations by group. Observations include groups, requests, judgments, errors, models, usages and durations. `context_resolution` records task IDs, complete or incomplete status, context errors, trusted source paths with SHA-256 hashes and preparation passes. Calls record paths, request hashes, status, judgments, model, usage, duration and a fixed error code. It contains no file contents, raw source, diffs, secrets or provider error text. An empty object represents disabled or bypassed context resolution.
 
-`analysis.changes_read` against `analysis.changes_total` says how much of the inventory the analysis actually reached. A lower `changes_read` is how an early stop is recognised, including when it happens between two collection units and therefore materialises no skipped group at all: the observation is then `stopped-early`, never `complete`.
+`analysis.changes_read` against `analysis.changes_total` says how much of the inventory the analysis actually reached. A lower `changes_read` is how an early stop is recognised, including when it happens between two collection units and therefore materialises no skipped group at all: the observation is then `stopped-early`, never `complete`. The converse holds too — a change set read in full is `complete` even when the very last group settled the last task, and no extra read is performed merely to establish that.
+
+`analysis.fallback_tasks` and `analysis.task_states` are derived from each task's explicit retention reasons, not from its proposal: a task made mandatory by unusable metadata still proposes `true`, and must still appear in the fallback it caused. Unusable metadata and an incomplete context both report `fallback`.
 
 `analysis.task_states` reports the per-task outcome: `settled-run` for an acquired execution, `settled-skip` for an exclusion backed by complete coverage, `fallback-run` for a task retained for lack of evidence, and `pending` only if analysis never reached it. `analysis.coverage` is true only when every obligation was really discharged. A group whose status is `not-needed` was skipped because every task was already decided; that is a success of the decision, reported as `stopped-early`, and never a timeout. `analysis.limits_reached` names the budgets that were actually hit.
 

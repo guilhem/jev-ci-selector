@@ -241,7 +241,7 @@ export async function analyseChange(request: AnalysisRequest, evaluate: typeof e
     return state === 'settled-run' || state === 'settled-skip';
   });
   let failure: ObservationError | undefined;
-  let exhaustedStream = false;
+  let collectionFailed = false;
   let unitIndex = -1;
   while (candidates.length && !exhausted()) {
       let delivery: PatchDelivery | null;
@@ -250,11 +250,12 @@ export async function analyseChange(request: AnalysisRequest, evaluate: typeof e
         retainOpen(error instanceof BudgetError ? 'analysis-budget-exceeded' : 'patch-unavailable');
         break;
       }
-      if (delivery === null) { exhaustedStream = true; break; }
+      if (delivery === null) break;
       unitIndex += 1;
       if (delivery.issue !== null) {
         // The unit could not be read, so its changes stay undischarged for every
         // task still open. Without a reliable impact map that is all of them.
+        collectionFailed = true;
         retainOpen(delivery.issue);
         break;
       }
@@ -405,17 +406,18 @@ export async function analyseChange(request: AnalysisRequest, evaluate: typeof e
   }
 
   const dispatched = chunks.flatMap(chunk => chunk.requests!).filter(call => call.status !== 'not-needed');
-  // An early stop is measured against the change set, not against the groups
-  // that happen to have been materialised. Stopping on the first unit of a
-  // multi-unit manifest creates no `not-needed` group at all, so the stream's
-  // own state is what distinguishes a complete sweep from an early stop.
+  // An early stop is measured against the change set itself, never against the
+  // groups that happen to have been materialised, and never by asking the
+  // stream for one more unit just to observe that it has none. Every
+  // inventoried change delivered, with no group skipped, is a complete sweep —
+  // including when the very last group settled the last task.
   const skippedGroups = chunks.some(chunk => chunk.status === 'not-needed');
-  const sweptWholeChangeSet = exhaustedStream && delivered.size >= obligations.size && !skippedGroups;
+  const sweptWholeChangeSet = delivered.size >= obligations.size && !skippedGroups;
   const observation: Observation | null = chunks.length ? {
     strategy: chunks.length === 1 ? 'whole-diff' : 'chunked-diff',
-    status: chunks.every(chunk => chunk.status === 'completed' || chunk.status === 'not-needed')
-      ? (sweptWholeChangeSet ? 'complete' : 'stopped-early')
-      : 'incomplete',
+    status: collectionFailed || chunks.some(chunk => chunk.status !== 'completed' && chunk.status !== 'not-needed')
+      ? 'incomplete'
+      : sweptWholeChangeSet ? 'complete' : 'stopped-early',
     chunks,
   } : null;
 

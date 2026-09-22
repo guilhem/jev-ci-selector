@@ -37065,9 +37065,20 @@ var ChangeError = class extends Error {
   }
 };
 var GitCommandError = class extends Error {
+  constructor(message, stdoutBytes = 0) {
+    super(message);
+    this.stdoutBytes = stdoutBytes;
+  }
+  stdoutBytes;
 };
 var OutputLimitError = class extends Error {
+  constructor(message, stdoutBytes = 0) {
+    super(message);
+    this.stdoutBytes = stdoutBytes;
+  }
+  stdoutBytes;
 };
+var stdoutBytesOf = (error) => error instanceof OutputLimitError || error instanceof GitCommandError ? error.stdoutBytes : 0;
 var SHA_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
 var ZERO_SHA_PATTERN = /^(?:0{40}|0{64})$/;
 var utf8Decoder = new import_node_util.TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
@@ -37441,10 +37452,11 @@ var GitRepository = class _GitRepository {
         ...paths
       ], limits.maxUnitBytes, limits.timeoutMs);
     } catch (error) {
-      if (error instanceof OutputLimitError) return { ...unit, issue: "too-large", bytesRead: limits.maxUnitBytes };
-      return { ...unit, issue: "git-read-failed" };
+      const bytesRead = stdoutBytesOf(error);
+      if (error instanceof OutputLimitError) return { ...unit, issue: "too-large", bytesRead };
+      return { ...unit, issue: "git-read-failed", bytesRead };
     }
-    if (patch.length > limits.maxUnitBytes) return { ...unit, issue: "too-large", bytesRead: limits.maxUnitBytes };
+    if (patch.length > limits.maxUnitBytes) return { ...unit, issue: "too-large", bytesRead: patch.length };
     const read = { ...unit, bytesRead: patch.length };
     if (patch.includes(0)) return { ...read, issue: "binary" };
     const diff = decodeUtf8(patch);
@@ -37696,14 +37708,14 @@ var GitRepository = class _GitRepository {
       });
       child.once("error", () => {
         if (!settled) {
-          finish(termination === "timeout" ? new GitCommandError("git timed out") : termination === "output-limit" ? new OutputLimitError("output limit") : new GitCommandError("git failed"));
+          finish(termination === "timeout" ? new GitCommandError("git timed out", bytes3) : termination === "output-limit" ? new OutputLimitError("output limit", bytes3) : new GitCommandError("git failed", bytes3));
         }
       });
       child.once("close", (code) => {
         if (settled) return;
-        if (termination === "timeout") finish(new GitCommandError("git timed out"));
-        else if (termination === "output-limit") finish(new OutputLimitError("output limit"));
-        else if (code !== 0) finish(new GitCommandError("git failed"));
+        if (termination === "timeout") finish(new GitCommandError("git timed out", bytes3));
+        else if (termination === "output-limit") finish(new OutputLimitError("output limit", bytes3));
+        else if (code !== 0) finish(new GitCommandError("git failed", bytes3));
         else finish(void 0, Buffer.concat(chunks));
       });
     });
@@ -40302,6 +40314,26 @@ minimatch.escape = escape2;
 minimatch.unescape = unescape2;
 
 // src/policy.ts
+var FALLBACK_REASONS = /* @__PURE__ */ new Set([
+  "git-fetch-failed",
+  "git-read-failed",
+  "sha-incoherent",
+  "diff-too-large",
+  "binary-change",
+  "submodule-change",
+  "unrepresentable-change",
+  "manifest-incomplete",
+  "analysis-budget-exceeded",
+  "patch-unavailable",
+  "coverage-incomplete",
+  "jev-timeout",
+  "jev-error",
+  "invalid-response",
+  "context-too-large",
+  "metadata-unavailable",
+  "observation-incomplete",
+  "context-resolution-incomplete"
+]);
 var matches = (path2, patterns) => patterns.some((pattern) => minimatch(path2, pattern, { dot: true, nonegate: true, nocomment: true }));
 function globalPathReason(changedPaths) {
   return changedPaths.some((path2) => path2.startsWith(".github/workflows/")) ? { status: "bypassed", code: "protected-path" } : void 0;
@@ -42192,7 +42224,7 @@ async function analyseChange(request, evaluate) {
     return state === "settled-run" || state === "settled-skip";
   });
   let failure;
-  let exhaustedStream = false;
+  let collectionFailed = false;
   let unitIndex = -1;
   while (candidates.length && !exhausted()) {
     let delivery;
@@ -42202,12 +42234,10 @@ async function analyseChange(request, evaluate) {
       retainOpen(error instanceof BudgetError ? "analysis-budget-exceeded" : "patch-unavailable");
       break;
     }
-    if (delivery === null) {
-      exhaustedStream = true;
-      break;
-    }
+    if (delivery === null) break;
     unitIndex += 1;
     if (delivery.issue !== null) {
+      collectionFailed = true;
       retainOpen(delivery.issue);
       break;
     }
@@ -42383,10 +42413,10 @@ async function analyseChange(request, evaluate) {
   }
   const dispatched = chunks.flatMap((chunk) => chunk.requests).filter((call) => call.status !== "not-needed");
   const skippedGroups = chunks.some((chunk) => chunk.status === "not-needed");
-  const sweptWholeChangeSet = exhaustedStream && delivered.size >= obligations.size && !skippedGroups;
+  const sweptWholeChangeSet = delivered.size >= obligations.size && !skippedGroups;
   const observation = chunks.length ? {
     strategy: chunks.length === 1 ? "whole-diff" : "chunked-diff",
-    status: chunks.every((chunk) => chunk.status === "completed" || chunk.status === "not-needed") ? sweptWholeChangeSet ? "complete" : "stopped-early" : "incomplete",
+    status: collectionFailed || chunks.some((chunk) => chunk.status !== "completed" && chunk.status !== "not-needed") ? "incomplete" : sweptWholeChangeSet ? "complete" : "stopped-early",
     chunks
   } : null;
   return {
@@ -42928,7 +42958,7 @@ async function planChange(inputs, context, dependencies = {}) {
       if (!configured.tasks[id]?.always) plan.tasks[id].reasons = plan.tasks[id].reasons.filter((reason) => reason !== "always");
       const contextIncomplete = info2.missing.some((item) => item.startsWith("context-resolution:"));
       plan.tasks[id].reasons.push(contextIncomplete ? "context-resolution-incomplete" : "metadata-unavailable");
-      if (contextIncomplete && plan.status === "planned") plan.status = "fallback";
+      if (plan.status === "planned") plan.status = "fallback";
     }
     if (observation?.strategy === "chunked-diff") {
       for (const id of analysisTaskIds) plan.tasks[id].reasons.push("chunked-observation");
@@ -42937,7 +42967,11 @@ async function planChange(inputs, context, dependencies = {}) {
       for (const id of analysisTaskIds) plan.tasks[id].reasons.push("observation-only");
     }
     const counters = budget?.counters ?? EMPTY_COUNTERS;
-    const retained = Object.keys(plan.tasks).filter((id) => plan.tasks[id].proposed_run === null).sort();
+    const retained = Object.keys(plan.tasks).filter((id) => plan.tasks[id].reasons.some((reason) => FALLBACK_REASONS.has(reason))).sort();
+    const states = Object.fromEntries(Object.keys(plan.tasks).sort().map((id) => [
+      id,
+      taskStates[id] ?? (retained.includes(id) ? "fallback-run" : plan.tasks[id].run ? "settled-run" : "settled-skip")
+    ]));
     const report = {
       version: 8,
       tested_ref: inputs.testedRef ?? "merge",
@@ -42966,7 +43000,7 @@ async function planChange(inputs, context, dependencies = {}) {
         changes_total: manifest?.entries.length ?? null,
         analysed_tasks: [...analysisTaskIds].sort(),
         required_without_analysis: Object.keys(plan.tasks).filter((id) => !analysisTaskIds.includes(id)).sort(),
-        task_states: taskStates,
+        task_states: states,
         coverage: coverage ?? {},
         fallback_scope: plan.status !== "fallback" ? "none" : forced ? "global" : "partial",
         fallback_tasks: plan.status !== "fallback" ? [] : forced ? Object.keys(plan.tasks).sort() : retained

@@ -832,25 +832,61 @@ test('an exhausted collection budget names the ceiling it reached', async () => 
     'the budget that stopped the run is named in the registry');
 });
 
-test('an already expired deadline starts no further read and no further call', async () => {
-  const f = fixture({ diff: patch(40) });
+test('a slow inventory does not reduce the analysis allowance', async () => {
+  // `timeout-ms` is the preparation and analysis deadline. Time spent verifying
+  // the comparison and building the inventory happens before that clock starts,
+  // so an inventory slower than the whole timeout must not shorten the analysis.
+  const timeoutMs = 300;
+  const f = fixture();
+  const create = f.dependencies.createRepository!;
   const { plan, report } = await planChange(
-    { ...inputs, timeoutMs: 1, tasks: { check: { description: 'Checks backend rules.' } } },
+    { ...inputs, timeoutMs, tasks: { check: { description: 'Checks backend rules.' } } },
     context, {
       ...f.dependencies,
-      createRepository: async () => {
-        const repository = await f.dependencies.createRepository!({ remoteUrl: '' });
-        return { ...repository, collectManifest: async (comparison: never) => {
-          // Spend the whole allowance before the analysis clock is consulted.
-          const until = performance.now() + 20;
-          while (performance.now() < until) { /* burn the deadline */ }
+      createRepository: async options => {
+        const repository = await create(options);
+        return { ...repository, collectManifest: async comparison => {
+          await new Promise(resolve => setTimeout(resolve, timeoutMs + 100));
           return repository.collectManifest(comparison);
         } };
       },
     });
-  assert.equal(plan.run.check, true);
-  assert.equal(f.calls.evaluate, 0, 'no call once the deadline has passed');
+  assert.equal(f.calls.evaluate, 1, 'the analysis still had its full allowance');
+  assert.equal(plan.run.check, false);
+  assert.equal(plan.status, 'planned');
+  assert.ok(report.durations_ms.collection > timeoutMs, 'the inventory really outlasted the timeout');
+  assert.deepEqual(report.analysis.limits_reached, []);
+});
+
+test('a deadline consumed during preparation starts no read and no observation', async () => {
+  // One task prepares context and burns the whole deadline doing it; a second
+  // task stays open. Nothing may be read or asked for it afterwards.
+  const f = fixture();
+  const definition: SelectionDefinition = { model: 'jev-1.13.0', tasks: {
+    helm: { resolve_context_files: true, description: 'Renders charts', jobs: [{ workflow: '.github/workflows/ci.yml', job: 'helm' }] },
+    build: { description: 'Builds', resolve_context_files: false },
+  } };
+  const create = f.dependencies.createRepository!;
+  const { plan, report } = await planChange({ ...inputs, ...definition, timeoutMs: 1 }, context, {
+    ...f.dependencies,
+    createRepository: async options => ({ ...await create(options), listFiles: async () => ['config.ini'] }),
+    // One macrotask is enough to outlast a 1 ms deadline on any runner.
+    evaluateContext: async () => {
+      await new Promise(resolve => setTimeout(resolve, 5));
+      throw new JevError('jev-timeout', { model: 'jev-1.13.0', usage: { input_tokens: 1, output_tokens: 1 } });
+    },
+  });
   assert.equal(f.calls.patches, 0, 'no Git read once the deadline has passed');
+  assert.equal(f.calls.evaluate, 0, 'no observation call once the deadline has passed');
+  assert.ok(Object.values(plan.run).every(Boolean));
+  assert.equal(plan.status, 'fallback');
+  assert.deepEqual(plan.tasks.build!.reasons, ['analysis-budget-exceeded']);
+  assert.ok(report.analysis.limits_reached.includes('time'));
+  // The preparation failure names its own task, and the expired deadline names
+  // the other: a partial fallback that can be read from its own fields.
+  assert.deepEqual(report.analysis.fallback_tasks, ['build', 'helm']);
+  assert.equal(report.analysis.task_states.build, 'fallback-run');
+  assert.equal(report.analysis.task_states.helm, 'fallback-run');
 });
 
 test('stopping on the first of several units is reported as an early stop, not a complete sweep', async () => {
@@ -946,4 +982,39 @@ test('a single unit left unread keeps the task, even when every other unit is in
   assert.equal(report.analysis.task_states.check, 'fallback-run');
   assert.ok(report.analysis.changes_read < 20);
   assert.deepEqual(plan.tasks.check!.reasons.filter(reason => reason !== 'chunked-observation'), ['diff-too-large']);
+});
+
+test('a change set read in full is complete even when the last group settles the last task', async () => {
+  // One change, one unit, one group, answered `required`. The stream is never
+  // asked for another unit, yet nothing was skipped: this is a complete sweep.
+  const f = fixture({ paths: ['only.txt'] });
+  const { plan, report } = await planChange(
+    { ...inputs, tasks: { check: { description: 'Checks backend rules.' } } },
+    context, {
+      ...f.dependencies,
+      evaluate: async request => ({ answers: Object.fromEntries(request.taskIds.map(id => [id, judgment('required')])),
+        model: 'jev-1.13.0', usage: { input_tokens: 5, output_tokens: 1 } }),
+    });
+  assert.equal(plan.run.check, true);
+  assert.equal(report.analysis.changes_read, report.analysis.changes_total);
+  assert.equal(report.observation!.status, 'complete');
+  assert.equal(f.calls.patches, 1);
+});
+
+test('a preparation fallback names the task it kept', async () => {
+  // Metadata resolution leaves the task mandatory, so its proposal stays true.
+  // The fallback fields must still name it.
+  const f = fixture();
+  const create = f.dependencies.createRepository!;
+  const { plan, report } = await planChange(
+    { ...inputs, tasks: { verify: { description: 'Verifies things.', jobs: [{ workflow: '.github/workflows/missing.yml', job: 'verify' }] } } },
+    context, { ...f.dependencies,
+      createRepository: async options => ({ ...await create(options), readFile: async () => { throw new Error('missing'); } }),
+    });
+  assert.equal(plan.status, 'fallback');
+  assert.equal(plan.run.verify, true);
+  assert.ok(plan.tasks.verify!.reasons.includes('metadata-unavailable'));
+  assert.equal(report.analysis.fallback_scope, 'partial');
+  assert.deepEqual(report.analysis.fallback_tasks, ['verify'], 'the retained task is named');
+  assert.equal(report.analysis.task_states.verify, 'fallback-run');
 });
