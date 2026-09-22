@@ -39,7 +39,7 @@ export function resolveJevApi(options: JevApiOptions) {
 }
 
 export type JevErrorCode = 'jev-timeout' | 'jev-error' | 'invalid-response' | 'jev-rate-limited'
-  | 'jev-payment-required';
+  | 'jev-payment-required' | 'request-too-large';
 
 /**
  * Node's timers are signed 32-bit: a larger delay is silently clamped to 1 ms,
@@ -215,6 +215,8 @@ export async function evaluateChoices(input: JevApiOptions & {
       // A balance that has run out is not a transient fault: retrying or
       // quietly degrading would hide the one condition an operator must see.
       if (error.status === 402) throw new JevError('jev-payment-required', metadata);
+      // 413 is untyped too, and unlike 402 it is recoverable by splitting.
+      if (error.status === 413) throw new JevError('request-too-large', metadata);
       if (error.status === 429) throw new JevError('jev-rate-limited', metadata);
     }
     throw new JevError('jev-error', metadata);

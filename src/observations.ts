@@ -3,6 +3,7 @@ import { splitDiff, ChunkError } from './chunks.js';
 import { buildQuestions, validateChoicesResponse, JevError, type Usage, type evaluateJev, type ChoiceJudgment } from './jev.js';
 import { AnalysisBudget, BudgetError } from './budget.js';
 import { RateController } from './concurrency.js';
+import { TokenMeter } from './window.js';
 import type { Reason } from './policy.js';
 import type { ResolvedSelection } from './tasks.js';
 
@@ -86,6 +87,8 @@ export interface AnalysisRequest {
   concurrency?: number;
   /** Shared with context preparation so both retreat together on a 429. */
   rate?: RateController;
+  /** Sizes requests from measured token usage rather than invented byte caps. */
+  meter?: TokenMeter;
   /**
    * Stop asking about a task once its execution is acquired, and stop pulling
    * patch text once every task is settled. Disabled by the evaluation harness,
@@ -122,13 +125,16 @@ export class ObservationSizeError extends Error {
   constructor(public readonly code: 'context-too-large' | 'diff-too-large' | 'unrepresentable-change') { super(code); }
 }
 
-// Byte guards include real metadata and JSON escaping. They are not token counts.
+/**
+ * Nominal ceilings, kept for the transport guard and for context preparation.
+ * They correspond to the documented window at the declared prior ratio; the
+ * observation sizes itself from measured usage instead (see `TokenMeter`).
+ * They are byte counts including metadata and JSON escaping, never token counts.
+ */
 export const STATE_AND_QUESTION_BYTES = 64 * 1024;
 export const REQUEST_BYTES = 128 * 1024;
-export const GROUP_TARGET_BYTES = 20 * 1024;
 /** Reported when a unit could not be collected inside the shared budget. */
 export const PATCH_UNIT_LIMIT_REASON = 'analysis-budget-exceeded' as const satisfies Reason;
-const MAX_CHUNKS = 64;
 
 const addUsage = (values: Array<Usage | null>): Usage | null => {
   const usages = values.filter((usage): usage is Usage => usage !== null);
@@ -148,9 +154,39 @@ const singleModel = (models: Array<string | null>): string | null => {
  * every candidate, an upper bound that stays valid as tasks settle and drop
  * out of subsequent calls.
  */
-function groupsFor(request: AnalysisRequest, delivery: PatchDelivery, shared: State, longestQuestion: number) {
-  let budget = Math.min(request.maxGroupBytes ?? GROUP_TARGET_BYTES,
-    STATE_AND_QUESTION_BYTES - bytes(shared) - longestQuestion - 1024);
+type Group = ReturnType<typeof toGroup>;
+
+function toGroup(part: ReturnType<typeof splitDiff>[number], index: number, total: number,
+  shared: State, budget: number) {
+  return {
+    paths: part.paths,
+    diff: part.diff,
+    startByte: part.startByte,
+    endByte: part.endByte,
+    budget,
+    state: { ...shared, changed_paths: part.paths, diff: part.diff,
+      chunk: { index, total, start_byte: part.startByte, end_byte: part.endByte,
+        preceding_diff_headers: part.context,
+        scope: 'Evaluate only these files and hunks. Other groups are not included.' } },
+  };
+}
+
+/** Re-split one group that the provider refused as too large. */
+function splitParts(request: AnalysisRequest, shared: State, diff: string, budget: number): Group[] {
+  try {
+    const parts = splitDiff(diff, budget, request.workingDirectories);
+    return parts.map((part, index) => toGroup(part, index, parts.length, shared, budget));
+  } catch {
+    return [];
+  }
+}
+
+function groupsFor(request: AnalysisRequest, delivery: PatchDelivery, shared: State, longestQuestion: number,
+  meter: TokenMeter) {
+  // The ceiling is what the provider's window affords, measured from real
+  // responses; the harness override stays exact so replay keeps its hashes.
+  const ceiling = meter.stateAndQuestionBytes();
+  let budget = request.maxGroupBytes ?? Math.max(1024, ceiling - bytes(shared) - longestQuestion - 1024);
   for (let attempt = 0; attempt < 12 && budget >= 1024; attempt++) {
     let parts;
     try { parts = splitDiff(delivery.diff, budget, request.workingDirectories); }
@@ -158,18 +194,8 @@ function groupsFor(request: AnalysisRequest, delivery: PatchDelivery, shared: St
       if (error instanceof ChunkError) throw new ObservationSizeError(error.code === 'unparseable-diff' ? 'unrepresentable-change' : 'context-too-large');
       throw error;
     }
-    if (parts.length > MAX_CHUNKS) throw new ObservationSizeError('diff-too-large');
-    const states = parts.map((part, index) => ({
-      paths: part.paths,
-      diff: part.diff,
-      startByte: part.startByte,
-      endByte: part.endByte,
-      state: { ...shared, changed_paths: part.paths, diff: part.diff,
-        chunk: { index, total: parts.length, start_byte: part.startByte, end_byte: part.endByte,
-          preceding_diff_headers: part.context,
-          scope: 'Evaluate only these files and hunks. Other groups are not included.' } },
-    }));
-    const excess = Math.max(-Infinity, ...states.map(part => bytes(part.state) + longestQuestion - STATE_AND_QUESTION_BYTES));
+    const states = parts.map((part, index) => toGroup(part, index, parts.length, shared, budget));
+    const excess = Math.max(-Infinity, ...states.map(part => bytes(part.state) + longestQuestion - ceiling));
     if (!states.length || excess <= 0) return states;
     budget -= excess + 128;
   }
@@ -208,6 +234,7 @@ export async function analyseChange(request: AnalysisRequest, evaluate: typeof e
   const { budget } = request;
   const stopWhenSettled = request.stopWhenSettled !== false;
   const rate = request.rate ?? new RateController();
+  const meter = request.meter ?? new TokenMeter();
   const candidates = [...new Set(request.taskIds)].sort();
   const states = new Map<string, TaskState>(candidates.map(id => [id, 'pending' as TaskState]));
   const taskErrors = new Map<string, Reason>();
@@ -266,7 +293,7 @@ export async function analyseChange(request: AnalysisRequest, evaluate: typeof e
       }
 
       let groups;
-      try { groups = groupsFor(request, delivery, request.state, longestQuestion); }
+      try { groups = groupsFor(request, delivery, request.state, longestQuestion, meter); }
       catch (error) {
         if (!(error instanceof ObservationSizeError)) throw error;
         if (request.throwOnSizeError) throw error;
@@ -277,8 +304,10 @@ export async function analyseChange(request: AnalysisRequest, evaluate: typeof e
 
       const deliveredIds = [...delivery.changeIds];
       for (const changeId of deliveredIds) delivered.add(changeId);
-      const unitChunks: Array<{ record: ObservationChunk; state: unknown; answered: Set<string> }> = [];
-      for (const group of groups) {
+      type Slot = { record: ObservationChunk; state: unknown; answered: Set<string>;
+        diff: string; budget: number; depth: number; superseded?: boolean };
+      const unitChunks: Slot[] = [];
+      const addSlot = (group: Group, depth: number) => {
         const record: ObservationChunk = {
           index: chunks.length + unitChunks.length,
           unit_index: unitIndex,
@@ -292,8 +321,10 @@ export async function analyseChange(request: AnalysisRequest, evaluate: typeof e
           status: 'not-started', judgments: null, model: null, usage: null, duration_ms: null,
           error: null, requests: [],
         };
-        unitChunks.push({ record, state: group.state, answered: new Set<string>() });
-      }
+        unitChunks.push({ record, state: group.state, answered: new Set<string>(),
+          diff: group.diff, budget: group.budget, depth });
+      };
+      for (const group of groups) addSlot(group, 0);
 
       let index = 0;
       const worker = async (): Promise<void> => {
@@ -356,6 +387,8 @@ export async function analyseChange(request: AnalysisRequest, evaluate: typeof e
               slot.record.judgments = { ...slot.record.judgments, ...validated.answers };
               call.status = 'completed'; call.model = result.model; call.usage = result.usage;
               if (result.transport) dispatched = { attempts: result.transport.attempts, sentBytes: result.transport.sent_bytes };
+              // The provider's own accounting is the only honest ratio we have.
+              if (result.usage && dispatched) meter.record(dispatched.sentBytes, result.usage.input_tokens);
               rate.noteSuccess();
               for (const [id, answer] of Object.entries(validated.answers)) {
                 if (answer.choice === 'required' || answer.choice === 'unresolved') settle(id, 'settled-run');
@@ -363,6 +396,25 @@ export async function analyseChange(request: AnalysisRequest, evaluate: typeof e
               }
             } catch (error) {
               if (!(error instanceof JevError)) throw error;
+              if (error.code === 'request-too-large') {
+                // Too big for the window: shrink the estimate and split this
+                // group rather than losing its coverage. noteRejection is
+                // monotone decreasing, so this loop terminates.
+                meter.noteRejection(requestBytes);
+                call.status = 'not-started';
+                const halves = slot.depth < 4
+                  ? splitParts(request, request.state, slot.diff, Math.max(1024, Math.floor(slot.budget / 2)))
+                  : [];
+                if (halves.length > 1) {
+                  // The halves now carry this group's changes entirely, so the
+                  // replaced slot must stop gating the unit's coverage.
+                  slot.superseded = true;
+                  for (const half of halves) addSlot(half, slot.depth + 1);
+                  continue;
+                }
+                for (const id of taskIds) settle(id, 'fallback-run', 'context-too-large');
+                continue;
+              }
               call.status = 'failed'; call.error = error.code; failure ??= error.code;
               if (error.code === 'jev-rate-limited') rate.noteRateLimit();
               call.model = error.metadata.model; call.usage = error.metadata.usage;
@@ -390,10 +442,11 @@ export async function analyseChange(request: AnalysisRequest, evaluate: typeof e
       const unneeded = decidedOnly();
       // A change is discharged for a task only when every group covering it came
       // back independent. One silent group leaves the obligation open.
+      const live = unitChunks.filter(slot => !slot.superseded);
       const discharged = candidates.filter(id => states.get(id) === 'pending'
-        && unitChunks.length > 0 && unitChunks.every(slot => slot.answered.has(id)));
+        && live.length > 0 && live.every(slot => slot.answered.has(id)));
       for (const id of discharged) for (const changeId of deliveredIds) covered.get(id)!.add(changeId);
-      for (const { record } of unitChunks) {
+      for (const { record } of live) {
         const requests = record.requests!;
         if (!requests.length) {
           record.status = unneeded ? 'not-needed' : 'not-started';

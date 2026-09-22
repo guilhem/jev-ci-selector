@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { selection, judgment } from '../fixtures/selection.js';
 import { evaluateJev, buildQuestions, JevError, type JevResult } from '../../src/jev.js';
 import { patch } from '../fixtures/diff.js';
-import { observeChange } from '../../src/observations.js';
+import { observeChange, REQUEST_BYTES, STATE_AND_QUESTION_BYTES } from '../../src/observations.js';
 
 type Evaluate = typeof evaluateJev;
 type EvaluateInput = Parameters<Evaluate>[0];
@@ -42,8 +42,9 @@ test('preserves Unicode fragments, source ranges, and byte request budgets', asy
     assert.ok(state.chunk);
     const questions = buildQuestions(input.selection, input.taskIds);
     const question = Object.values(questions);
-    assert.ok(Buffer.byteLength(JSON.stringify(state)) + Buffer.byteLength(JSON.stringify(question[0])) <= 24 * 1024);
-    assert.ok(Buffer.byteLength(JSON.stringify(state)) + Buffer.byteLength(JSON.stringify(questions)) <= 48 * 1024);
+    // Groups are sized from the provider's window, not from a fixed target.
+    assert.ok(Buffer.byteLength(JSON.stringify(state)) + Buffer.byteLength(JSON.stringify(question[0])) <= STATE_AND_QUESTION_BYTES);
+    assert.ok(Buffer.byteLength(JSON.stringify(state)) + Buffer.byteLength(JSON.stringify(questions)) <= REQUEST_BYTES);
     calls.push({ index: state.chunk.index, state, timeoutMs: input.timeoutMs });
     return response(input);
   });

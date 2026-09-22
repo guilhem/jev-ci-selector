@@ -38481,6 +38481,7 @@ async function evaluateChoices(input, fetchImpl) {
     if (error instanceof APITimeoutError || signal.aborted) throw new JevError("jev-timeout", metadata);
     if (error instanceof APIError) {
       if (error.status === 402) throw new JevError("jev-payment-required", metadata);
+      if (error.status === 413) throw new JevError("request-too-large", metadata);
       if (error.status === 429) throw new JevError("jev-rate-limited", metadata);
     }
     throw new JevError("jev-error", metadata);
@@ -42236,6 +42237,77 @@ var RateController = class {
   }
 };
 
+// src/window.ts
+var PROVIDER_STATE_QUESTION_TOKENS = 32e3;
+var PROVIDER_REQUEST_TOKENS = 64e3;
+var BYTES_PER_TOKEN_PRIOR = 2;
+var SAFETY = 0.85;
+var MIN_SAMPLE_TOKENS = 500;
+var MAX_GROWTH = 1.5;
+var MIN_BYTES = 16 * 1024;
+var MAX_BYTES = 512 * 1024;
+var TokenMeter = class {
+  #ratio = BYTES_PER_TOKEN_PRIOR;
+  #observedMin = null;
+  #samples = 0;
+  #rejections = 0;
+  #lastStateBudget = null;
+  get report() {
+    return {
+      prior: BYTES_PER_TOKEN_PRIOR,
+      observed_min: this.#observedMin,
+      samples: this.#samples,
+      applied: this.#ratio,
+      rejections: this.#rejections
+    };
+  }
+  /**
+   * Fold in what one response really cost.
+   *
+   * The first usable sample replaces the prior outright, so a genuinely dense
+   * ratio can raise the budget. Every later sample takes the minimum, because
+   * we are sizing against a ceiling and the worst density is the one that has
+   * to fit.
+   */
+  record(sentBytes, inputTokens) {
+    if (!Number.isFinite(sentBytes) || !Number.isFinite(inputTokens)) return;
+    if (inputTokens < MIN_SAMPLE_TOKENS || sentBytes <= 0) return;
+    const ratio = sentBytes / inputTokens;
+    if (!Number.isFinite(ratio) || ratio <= 0) return;
+    this.#samples += 1;
+    this.#observedMin = this.#observedMin === null ? ratio : Math.min(this.#observedMin, ratio);
+    this.#ratio = this.#samples === 1 ? ratio : this.#observedMin;
+  }
+  /**
+   * A request refused for size proves that many bytes exceeded the window.
+   *
+   * The resulting ratio is strictly below the one that produced the rejection,
+   * which is what makes the caller's split-and-retry loop terminate.
+   */
+  noteRejection(rejectedBytes) {
+    if (!Number.isFinite(rejectedBytes) || rejectedBytes <= 0) return;
+    this.#rejections += 1;
+    const implied = rejectedBytes / PROVIDER_STATE_QUESTION_TOKENS * 0.9;
+    this.#ratio = Math.min(this.#ratio, implied);
+    this.#observedMin = this.#observedMin === null ? this.#ratio : Math.min(this.#observedMin, this.#ratio);
+  }
+  #budget(tokens, previous) {
+    const raw = Math.floor(tokens * this.#ratio * SAFETY);
+    const capped = previous === null ? raw : Math.min(raw, Math.floor(previous * MAX_GROWTH));
+    return Math.max(MIN_BYTES, Math.min(MAX_BYTES, capped));
+  }
+  /** Byte budget for `state` plus the longest question. */
+  stateAndQuestionBytes() {
+    const value = this.#budget(PROVIDER_STATE_QUESTION_TOKENS, this.#lastStateBudget);
+    this.#lastStateBudget = value;
+    return value;
+  }
+  /** Byte budget for the complete request payload. */
+  requestBytes() {
+    return this.#budget(PROVIDER_REQUEST_TOKENS, null);
+  }
+};
+
 // src/observations.ts
 var hash = (value) => (0, import_node_crypto4.createHash)("sha256").update(value, "utf8").digest("hex");
 var bytes = (value) => Buffer.byteLength(JSON.stringify(value) ?? "", "utf8");
@@ -42248,9 +42320,7 @@ var ObservationSizeError = class extends Error {
 };
 var STATE_AND_QUESTION_BYTES = 64 * 1024;
 var REQUEST_BYTES = 128 * 1024;
-var GROUP_TARGET_BYTES = 20 * 1024;
 var PATCH_UNIT_LIMIT_REASON = "analysis-budget-exceeded";
-var MAX_CHUNKS = 64;
 var addUsage = (values) => {
   const usages = values.filter((usage) => usage !== null);
   return usages.length ? usages.reduce((total, usage) => ({
@@ -42262,11 +42332,39 @@ var singleModel = (models) => {
   const unique = [...new Set(models.filter((model) => model !== null))];
   return unique.length === 1 ? unique[0] : null;
 };
-function groupsFor(request, delivery, shared, longestQuestion) {
-  let budget = Math.min(
-    request.maxGroupBytes ?? GROUP_TARGET_BYTES,
-    STATE_AND_QUESTION_BYTES - bytes(shared) - longestQuestion - 1024
-  );
+function toGroup(part, index, total, shared, budget) {
+  return {
+    paths: part.paths,
+    diff: part.diff,
+    startByte: part.startByte,
+    endByte: part.endByte,
+    budget,
+    state: {
+      ...shared,
+      changed_paths: part.paths,
+      diff: part.diff,
+      chunk: {
+        index,
+        total,
+        start_byte: part.startByte,
+        end_byte: part.endByte,
+        preceding_diff_headers: part.context,
+        scope: "Evaluate only these files and hunks. Other groups are not included."
+      }
+    }
+  };
+}
+function splitParts(request, shared, diff, budget) {
+  try {
+    const parts = splitDiff(diff, budget, request.workingDirectories);
+    return parts.map((part, index) => toGroup(part, index, parts.length, shared, budget));
+  } catch {
+    return [];
+  }
+}
+function groupsFor(request, delivery, shared, longestQuestion, meter) {
+  const ceiling = meter.stateAndQuestionBytes();
+  let budget = request.maxGroupBytes ?? Math.max(1024, ceiling - bytes(shared) - longestQuestion - 1024);
   for (let attempt = 0; attempt < 12 && budget >= 1024; attempt++) {
     let parts;
     try {
@@ -42275,27 +42373,8 @@ function groupsFor(request, delivery, shared, longestQuestion) {
       if (error instanceof ChunkError) throw new ObservationSizeError(error.code === "unparseable-diff" ? "unrepresentable-change" : "context-too-large");
       throw error;
     }
-    if (parts.length > MAX_CHUNKS) throw new ObservationSizeError("diff-too-large");
-    const states = parts.map((part, index) => ({
-      paths: part.paths,
-      diff: part.diff,
-      startByte: part.startByte,
-      endByte: part.endByte,
-      state: {
-        ...shared,
-        changed_paths: part.paths,
-        diff: part.diff,
-        chunk: {
-          index,
-          total: parts.length,
-          start_byte: part.startByte,
-          end_byte: part.endByte,
-          preceding_diff_headers: part.context,
-          scope: "Evaluate only these files and hunks. Other groups are not included."
-        }
-      }
-    }));
-    const excess = Math.max(-Infinity, ...states.map((part) => bytes(part.state) + longestQuestion - STATE_AND_QUESTION_BYTES));
+    const states = parts.map((part, index) => toGroup(part, index, parts.length, shared, budget));
+    const excess = Math.max(-Infinity, ...states.map((part) => bytes(part.state) + longestQuestion - ceiling));
     if (!states.length || excess <= 0) return states;
     budget -= excess + 128;
   }
@@ -42320,6 +42399,7 @@ async function analyseChange(request, evaluate) {
   const { budget } = request;
   const stopWhenSettled = request.stopWhenSettled !== false;
   const rate = request.rate ?? new RateController();
+  const meter = request.meter ?? new TokenMeter();
   const candidates = [...new Set(request.taskIds)].sort();
   const states = new Map(candidates.map((id) => [id, "pending"]));
   const taskErrors = /* @__PURE__ */ new Map();
@@ -42364,7 +42444,7 @@ async function analyseChange(request, evaluate) {
     }
     let groups;
     try {
-      groups = groupsFor(request, delivery, request.state, longestQuestion);
+      groups = groupsFor(request, delivery, request.state, longestQuestion, meter);
     } catch (error) {
       if (!(error instanceof ObservationSizeError)) throw error;
       if (request.throwOnSizeError) throw error;
@@ -42374,7 +42454,7 @@ async function analyseChange(request, evaluate) {
     const deliveredIds = [...delivery.changeIds];
     for (const changeId of deliveredIds) delivered.add(changeId);
     const unitChunks = [];
-    for (const group of groups) {
+    const addSlot = (group, depth) => {
       const record3 = {
         index: chunks.length + unitChunks.length,
         unit_index: unitIndex,
@@ -42393,8 +42473,16 @@ async function analyseChange(request, evaluate) {
         error: null,
         requests: []
       };
-      unitChunks.push({ record: record3, state: group.state, answered: /* @__PURE__ */ new Set() });
-    }
+      unitChunks.push({
+        record: record3,
+        state: group.state,
+        answered: /* @__PURE__ */ new Set(),
+        diff: group.diff,
+        budget: group.budget,
+        depth
+      });
+    };
+    for (const group of groups) addSlot(group, 0);
     let index = 0;
     const worker = async () => {
       while (index < unitChunks.length) {
@@ -42481,6 +42569,7 @@ async function analyseChange(request, evaluate) {
             call.model = result.model;
             call.usage = result.usage;
             if (result.transport) dispatched2 = { attempts: result.transport.attempts, sentBytes: result.transport.sent_bytes };
+            if (result.usage && dispatched2) meter.record(dispatched2.sentBytes, result.usage.input_tokens);
             rate.noteSuccess();
             for (const [id, answer] of Object.entries(validated.answers)) {
               if (answer.choice === "required" || answer.choice === "unresolved") settle(id, "settled-run");
@@ -42488,6 +42577,18 @@ async function analyseChange(request, evaluate) {
             }
           } catch (error) {
             if (!(error instanceof JevError)) throw error;
+            if (error.code === "request-too-large") {
+              meter.noteRejection(requestBytes);
+              call.status = "not-started";
+              const halves = slot.depth < 4 ? splitParts(request, request.state, slot.diff, Math.max(1024, Math.floor(slot.budget / 2))) : [];
+              if (halves.length > 1) {
+                slot.superseded = true;
+                for (const half of halves) addSlot(half, slot.depth + 1);
+                continue;
+              }
+              for (const id of taskIds) settle(id, "fallback-run", "context-too-large");
+              continue;
+            }
             call.status = "failed";
             call.error = error.code;
             failure ??= error.code;
@@ -42508,9 +42609,10 @@ async function analyseChange(request, evaluate) {
     const concurrency = Math.max(1, Math.min(request.concurrency ?? rate.ceiling, unitChunks.length));
     await Promise.all(Array.from({ length: concurrency }, worker));
     const unneeded = decidedOnly();
-    const discharged = candidates.filter((id) => states.get(id) === "pending" && unitChunks.length > 0 && unitChunks.every((slot) => slot.answered.has(id)));
+    const live = unitChunks.filter((slot) => !slot.superseded);
+    const discharged = candidates.filter((id) => states.get(id) === "pending" && live.length > 0 && live.every((slot) => slot.answered.has(id)));
     for (const id of discharged) for (const changeId of deliveredIds) covered.get(id).add(changeId);
-    for (const { record: record3 } of unitChunks) {
+    for (const { record: record3 } of live) {
       const requests = record3.requests;
       if (!requests.length) {
         record3.status = unneeded ? "not-needed" : "not-started";
@@ -42740,7 +42842,7 @@ async function resolveContextFiles(request, evaluate = evaluateChoices, passCoun
               if (result.transport) dispatched = { attempts: result.transport.attempts, sentBytes: result.transport.sent_bytes };
               rate.noteSuccess();
             } catch (error) {
-              failure = error instanceof JevError ? error.code : "jev-error";
+              failure = error instanceof JevError ? error.code === "request-too-large" ? "context-too-large" : error.code : "jev-error";
               if (failure === "jev-rate-limited") rate.noteRateLimit();
               call.status = "failed";
               call.error = failure;

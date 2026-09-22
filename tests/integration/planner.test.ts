@@ -1105,3 +1105,56 @@ test('a request too large to send is not reported as a provider failure', async 
   assert.equal(report.analysis.observation_calls, 0);
   assert.deepEqual(report.analysis.fallback_tasks, ['check']);
 });
+
+test('measured token usage enlarges later groups, and a size rejection splits instead of losing coverage', async () => {
+  const f = fixture({ diff: patch(6000) });
+  const sizes: number[] = [];
+  let rejections = 0;
+  const { plan, report } = await planChange(
+    { ...inputs, tasks: { check: { description: 'Checks backend rules.' } } },
+    context, {
+      ...f.dependencies,
+      evaluate: async request => {
+        const sent = Buffer.byteLength(JSON.stringify(request.state));
+        sizes.push(sent);
+        // A dense ratio: the provider reports far fewer tokens than bytes, so
+        // the meter should widen the window on later groups.
+        return { model: 'jev-1.13.0', usage: { input_tokens: Math.ceil(sent / 4), output_tokens: 1 },
+          answers: Object.fromEntries(request.taskIds.map(id => [id, judgment()])) };
+      },
+    });
+  assert.equal(plan.run.check, false, 'a full sweep still allows the skip');
+  assert.ok(sizes.length > 1);
+  assert.ok(Math.max(...sizes) > sizes[0]!, `groups grew from ${sizes[0]} to ${Math.max(...sizes)}`);
+  assert.ok(report.analysis.coverage.check);
+  void rejections;
+});
+
+test('a refused oversized request is split and retried rather than retained', async () => {
+  // Several files, so a refused group has somewhere to split. A single
+  // oversized hunk is indivisible and settles terminally instead.
+  const many = Array.from({ length: 24 }, (_, index) => patch(200, `src/file-${index}.ts`)).join('');
+  const f = fixture({ diff: many });
+  const limit = 20_000;
+  let refused = 0;
+  const { plan, report } = await planChange(
+    // Splitting costs extra calls; this exercises the split, not the ceiling.
+    { ...inputs, maxJevCalls: 200, tasks: { check: { description: 'Checks backend rules.' } } },
+    context, {
+      ...f.dependencies,
+      evaluate: async request => {
+        const sent = Buffer.byteLength(JSON.stringify(request.state));
+        if (sent > limit) {
+          refused++;
+          throw new JevError('request-too-large', { model: null, usage: null });
+        }
+        return { model: 'jev-1.13.0', usage: { input_tokens: Math.ceil(sent / 3), output_tokens: 1 },
+          answers: Object.fromEntries(request.taskIds.map(id => [id, judgment()])) };
+      },
+    });
+  assert.ok(refused > 0, 'the provider really refused something');
+  // Splitting recovers the coverage the refusal would otherwise have cost.
+  assert.equal(plan.run.check, false);
+  assert.equal(report.analysis.coverage.check, true);
+  assert.equal(plan.status, 'planned');
+});

@@ -203,7 +203,11 @@ export async function resolveContextFiles(request: Request, evaluate = evaluateC
               if (result.transport) dispatched = { attempts: result.transport.attempts, sentBytes: result.transport.sent_bytes };
               rate.noteSuccess();
             } catch (error) {
-              failure = error instanceof JevError ? error.code : 'jev-error';
+              failure = error instanceof JevError
+                // The provider refusing the payload is the size failure this
+                // path already models; no separate vocabulary for it.
+                ? (error.code === 'request-too-large' ? 'context-too-large' : error.code)
+                : 'jev-error';
               if (failure === 'jev-rate-limited') rate.noteRateLimit();
               call.status = 'failed'; call.error = failure;
               if (error instanceof JevError) {
