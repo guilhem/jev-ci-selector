@@ -276,3 +276,16 @@ test('SDK environment cannot enable debug logs or override the destination and m
     if (old.model === undefined) delete process.env.TYPESAFE_DEFAULT_MODEL; else process.env.TYPESAFE_DEFAULT_MODEL = old.model;
   }
 });
+
+test('a deadline beyond Node timer range still sends a real request', async () => {
+  // Unclamped, Node turns any delay past 2^31-1 into 1ms and every call dies.
+  let calls = 0;
+  const result = await evaluateChoices({ ...choiceInput(), timeoutMs: Number.MAX_SAFE_INTEGER,
+    totalMs: Number.POSITIVE_INFINITY }, async () => {
+    calls++;
+    await new Promise(resolve => setTimeout(resolve, 20));
+    return Response.json(validChoices());
+  });
+  assert.equal(calls, 1);
+  assert.equal(result.model, 'jev-1.13.0');
+});

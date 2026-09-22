@@ -38,7 +38,18 @@ export function resolveJevApi(options: JevApiOptions) {
   return { baseURL: url.href.replace(/\/+$/, ''), model };
 }
 
-export type JevErrorCode = 'jev-timeout' | 'jev-error' | 'invalid-response' | 'jev-rate-limited';
+export type JevErrorCode = 'jev-timeout' | 'jev-error' | 'invalid-response' | 'jev-rate-limited'
+  | 'jev-payment-required';
+
+/**
+ * Node's timers are signed 32-bit: a larger delay is silently clamped to 1 ms,
+ * so an "effectively unlimited" timeout would make every request fail almost
+ * immediately. Every duration handed to the SDK or to AbortSignal goes through
+ * here. See typesafe-ai/typesafe-sdk-js#8.
+ */
+const MAX_TIMER_MS = 2_147_483_647;
+export const clampTimeout = (ms: number): number =>
+  !Number.isFinite(ms) || ms > MAX_TIMER_MS ? MAX_TIMER_MS : Math.max(1, Math.floor(ms));
 export class JevError extends Error {
   constructor(public readonly code: JevErrorCode,
     public readonly metadata: JevMetadata = { model: null, usage: null }) { super(code); }
@@ -168,8 +179,9 @@ export async function evaluateChoices(input: JevApiOptions & {
   /** Wall-clock budget for this call including its retries. Defaults to `timeoutMs`. */
   totalMs?: number;
 }, fetchImpl?: JevFetch): Promise<JevResult> {
-  const { model, state, questions, apiKey, timeoutMs } = input;
-  const totalMs = Math.max(1, input.totalMs ?? timeoutMs);
+  const { model, state, questions, apiKey } = input;
+  const timeoutMs = clampTimeout(input.timeoutMs);
+  const totalMs = clampTimeout(Math.max(timeoutMs, input.totalMs ?? timeoutMs));
   const api = resolveJevApi(input);
   if (!Object.keys(questions).length) throw new Error('empty-jev-request');
   const requestedModel = api.model ?? model;
@@ -197,8 +209,14 @@ export async function evaluateChoices(input: JevApiOptions & {
     const metadata = { model: null, usage: null, transport: meter.record };
     if (error instanceof RateLimitError) throw new JevError('jev-rate-limited', metadata);
     if (error instanceof APITimeoutError || signal.aborted) throw new JevError('jev-timeout', metadata);
-    // A 429 that outlived its retries can also surface as a plain APIError.
-    if (error instanceof APIError && error.status === 429) throw new JevError('jev-rate-limited', metadata);
+    // 402 and 413 have no typed subclass, so they must be matched on status.
+    // See typesafe-ai/typesafe-sdk-js#13.
+    if (error instanceof APIError) {
+      // A balance that has run out is not a transient fault: retrying or
+      // quietly degrading would hide the one condition an operator must see.
+      if (error.status === 402) throw new JevError('jev-payment-required', metadata);
+      if (error.status === 429) throw new JevError('jev-rate-limited', metadata);
+    }
     throw new JevError('jev-error', metadata);
   }
 }

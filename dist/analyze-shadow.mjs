@@ -7070,6 +7070,7 @@ var report_schema_default = {
                 "jev-error",
                 "invalid-response",
                 "jev-rate-limited",
+                "jev-payment-required",
                 "context-too-large",
                 "chunked-observation",
                 "observation-only",
@@ -7129,6 +7130,7 @@ var report_schema_default = {
         "jev-error",
         "invalid-response",
         "jev-rate-limited",
+        "jev-payment-required",
         "context-too-large",
         "diff-too-large",
         "unrepresentable-change",
@@ -7406,6 +7408,7 @@ var report_schema_default = {
             "jev-error",
             "invalid-response",
             "jev-rate-limited",
+            "jev-payment-required",
             null
           ]
         },
@@ -7652,6 +7655,7 @@ var report_schema_default = {
             "jev-error",
             "invalid-response",
             "jev-rate-limited",
+            "jev-payment-required",
             null
           ]
         },
@@ -7681,7 +7685,8 @@ var report_schema_default = {
         "git-read-failed",
         "context-too-large",
         "analysis-budget-exceeded",
-        "jev-rate-limited"
+        "jev-rate-limited",
+        "jev-payment-required"
       ]
     },
     choiceJudgment: {

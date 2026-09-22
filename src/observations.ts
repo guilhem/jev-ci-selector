@@ -6,7 +6,8 @@ import { RateController } from './concurrency.js';
 import type { Reason } from './policy.js';
 import type { ResolvedSelection } from './tasks.js';
 
-type ObservationError = 'jev-timeout' | 'jev-error' | 'invalid-response' | 'jev-rate-limited';
+type ObservationError = 'jev-timeout' | 'jev-error' | 'invalid-response' | 'jev-rate-limited'
+  | 'jev-payment-required';
 type CallStatus = 'completed' | 'failed' | 'not-started' | 'not-needed';
 export interface ObservationCall {
   task_ids: string[];

@@ -38346,6 +38346,8 @@ function resolveJevApi(options) {
   if (model !== void 0 && !/^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}(?![\s\S])/.test(model)) throw new InputError("api-model");
   return { baseURL: url.href.replace(/\/+$/, ""), model };
 }
+var MAX_TIMER_MS = 2147483647;
+var clampTimeout = (ms) => !Number.isFinite(ms) || ms > MAX_TIMER_MS ? MAX_TIMER_MS : Math.max(1, Math.floor(ms));
 var JevError = class extends Error {
   constructor(code, metadata = { model: null, usage: null }) {
     super(code);
@@ -38448,8 +38450,9 @@ async function evaluateJev(input, fetchImpl) {
   return evaluateChoices({ ...request, model: selection.model, questions: buildQuestions(selection, taskIds) }, fetchImpl);
 }
 async function evaluateChoices(input, fetchImpl) {
-  const { model, state, questions, apiKey, timeoutMs } = input;
-  const totalMs = Math.max(1, input.totalMs ?? timeoutMs);
+  const { model, state, questions, apiKey } = input;
+  const timeoutMs = clampTimeout(input.timeoutMs);
+  const totalMs = clampTimeout(Math.max(timeoutMs, input.totalMs ?? timeoutMs));
   const api = resolveJevApi(input);
   if (!Object.keys(questions).length) throw new Error("empty-jev-request");
   const requestedModel = api.model ?? model;
@@ -38476,7 +38479,10 @@ async function evaluateChoices(input, fetchImpl) {
     const metadata = { model: null, usage: null, transport: meter.record };
     if (error instanceof RateLimitError) throw new JevError("jev-rate-limited", metadata);
     if (error instanceof APITimeoutError || signal.aborted) throw new JevError("jev-timeout", metadata);
-    if (error instanceof APIError && error.status === 429) throw new JevError("jev-rate-limited", metadata);
+    if (error instanceof APIError) {
+      if (error.status === 402) throw new JevError("jev-payment-required", metadata);
+      if (error.status === 429) throw new JevError("jev-rate-limited", metadata);
+    }
     throw new JevError("jev-error", metadata);
   }
 }
@@ -40368,6 +40374,7 @@ var FALLBACK_REASONS = /* @__PURE__ */ new Set([
   "jev-error",
   "invalid-response",
   "jev-rate-limited",
+  "jev-payment-required",
   "context-too-large",
   "metadata-unavailable",
   "observation-incomplete",
@@ -40639,6 +40646,7 @@ var report_schema_default = {
                 "jev-error",
                 "invalid-response",
                 "jev-rate-limited",
+                "jev-payment-required",
                 "context-too-large",
                 "chunked-observation",
                 "observation-only",
@@ -40698,6 +40706,7 @@ var report_schema_default = {
         "jev-error",
         "invalid-response",
         "jev-rate-limited",
+        "jev-payment-required",
         "context-too-large",
         "diff-too-large",
         "unrepresentable-change",
@@ -40975,6 +40984,7 @@ var report_schema_default = {
             "jev-error",
             "invalid-response",
             "jev-rate-limited",
+            "jev-payment-required",
             null
           ]
         },
@@ -41221,6 +41231,7 @@ var report_schema_default = {
             "jev-error",
             "invalid-response",
             "jev-rate-limited",
+            "jev-payment-required",
             null
           ]
         },
@@ -41250,7 +41261,8 @@ var report_schema_default = {
         "git-read-failed",
         "context-too-large",
         "analysis-budget-exceeded",
-        "jev-rate-limited"
+        "jev-rate-limited",
+        "jev-payment-required"
       ]
     },
     choiceJudgment: {

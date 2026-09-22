@@ -9,7 +9,7 @@ import { AnalysisBudget, BudgetError } from './budget.js';
 import { RateController } from './concurrency.js';
 
 export type ContextError = 'jev-timeout' | 'jev-error' | 'invalid-response' | 'jev-rate-limited'
-  | 'git-read-failed' | 'context-too-large' | 'analysis-budget-exceeded';
+  | 'jev-payment-required' | 'git-read-failed' | 'context-too-large' | 'analysis-budget-exceeded';
 export interface ContextCall {
   paths: string[];
   request_hash: string;

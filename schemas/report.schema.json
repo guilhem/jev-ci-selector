@@ -185,6 +185,7 @@
                 "jev-error",
                 "invalid-response",
                 "jev-rate-limited",
+                "jev-payment-required",
                 "context-too-large",
                 "chunked-observation",
                 "observation-only",
@@ -244,6 +245,7 @@
         "jev-error",
         "invalid-response",
         "jev-rate-limited",
+        "jev-payment-required",
         "context-too-large",
         "diff-too-large",
         "unrepresentable-change",
@@ -521,6 +523,7 @@
             "jev-error",
             "invalid-response",
             "jev-rate-limited",
+            "jev-payment-required",
             null
           ]
         },
@@ -767,6 +770,7 @@
             "jev-error",
             "invalid-response",
             "jev-rate-limited",
+            "jev-payment-required",
             null
           ]
         },
@@ -796,7 +800,8 @@
         "git-read-failed",
         "context-too-large",
         "analysis-budget-exceeded",
-        "jev-rate-limited"
+        "jev-rate-limited",
+        "jev-payment-required"
       ]
     },
     "choiceJudgment": {
