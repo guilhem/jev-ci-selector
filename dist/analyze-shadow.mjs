@@ -6885,7 +6885,7 @@ import { pathToFileURL } from "node:url";
 // schemas/report.schema.json
 var report_schema_default = {
   $schema: "http://json-schema.org/draft-07/schema#",
-  title: "jev-ci-selector source-free report v6",
+  title: "jev-ci-selector source-free report v7",
   type: "object",
   additionalProperties: false,
   required: [
@@ -6910,11 +6910,12 @@ var report_schema_default = {
     "job_metadata",
     "observation_error",
     "observation",
-    "context_resolution"
+    "context_resolution",
+    "judgment"
   ],
   properties: {
     version: {
-      const: 6
+      const: 7
     },
     base_sha: {
       $ref: "#/definitions/sha"
@@ -7047,6 +7048,8 @@ var report_schema_default = {
                 "path-match",
                 "jev-below-threshold",
                 "jev-at-or-above-threshold",
+                "jev-independent",
+                "jev-not-independent",
                 "shadow-mode",
                 "force-all",
                 "protected-path",
@@ -7139,6 +7142,12 @@ var report_schema_default = {
       type: "number",
       minimum: 0,
       maximum: 1
+    },
+    judgment: {
+      enum: [
+        "noul",
+        "choice"
+      ]
     }
   },
   definitions: {
@@ -7280,6 +7289,15 @@ var report_schema_default = {
           minItems: 1,
           items: {
             $ref: "#/definitions/observationCall"
+          }
+        },
+        judgments: {
+          type: "object",
+          propertyNames: {
+            pattern: "^[A-Za-z_][A-Za-z0-9_-]{0,63}$"
+          },
+          additionalProperties: {
+            $ref: "#/definitions/taskChoiceJudgment"
           }
         }
       }
@@ -7585,9 +7603,21 @@ var report_schema_default = {
         ]
       },
       properties: {
-        inspect: { type: "number", minimum: 0, maximum: 1 },
-        ignore: { type: "number", minimum: 0, maximum: 1 },
-        uncertain: { type: "number", minimum: 0, maximum: 1 }
+        inspect: {
+          type: "number",
+          minimum: 0,
+          maximum: 1
+        },
+        ignore: {
+          type: "number",
+          minimum: 0,
+          maximum: 1
+        },
+        uncertain: {
+          type: "number",
+          minimum: 0,
+          maximum: 1
+        }
       },
       additionalProperties: {
         type: "number",
@@ -7610,9 +7640,21 @@ var report_schema_default = {
         ]
       },
       properties: {
-        keep: { type: "number", minimum: 0, maximum: 1 },
-        discard: { type: "number", minimum: 0, maximum: 1 },
-        uncertain: { type: "number", minimum: 0, maximum: 1 }
+        keep: {
+          type: "number",
+          minimum: 0,
+          maximum: 1
+        },
+        discard: {
+          type: "number",
+          minimum: 0,
+          maximum: 1
+        },
+        uncertain: {
+          type: "number",
+          minimum: 0,
+          maximum: 1
+        }
       },
       additionalProperties: {
         type: "number",
@@ -7787,6 +7829,55 @@ var report_schema_default = {
           items: {
             $ref: "#/definitions/contextPass"
           }
+        }
+      }
+    },
+    taskChoiceJudgment: {
+      type: "object",
+      additionalProperties: false,
+      required: [
+        "choice",
+        "probabilities",
+        "confidence"
+      ],
+      properties: {
+        choice: {
+          enum: [
+            "required",
+            "independent",
+            "unresolved"
+          ]
+        },
+        probabilities: {
+          type: "object",
+          additionalProperties: false,
+          required: [
+            "required",
+            "independent",
+            "unresolved"
+          ],
+          properties: {
+            required: {
+              type: "number",
+              minimum: 0,
+              maximum: 1
+            },
+            independent: {
+              type: "number",
+              minimum: 0,
+              maximum: 1
+            },
+            unresolved: {
+              type: "number",
+              minimum: 0,
+              maximum: 1
+            }
+          }
+        },
+        confidence: {
+          type: "number",
+          minimum: 0,
+          maximum: 1
         }
       }
     }

@@ -555,7 +555,7 @@ export async function resolveTasks(selection: SelectionDefinition, options: Reso
       evidence: stable(evidence) as TaskEvidence,
     };
   }
-  const resolved: ResolvedSelection = { model: selection.model, skip_below: selection.skip_below, tasks: resolvedTasks };
+  const resolved: ResolvedSelection = { model: selection.model, skip_below: selection.skip_below, judgment: selection.judgment ?? 'noul', tasks: resolvedTasks };
   validateResolvedSelection(resolved);
   return { selection: resolved, metadata, workingDirectories, jobContexts };
 }

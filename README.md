@@ -88,6 +88,10 @@ When opting into discovery, consider `timeout-ms: '60000'` for the shared prepar
 
 A `false` output is a policy decision, not a guarantee that the task cannot detect a regression. The default threshold `0.05` is experimental. Changes to workflows retain all declared tasks. An invalid task definition fails selection without publishing a plan.
 
+For precise descriptions and explicit context, use the [describe-ci-jobs skill](skills/describe-ci-jobs/SKILL.md). It follows the job's commands, tool configuration and local actions to describe its actual verification scope, independently of the current PR.
+
+To try the experimental categorical judgment, add `judgment: choice` alongside `mode: shadow`. Jev classifies each change group against each task as `required`, `independent` or `unresolved`. Only `independent` in every group permits skipping; `required` and `unresolved` retain the task. Raw choices, distributions and confidence appear in report v7. `skip-below` applies only to the default `judgment: noul`. Both judgments use the same explicit context and optional discovery.
+
 ## Observe or customize
 
 Add `mode: shadow` to keep all effective outputs true and read the proposed selection in the GitHub job summary. Reports and a standalone analyzer are optional [advanced observation tools](docs/shadow-mode.md).
@@ -126,4 +130,4 @@ Tests use temporary Git repositories, mocked HTTP and the shipped bundles. Repla
 
 Commit regenerated bundles with their sources. `npm run check:dist` checks reproducibility. The action and standalone analyzer include their dependency license notices.
 
-This API is a breaking update: existing integrations must supply inline `tasks`; explicitly set `mode: shadow` to retain observation-only behavior. The current analyzer accepts report v6 only.
+This API is a breaking update: existing integrations must supply inline `tasks`; explicitly set `mode: shadow` to retain observation-only behavior. The current analyzer accepts report v7 only.

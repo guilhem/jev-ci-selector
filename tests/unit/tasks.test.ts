@@ -11,7 +11,7 @@ test('tasks are required but explicit empty tasks are valid', () => {
   for (const source of ['', '   ', 'null', '[]', './tasks.yml']) assert.throws(() => parseTasks(source));
   assert.deepEqual(parseTasks('{}'), {});
   assert.throws(() => inputs({}));
-  assert.deepEqual(inputs({ tasks: '{}' }), { model: 'jev-1.13.0', skip_below: 0.05, tasks: {} });
+  assert.deepEqual(inputs({ tasks: '{}' }), { model: 'jev-1.13.0', skip_below: 0.05, judgment: 'noul', tasks: {} });
 });
 test('descriptions suffice; job metadata is optional and strict when supplied', () => {
   assert.deepEqual(parseTasks(stringify({ unit: task })), { unit: { ...task, always: false, resolve_context_files: false } });
@@ -37,6 +37,14 @@ test('models and decimal thresholds are strict; zero is preserved', () => {
   for (const model of ['jev-latest', 'other-1.2.3', 'jev-1.2']) assert.throws(() => inputs({ tasks: '{}', model }));
   assert.throws(() => validateSelection({ model: 'jev-1.13.0', skip_below: NaN, tasks: {} }));
   assert.doesNotThrow(() => validateResolvedSelection(selection()));
+});
+test('Choice is opt-in, validated, and changes selection identity without invalidating Noul recordings', () => {
+  const implicit = { model: 'jev-1.13.0', skip_below: 0.05, tasks: { unit: task } };
+  assert.equal(inputs({ tasks: '{}' }).judgment, 'noul');
+  assert.equal(inputs({ tasks: '{}', judgment: 'choice' }).judgment, 'choice');
+  assert.equal(selectionHash(implicit), selectionHash({ ...implicit, judgment: 'noul' }));
+  assert.notEqual(selectionHash(implicit), selectionHash({ ...implicit, judgment: 'choice' }));
+  for (const judgment of ['Choice', 'score', 'true']) assert.throws(() => inputs({ tasks: '{}', judgment }));
 });
 test('unknown fields, duplicate keys, YAML aliases and invalid IDs are rejected', () => {
   for (const source of ['unit: {description: one}\nunit: {description: two}', 'unit: &x {description: one}\nother: *x', 'unit: {description: one, description: two}',

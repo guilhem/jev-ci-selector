@@ -1,4 +1,4 @@
-import { stringify } from 'yaml';
+import { parse, stringify } from 'yaml';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
@@ -60,7 +60,7 @@ test('distributed bundle runs against real Git objects, publishes shadow/enforce
       const { result, outputs } = await run({ INPUT_MODE: mode });
       assert.equal(result.status, 0, result.stdout + result.stderr);
       const report: unknown = JSON.parse(await readFile(outputs['report-path']!, 'utf8')); validateReport(report);
-      assert.equal(report.version, 6);
+      assert.equal(report.version, 7);
       assert.deepEqual(report.context_resolution['.github/workflows/ci.yml#unit']!.sources.map(source => source.path), ['check.sh', 'checks.ini']);
       assert.equal(outputs.status, 'planned', JSON.stringify(report));
       assert.deepEqual(JSON.parse(outputs.run!), { helm: mode === 'shadow', unit: true });
@@ -76,9 +76,20 @@ test('distributed bundle runs against real Git objects, publishes shadow/enforce
     assert.equal(custom.outputs.status, 'planned');
     assert.equal(custom.outputs.helm, 'false'); assert.equal(custom.outputs.unit, 'true');
     const customReport: unknown = JSON.parse(await readFile(custom.outputs['report-path']!, 'utf8')); validateReport(customReport);
-    assert.equal(customReport.version, 6);
+    assert.equal(customReport.version, 7);
     assert.deepEqual(customReport.model, { requested: 'jev-1.13-free', expected: 'jev-1.13.0', returned: 'jev-1.13.0' });
     assert.ok(!JSON.stringify(customReport).includes('SENTINEL'));
+    const chosen = await run({ INPUT_MODE: 'enforce', INPUT_JUDGMENT: 'choice', FIXTURE_RESPONSE: JSON.stringify({
+      model: 'jev-1.13.0', usage: { input_tokens: 10, output_tokens: 1 },
+      answers: Object.fromEntries(['helm', 'unit'].map(id => [id, { type: 'choice', choice: 'independent', confidence: 0.9,
+        probabilities: { required: 0.02, independent: 0.96, unresolved: 0.02 } }])),
+    }) });
+    assert.equal(chosen.result.status, 0, chosen.result.stdout + chosen.result.stderr);
+    assert.equal(chosen.outputs.status, 'planned');
+    assert.deepEqual(JSON.parse(chosen.outputs.run!), { helm: false, unit: true });
+    const choiceReport = JSON.parse(await readFile(chosen.outputs['report-path']!, 'utf8')); validateReport(choiceReport);
+    assert.equal(choiceReport.judgment, 'choice');
+    assert.equal(choiceReport.observation!.chunks[0]!.judgments!.helm!.choice, 'independent');
     const wrongModel = await run({ ...api, FIXTURE_RESPONSE: JSON.stringify({ model: 'jev-1.13.1',
       answers: { helm: { type: 'noul', noul: 0 } }, usage: { input_tokens: 10, output_tokens: 1 } }) });
     assert.equal(wrongModel.result.status, 0); assert.equal(wrongModel.outputs.status, 'fallback');
@@ -92,6 +103,13 @@ test('distributed bundle runs against real Git objects, publishes shadow/enforce
     const bypass = await run({ 'INPUT_API-KEY': '', FIXTURE_RESPONSE: '' });
     assert.equal(bypass.result.status, 0); assert.equal(bypass.outputs.status, 'bypassed');
     assert.equal(bypass.outputs.helm, 'true'); assert.equal(bypass.outputs.unit, 'true');
+    const smokeWorkflow = parse(await readFile('.github/workflows/ci.yml', 'utf8'));
+    const smoke = smokeWorkflow.jobs['self-test'].steps.find((step: Record<string, unknown>) => step.name === 'Assert local action outputs');
+    assert.ok(smoke && typeof smoke.run === 'string');
+    const assertion = spawnSync('bash', ['-e', '-c', smoke.run], { encoding: 'utf8', env: { ...process.env,
+      STATUS: bypass.outputs.status!, HAS_TASKS: bypass.outputs['has-tasks']!, REPORT_PATH: bypass.outputs['report-path']!,
+    } });
+    assert.equal(assertion.status, 0, `Hosted self-test must accept the bundled report: ${assertion.stderr}`);
     const defaultMode = await run({ INPUT_MODE: '' });
     assert.equal(defaultMode.result.status, 0);
     assert.equal(defaultMode.outputs.helm, 'false');
@@ -138,7 +156,7 @@ test('distributed bundle runs against real Git objects, publishes shadow/enforce
     });
     assert.equal(manual.result.status, 0, manual.result.stdout + manual.result.stderr);
     const report: unknown = JSON.parse(await readFile(manual.outputs['report-path']!, 'utf8')); validateReport(report);
-    assert.equal(report.version, 6);
+    assert.equal(report.version, 7);
     assert.equal(report.metadata_sha, workflow); assert.equal(report.base_sha, base);
     assert.equal(report.head_sha, largeHead); assert.equal(report.tested_sha, largeMerge);
     assert.equal(report.status, 'bypassed'); assert.equal(report.observation?.status, 'complete');

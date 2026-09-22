@@ -6,7 +6,7 @@ import schema from '../../schemas/report.schema.json';
 
 function report(): Report {
   return {
-    version: 6, metadata_sha: 'a'.repeat(40), base_sha: 'a'.repeat(40), head_sha: 'b'.repeat(40),
+    version: 7, judgment: 'noul', metadata_sha: 'a'.repeat(40), base_sha: 'a'.repeat(40), head_sha: 'b'.repeat(40),
     tested_sha: 'c'.repeat(40), tested_ref: 'merge', diff_base_sha: null,
     selection_hash: 'd'.repeat(64), skip_below: 0.05, diff_hash: null, diff_bytes: null, changed_path_count: null,
     mode: 'shadow', status: 'bypassed', model: { requested: 'provider/alias', expected: 'jev-1.13.0', returned: null },
@@ -16,11 +16,11 @@ function report(): Report {
   };
 }
 
-test('v6 requires complete provenance and rejects historical versions and fields', () => {
+test('v7 requires complete provenance and rejects historical versions and fields', () => {
   const value = report();
   validateReport(value);
   assert.deepEqual([...schema.properties.tasks.additionalProperties.properties.reasons.items.enum].sort(), [...REASONS].sort());
-  for (const version of [1, 2, 3, 4, 5, 7]) assert.throws(() => validateReport({ ...value, version }), /invalid-report/);
+  for (const version of [1, 2, 3, 4, 5, 6, 8]) assert.throws(() => validateReport({ ...value, version }), /invalid-report/);
   for (const field of schema.required) {
     const missing = { ...value } as Record<string, unknown>;
     delete missing[field];
@@ -128,6 +128,15 @@ test('observation scores remain source-free and appear below decisions in collap
   assert.match(text, /No cross-chunk aggregate/);
   assert.match(text, /<\/details>/);
   assert.match(summary(report()), /not-collected/);
+  const answer = { choice: 'independent', probabilities: { required: 0.02, independent: 0.93, unresolved: 0.05 }, confidence: 0.82 };
+  const withChoice = (judgment: unknown) => ({ ...report(), judgment: 'choice', observation: {
+    strategy: 'whole-diff', status: 'complete', chunks: [{ ...chunk, probabilities: null, judgments: { unit: judgment } }],
+  } });
+  validateReport(withChoice(answer));
+  for (const invalid of [{ ...answer, choice: 'ignore' }, { ...answer, content: 'private source' },
+    { ...answer, probabilities: { independent: 1 } }, { ...answer, confidence: 1.1 }]) {
+    assert.throws(() => validateReport(withChoice(invalid)));
+  }
 });
 
 test('named outputs preserve effective booleans and stable ordering, including an empty plan', () => {

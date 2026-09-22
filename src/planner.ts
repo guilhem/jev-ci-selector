@@ -48,7 +48,7 @@ export interface PlannerDependencies {
 }
 
 export function validateInputs(inputs: Inputs): void {
-  validateSelection({ model: inputs.model, skip_below: inputs.skip_below, tasks: inputs.tasks });
+  validateSelection({ model: inputs.model, skip_below: inputs.skip_below, judgment: inputs.judgment, tasks: inputs.tasks });
   if (!['head', 'merge'].includes(inputs.testedRef ?? 'merge')) throw new InputError('tested-ref');
   if (!['shadow', 'enforce'].includes(inputs.mode)) throw new InputError('mode');
   if (!Number.isSafeInteger(inputs.timeoutMs) || inputs.timeoutMs < 1 || inputs.timeoutMs > 2_147_483_647) throw new InputError('timeout-ms');
@@ -61,7 +61,7 @@ export function validateInputs(inputs: Inputs): void {
 export async function planChange(inputs: Inputs, context: Context, dependencies: PlannerDependencies = {}) {
   validateInputs(inputs);
   if (inputs.testedRef === 'head' && context.eventName === 'pull_request') context = { ...context, testedSha: context.headSha };
-  const configured: SelectionDefinition = { model: inputs.model, skip_below: inputs.skip_below, tasks: inputs.tasks };
+  const configured: SelectionDefinition = { model: inputs.model, skip_below: inputs.skip_below, judgment: inputs.judgment ?? 'noul', tasks: inputs.tasks };
   const api = resolveJevApi(inputs);
   const started = performance.now();
   const metadataSha = context.metadataSha ?? context.baseSha;
@@ -73,7 +73,7 @@ export async function planChange(inputs: Inputs, context: Context, dependencies:
   else if (!inputs.allowExternalContext) forced = { status: 'bypassed', code: 'external-context-disabled' };
   // Bypasses need only validated task definitions: no project files or metadata reads.
   let resolved: ResolveTasksResult = {
-    selection: { model: inputs.model, skip_below: inputs.skip_below,
+    selection: { model: inputs.model, skip_below: inputs.skip_below, judgment: inputs.judgment ?? 'noul',
       tasks: Object.fromEntries(Object.entries(inputs.tasks).map(([id, task]) => [id, {
         ...(task.always === undefined ? {} : { always: task.always }),
         ...(task.force_paths === undefined ? {} : { force_paths: task.force_paths }),
@@ -173,7 +173,7 @@ export async function planChange(inputs: Inputs, context: Context, dependencies:
       for (const id of candidates) plan.tasks[id]!.reasons.push('observation-only');
     }
     const report: Report = {
-      version: 6, tested_ref: inputs.testedRef ?? 'merge', context_resolution: contextResolution,
+      version: 7, judgment: selection.judgment ?? 'noul', tested_ref: inputs.testedRef ?? 'merge', context_resolution: contextResolution,
       diff_base_sha: change?.diffBaseSha ?? (inputs.testedRef === 'head' ? null : context.baseSha),
       job_metadata: resolved.metadata.tasks, observation_error: observationError ?? null,
       metadata_sha: metadataSha, base_sha: context.baseSha, head_sha: context.headSha, tested_sha: context.testedSha,

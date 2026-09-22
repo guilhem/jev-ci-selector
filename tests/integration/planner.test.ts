@@ -70,7 +70,7 @@ test('planner uses only base metadata, tested merge SHA, source-free report and 
   const { plan, report } = await planChange({ ...inputs, mode: 'shadow' }, context, dependencies);
   assert.deepEqual(calls, { fetch: [context.baseSha], read: [`${context.baseSha}:.github/workflows/ci.yml`], collect: 1, evaluate: 1, dispose: 1 });
   assert.equal(report.tested_sha, context.testedSha); assert.equal(report.metadata_sha, context.baseSha);
-  assert.equal(report.version, 6); assert.ok(report.observation);
+  assert.equal(report.version, 7); assert.ok(report.observation);
   assert.deepEqual(report.model, { requested: 'jev-1.13.0', expected: 'jev-1.13.0', returned: 'jev-1.13.0' });
   assert.equal(report.tasks.helm!.proposed_run, false); assert.equal(report.tasks.helm!.run, true);
   assert.ok(!JSON.stringify(report).includes('SENTINEL'));
@@ -78,6 +78,50 @@ test('planner uses only base metadata, tested merge SHA, source-free report and 
   const outputs = actionOutputs(plan, context.testedSha, '/tmp/report.json');
   assert.equal(outputs.status, 'planned'); assert.equal(outputs['has-tasks'], 'true');
   assert.deepEqual(Object.keys(JSON.parse(outputs.run!)), ['build', 'e2e', 'helm', 'prepare', 'unit']);
+});
+
+test('Choice reaches the SDK with explicit job scope and preserves enforce, shadow, protected paths and incomplete fallback', async () => {
+  for (const scenario of ['enforce', 'shadow', 'workflow', 'missing'] as const) {
+    const f = fixture({ paths: scenario === 'workflow' ? ['.github/workflows/ci.yml'] : ['source.txt'] });
+    const configured = { ...inputs, judgment: 'choice' as const, mode: scenario === 'shadow' ? 'shadow' as const : 'enforce' as const };
+    configured.tasks = { ...configured.tasks, helm: { ...configured.tasks.helm!, context_files: ['ci/check.conf'] } };
+    const create = f.dependencies.createRepository!;
+    const { plan, report } = await planChange(configured, context, {
+      ...f.dependencies,
+      createRepository: async options => {
+        const repository = await create(options);
+        return { ...repository, listFiles: async () => { throw new Error('discovery was not enabled'); },
+          readFile: async (sha, path) => path === 'ci/check.conf' ? Buffer.from('PRIVATE-SCOPE-SENTINEL') : repository.readFile(sha, path) };
+      },
+      evaluate: request => evaluateJev(request, async (_url, init) => {
+        const body = JSON.parse(init!.body as string);
+        const task = body.questions.helm.instructions.task;
+        assert.equal(body.questions.helm.type, 'choice');
+        assert.equal(task.description, configured.tasks.helm!.description);
+        assert.equal(task.jobs[0].id, 'helm');
+        assert.deepEqual(task.contextFiles, [{ path: 'ci/check.conf', content: 'PRIVATE-SCOPE-SENTINEL' }]);
+        return Response.json({ model: 'jev-1.13.0', usage: { input_tokens: 10, output_tokens: 2 },
+          answers: Object.fromEntries(Object.keys(body.questions).filter(id => scenario !== 'missing' || id !== 'prepare').map(id => {
+            const choice = id === 'e2e' ? 'unresolved' : id === 'build' ? 'required' : 'independent';
+            return [id, { type: 'choice', choice, confidence: 1,
+              probabilities: Object.fromEntries(['required', 'independent', 'unresolved'].map(option => [option, option === choice ? 1 : 0])) }];
+          })) });
+      }),
+    });
+    assert.equal(report.judgment, 'choice');
+    assert.ok(!JSON.stringify(report).includes('PRIVATE-SCOPE-SENTINEL'));
+    assert.deepEqual(Object.keys(report.context_resolution), []);
+    if (scenario === 'enforce') {
+      assert.deepEqual(plan.run, { build: true, e2e: true, helm: false, prepare: false, unit: true });
+      assert.deepEqual(report.tasks.helm!.reasons, ['jev-independent']);
+      assert.deepEqual(report.tasks.e2e!.reasons, ['jev-not-independent']);
+      assert.equal(report.observation!.chunks[0]!.judgments!.e2e!.choice, 'unresolved');
+      assert.match(summary(report), /e2e=unresolved/);
+    } else assert.ok(Object.values(plan.run).every(Boolean), scenario);
+    if (scenario === 'missing') assert.equal(plan.status, 'fallback');
+    if (scenario === 'workflow') assert.equal(plan.status, 'bypassed');
+    if (scenario === 'shadow') assert.equal(report.tasks.helm!.proposed_run, false);
+  }
 });
 test('opt-in context resolution feeds the final evaluation and reports all inference usage', async () => {
   const f = fixture();
@@ -348,7 +392,7 @@ test('routing jobs keep native workflow dependencies out of selector policy and 
   });
   assert.equal(plan.run.compile, false);
   assert.equal(plan.run.verify, true);
-  assert.equal(report.version, 6);
+  assert.equal(report.version, 7);
   assert.match(JSON.stringify(report.job_metadata), /workflow-job/);
   assert.ok(!JSON.stringify(report).includes('PRIVATE-CONFIG-SENTINEL'));
 });

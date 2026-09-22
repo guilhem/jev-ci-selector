@@ -61,7 +61,7 @@ test('planner identifies invalid inputs before repository access', async () => {
 });
 
 test('action validates all inputs before manual network access and prints safe diagnostics', () => {
-  for (const field of ['mode', 'tested-ref', 'allow-external-context', 'force-all', 'timeout-ms', 'max-diff-bytes', 'tasks', 'model', 'skip-below']) {
+  for (const field of ['mode', 'tested-ref', 'allow-external-context', 'force-all', 'timeout-ms', 'max-diff-bytes', 'tasks', 'model', 'judgment', 'skip-below']) {
     const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('INPUT_')));
     env.INPUT_TASKS = '{}';
     env.GITHUB_EVENT_NAME = 'workflow_dispatch';

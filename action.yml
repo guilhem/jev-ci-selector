@@ -11,8 +11,11 @@ inputs:
     description: Canonical Jev model version expected in the response.
     default: jev-1.13.0
   skip-below:
-    description: Strict exclusion threshold between 0 and 1; equality retains the task.
+    description: Noul-only strict exclusion threshold between 0 and 1; equality retains the task. Unused with judgment choice.
     default: '0.05'
+  judgment:
+    description: Experimental choice skips only explicit independent judgments; noul uses skip-below.
+    default: noul
   mode:
     description: shadow preserves all effective tasks; enforce applies the proposal.
     default: enforce

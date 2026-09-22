@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { splitDiff, ChunkError } from './chunks.js';
-import { buildQuestions, JevError, type Usage, type evaluateJev, questionIdsForTask, type QuestionMode } from './jev.js';
+import { buildQuestions, buildChoiceQuestions, validateChoicesResponse, JevError, type Usage, type evaluateJev, questionIdsForTask, type QuestionMode, type ChoiceJudgment } from './jev.js';
+import type { Judgment } from './tasks.js';
 
 type ObservationError = 'jev-timeout' | 'jev-error' | 'invalid-response';
 export interface ObservationCall {
@@ -21,6 +22,7 @@ export interface ObservationChunk {
   paths?: string[];
   status: 'completed' | 'failed' | 'not-started';
   probabilities: Record<string, number> | null;
+  judgments?: Record<string, ChoiceJudgment>;
   model: string | null;
   usage: Usage | null;
   duration_ms: number | null;
@@ -98,6 +100,7 @@ const singleModel = (models: Array<string | null>): string | null => {
 };
 
 export async function observeChange(request: ObservationRequest, evaluate: typeof evaluateJev) {
+  if (request.selection.judgment === 'choice') request = { ...request, questionMode: 'single' };
   const { states, questions } = prepareStates(request);
   const observation: Observation = { strategy: states.length === 1 ? 'whole-diff' : 'chunked-diff', status: 'incomplete',
     chunks: states.map((part, index) => ({ index, start_byte: part.startByte, end_byte: part.endByte, paths: part.paths,
@@ -119,10 +122,17 @@ export async function observeChange(request: ObservationRequest, evaluate: typeo
         const result = await evaluate({ ...request, taskIds: call.task_ids, state: states[chunk.index]!.state,
           timeoutMs: Math.min(10000, remaining) });
         // Injected evaluators must honor the same per-request answer contract as the SDK.
-        if (Object.keys(result.probabilities).sort().join('\0') !== call.task_ids.flatMap(id => questionIdsForTask(id, request.questionMode)).sort().join('\0') ||
-          Object.values(result.probabilities).some(value => !Number.isFinite(value) || value < 0 || value > 1)) throw new JevError('invalid-response');
+        if (request.selection.judgment === 'choice') {
+          const validated = validateChoicesResponse({ ...result,
+            answers: Object.fromEntries(Object.entries(result.judgments ?? {}).map(([id, answer]) => [id, { ...answer, type: 'choice' }])) },
+          buildChoiceQuestions(request.selection, call.task_ids), request.selection.model);
+          chunk.judgments = { ...chunk.judgments, ...validated.answers };
+        } else {
+          if (Object.keys(result.probabilities).sort().join('\0') !== call.task_ids.flatMap(id => questionIdsForTask(id, request.questionMode)).sort().join('\0') ||
+            Object.values(result.probabilities).some(value => !Number.isFinite(value) || value < 0 || value > 1)) throw new JevError('invalid-response');
+          chunk.probabilities = { ...chunk.probabilities, ...result.probabilities };
+        }
         call.status = 'completed';
-        chunk.probabilities = { ...chunk.probabilities, ...result.probabilities };
         call.model = result.model; call.usage = result.usage;
       } catch (error) {
         if (!(error instanceof JevError)) { failure = 'jev-error'; throw error; }
@@ -149,14 +159,19 @@ export async function observeChange(request: ObservationRequest, evaluate: typeo
   observation.status = observation.chunks.every(chunk => chunk.status === 'completed') ? 'complete' : 'incomplete';
   // Compose boolean decisions, never a synthetic global probability. A failed batch
   // does not erase complete evidence for other jobs sharing the same group.
-  const decisions = decisionsFromObservation(observation, request.taskIds, request.selection.skip_below, request.questionMode);
+  const decisions = decisionsFromObservation(observation, request.taskIds, request.selection.skip_below, request.questionMode, request.selection.judgment);
   return { observation, decisions, failure, model: singleModel(calls.map(({ call }) => call.model)),
     usage: addUsage(calls.map(({ call }) => call.usage)) };
 }
 
-/** Boolean composition only: the independent Noul values remain unchanged. */
-export function decisionsFromObservation(observation: Observation, taskIds: string[], threshold: number, mode: QuestionMode = 'single') {
+/** Boolean composition only: raw judgments remain unchanged. */
+export function decisionsFromObservation(observation: Observation, taskIds: string[], threshold: number, mode: QuestionMode = 'single', judgment: Judgment = 'noul') {
   return Object.fromEntries(taskIds.map(id => {
+    if (judgment === 'choice') {
+      const choices = observation.chunks.map(chunk => chunk.judgments?.[id]?.choice);
+      return [id, choices.some(value => value === 'required' || value === 'unresolved') ? true
+        : choices.length > 0 && choices.every(value => value === 'independent') ? false : null];
+    }
     const scores = observation.chunks.flatMap(chunk => questionIdsForTask(id, mode).map(key => chunk.probabilities?.[key]));
     return [id, scores.some(score => score !== undefined && score >= threshold) ? true
       : scores.length > 0 && scores.every(score => score !== undefined) ? false : null];

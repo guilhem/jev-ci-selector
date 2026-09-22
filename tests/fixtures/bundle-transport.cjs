@@ -19,7 +19,7 @@ globalThis.fetch = async (url, init) => {
   if (process.env.FIXTURE_REQUESTS) require('node:fs').appendFileSync(process.env.FIXTURE_REQUESTS, init.body + '\n');
   const request = JSON.parse(init.body);
   const fixture = JSON.parse(process.env.FIXTURE_RESPONSE);
-  if (fixture.model && fixture.answers && Object.values(request.questions).every(question => question.type === 'choice')) {
+  if (fixture.model && fixture.answers && Object.values(request.questions).every(question => question.type === 'choice' && Object.hasOwn(question.criteria, 'uncertain'))) {
     return Response.json({ model: fixture.model, usage: { input_tokens: 10, output_tokens: 1 },
       answers: Object.fromEntries(Object.entries(request.questions).map(([id, question]) => {
         const path = question.instructions.path;

@@ -224,3 +224,31 @@ test('malformed scores cannot justify exclusion', async () => {
     assert.equal(result.observation.status, 'incomplete');
   }
 });
+
+test('Choice needs independence in every group; required, unresolved and incomplete evidence retain the task', async () => {
+  const input = { ...request(patch(200)), maxGroupBytes: 1024 };
+  input.selection.judgment = 'choice';
+  input.selection.skip_below = 0; // Noul's threshold must not govern a Choice.
+  for (const [answer, expected] of [['independent', false], ['required', true], ['unresolved', true], ['missing', null], ['invalid', null], ['timeout', null]] as const) {
+    const result = await observeChange(input, call => evaluateJev(call, async (_url, init) => {
+      const body = JSON.parse(init!.body as string);
+      assert.equal(body.questions.check.type, 'choice');
+      const chosen = body.state.chunk.index === 1 ? answer : 'independent';
+      if (chosen === 'timeout') throw new JevError('jev-timeout');
+      // Deliberately disagree with argmax/confidence: the provider's selected
+      // option is authoritative; its distribution is preserved, not a threshold.
+      return Response.json({ model: 'jev-1.13.0', usage: { input_tokens: 1, output_tokens: 1 },
+        answers: chosen === 'missing' ? {} : { check: { type: 'choice', choice: chosen, confidence: 0.01,
+          probabilities: { required: 0.8, independent: 0.1, unresolved: 0.1 } } } });
+    }));
+    assert.ok(result.observation.chunks.length > 1);
+    assert.equal(result.decisions.check, expected, answer);
+    assert.ok(result.observation.chunks.every(chunk => chunk.probabilities === null));
+    if (expected === null) assert.equal(result.observation.status, 'incomplete');
+    else {
+      assert.equal(result.observation.status, 'complete');
+      assert.deepEqual(result.observation.chunks[1]!.judgments!.check,
+        { choice: answer, confidence: 0.01, probabilities: { required: 0.8, independent: 0.1, unresolved: 0.1 } });
+    }
+  }
+});

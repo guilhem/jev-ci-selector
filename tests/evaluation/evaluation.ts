@@ -527,7 +527,7 @@ export function thresholdEvaluations(
   const semanticPaths = withoutPolicyPaths(loaded.changedPaths);
   const values: Record<string, ThresholdEvaluation> = {};
   for (const threshold of THRESHOLDS) {
-    const decisions = result ? decisionsFromObservation(result.observation, taskIds, threshold, variant.questionMode) : {};
+    const decisions = result ? decisionsFromObservation(result.observation, taskIds, threshold, variant.questionMode, resolved.selection.judgment) : {};
     const semantic = applyMetadataPolicy(selectTasks({ selection: resolved.selection, changedPaths: semanticPaths, decisions, observationError: result?.failure as any,
       mode: 'enforce' }), resolved.metadata, configured);
     const effective = applyMetadataPolicy(selectTasks({ selection: resolved.selection, changedPaths: loaded.changedPaths, decisions, observationError: result?.failure as any,

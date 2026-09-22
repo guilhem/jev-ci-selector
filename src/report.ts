@@ -4,9 +4,11 @@ import type { Observation } from './observations.js';
 import type { ExecutionPlan } from './policy.js';
 import type { Usage } from './jev.js';
 import type { ContextResolutionReport } from './context.js';
+import type { Judgment } from './tasks.js';
 
 export interface Report {
-  version: 6;
+  version: 7;
+  judgment: Judgment;
   metadata_sha: string;
   base_sha: string;
   head_sha: string;
@@ -49,7 +51,10 @@ function markdown(value: string): string {
 function observationSummary(observation: Observation | null): string[] {
   if (!observation) return ['Observation status: not-collected (no Jev call).'];
   const rows = observation.chunks.map(chunk => {
-    const scores = chunk.probabilities
+    const scores = chunk.judgments
+      ? Object.entries(chunk.judgments).sort(([left], [right]) => left.localeCompare(right))
+        .map(([id, answer]) => `${markdown(id)}=${markdown(answer.choice)} (${Object.entries(answer.probabilities).map(([option, probability]) => `${markdown(option)}=${probability}`).join(', ')}; confidence=${answer.confidence})`).join('; ')
+      : chunk.probabilities
       ? Object.entries(chunk.probabilities).sort(([left], [right]) => left.localeCompare(right))
         .map(([id, probability]) => `${markdown(id)}=${probability}`).join(', ') || '—'
       : '—';
@@ -58,11 +63,11 @@ function observationSummary(observation: Observation | null): string[] {
   return [
     `Observation status: ${observation.status} (${observation.strategy}); ${observation.chunks.length} chunk(s).`,
     '',
-    '| Chunk | Byte range | Diff bytes | Status | Model | Duration (ms) | Per-task scores | Error |',
+    '| Chunk | Byte range | Diff bytes | Status | Model | Duration (ms) | Per-task judgments | Error |',
     '| ---: | ---: | ---: | --- | --- | ---: | --- | --- |',
     ...rows,
     '',
-    'Scores above are raw per-chunk Jev responses. No cross-chunk aggregate or global model probability is reported.',
+    'Values above are raw per-chunk Jev responses. No cross-chunk aggregate or global model probability is reported.',
   ];
 }
 
@@ -104,6 +109,7 @@ export function summary(report: Report): string {
     '| --- | --- | --- | --- |', ...rows, '',
     '<details>', '<summary>Selection details</summary>', '',
     `Tested commit: \`${markdown(report.tested_sha)}\``, '',
+    `Judgment: ${report.judgment}${report.judgment === 'choice' ? ' (skip only independent; skip-below unused)' : ` (skip-below=${report.skip_below})`}.`, '',
     ...contextResolutionSummary(report.context_resolution), '',
     ...observationSummary(report.observation), '',
     'Scores are experimental selection signals, not guarantees about test outcomes.', '',
