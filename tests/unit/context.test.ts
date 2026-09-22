@@ -198,3 +198,45 @@ test('an oversized multi-job union retains only its affected task without droppi
   assert.ok(f.resolved.metadata.tasks.both!.missing.includes('context-resolution:combined-context-too-large'));
   assert.deepEqual(f.resolved.selection.tasks.both!.evidence.contextFiles, [{ path: 'explicit.md', content: 'declared' }]);
 });
+
+test('the shared question style states the wording once and keeps the meaning', async () => {
+  const seen: Array<{ state: unknown; questions: Record<string, { instructions: unknown; criteria: Record<string, string> }> }> = [];
+  const evaluate = async (input: never) => {
+    const request = input as unknown as typeof seen[number] & { model: string };
+    seen.push(request);
+    return { model: 'jev-1.13.0', usage: { input_tokens: 1000, output_tokens: 1 },
+      answers: Object.fromEntries(Object.entries(request.questions).map(([id, question]) => {
+        const option = Object.keys(question.criteria)[0]!;
+        return [id, { type: 'choice', choice: option, confidence: 1,
+          probabilities: Object.fromEntries(Object.keys(question.criteria).map(o => [o, o === option ? 1 : 0])) }];
+      })) };
+  };
+  const paths = Array.from({ length: 40 }, (_, index) => `src/module-${index}.ts`);
+  const size = async (style: 'inline' | 'shared') => {
+    seen.length = 0;
+    await resolveContextFiles({
+      configured: { model: 'jev-1.13.0', tasks: { unit: { description: 'Verifies units.', resolve_context_files: true } } },
+      resolved: {
+        selection: { model: 'jev-1.13.0', tasks: { unit: { evidence: { description: 'Verifies units.' } } } },
+        metadata: { repository: 'acme/example', commit: 'a'.repeat(40),
+          tasks: { unit: { incomplete: false, missing: [], provenance: [], hashes: {}, warnings: [], nativeDependencies: [] } } },
+        workingDirectories: [],
+      },
+      repository: { listFiles: async () => paths, readFile: async () => Buffer.from('body\n') },
+      commit: 'a'.repeat(40), apiKey: 'k', deadline: performance.now() + 60_000,
+    } as never, evaluate as never, 1, style);
+    const first = seen[0]!;
+    const question = Object.values(first.questions)[0]!;
+    return { question: Buffer.byteLength(JSON.stringify(question)),
+      state: JSON.stringify(first.state) };
+  };
+
+  const inline = await size('inline');
+  const shared = await size('shared');
+  assert.ok(shared.question * 2 < inline.question,
+    `a shared question (${shared.question}B) must be far smaller than an inline one (${inline.question}B)`);
+  // The wording is not lost, only moved: it is stated once in the state.
+  assert.ok(shared.state.includes('question_contract'));
+  assert.ok(shared.state.includes('Topic similarity is insufficient'));
+  assert.ok(!inline.state.includes('question_contract'));
+});

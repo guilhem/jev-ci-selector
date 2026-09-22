@@ -36,6 +36,33 @@ Until that campaign has run, the unit and integration tests cover the scheduler'
 mechanics only. Mechanics are not judgment quality: simulated responses show that
 the software behaves as specified, never that Jev decides well.
 
+## Question style
+
+Context preparation can state its question wording in two places, selected by
+`--style` on this harness and by the fourth argument to `resolveContextFiles`:
+
+- `inline` (default) repeats the judgment, scope and all three criteria in every
+  per-path question.
+- `shared` states that wording once in the state and leaves each question with
+  its path and a reference.
+
+Measured over a synthetic repository, one job anchor, two passes:
+
+| Tracked files | `inline` | `shared` |
+| ---: | ---: | ---: |
+| 243 | 4 calls, 416 KB | 2 calls, 237 KB |
+| 2 000 | 28 calls, 3.4 MB | 16 calls, 2.0 MB |
+| 20 000 | 263 calls, 34.2 MB | 151 calls, 19.6 MB |
+
+So roughly **half the calls and bytes** — not the five-fold saving the question
+bytes alone suggest, because the path and the JSON envelope remain.
+
+`offline --style shared` reproduces `inline`'s recall and incorrect-skip counts
+exactly, which is the most the simulated evaluator can establish: it shows the
+selection mechanics are unchanged, and says nothing about how Jev judges a
+question that points at its state. **`shared` therefore stays off** until a live
+campaign compares the two on the labelled corpus.
+
 Use `npm run eval:live` explicitly to record a new campaign with the configured
 Jev API. Follow the corpus guide for credentials, output directories and campaign
 comparisons. Live execution does not replace the committed reference recordings.
