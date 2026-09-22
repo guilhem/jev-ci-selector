@@ -39,10 +39,20 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   never independent by default.
 - Report counters for what was measured and what was never read:
   `manifest`, `analysis.*`, per-task states and coverage, and the scope of any
-  fallback.
+  fallback. `analysis.patch_bytes_read` counts every byte Git produced,
+  rejected and retried attempts included; `analysis.patch_bytes_delivered`
+  counts only the patch text handed to the analysis. `analysis.changes_read`
+  against `analysis.changes_total` says how much of the inventory was reached.
 
 ### Notes
 
+- `timeout-ms` keeps its historical meaning and its clock starts once the
+  inventory is built, so a slow fetch cannot consume the analysis allowance.
+  Git commands keep their own separate timeouts.
+- `npm run eval:replay` exercises the whole-diff path, so it qualifies the
+  recorded request contract, not the progressive collection path. A campaign
+  over multi-unit and cross-boundary cases is still owed before promoting the
+  new grouping to `enforce` on real repositories.
 - Rename detection is off in the inventory, so a rename appears as a deletion
   plus an addition. Both paths therefore stay visible to `force_paths` and the
   protected-path rule.

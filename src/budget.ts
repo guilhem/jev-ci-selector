@@ -50,7 +50,10 @@ export interface BudgetCounters {
   manifest_entries: number | null;
   patches_requested: number;
   patches_read: number;
-  collected_patch_bytes: number;
+  /** Bytes Git actually produced, rejected and retried attempts included. */
+  patch_bytes_read: number;
+  /** Bytes of complete patch text handed to the analysis. Always <= read. */
+  patch_bytes_delivered: number;
   preparation_calls: number;
   preparation_bytes: number;
   observation_calls: number;
@@ -86,7 +89,8 @@ const PREPARATION_SHARE = 0.5;
 
 export class AnalysisBudget {
   readonly limits: BudgetLimits;
-  #collectedPatchBytes = 0;
+  #readBytes = 0;
+  #deliveredBytes = 0;
   #patchesRequested = 0;
   #patchesRead = 0;
   #manifestEntries: number | null = null;
@@ -109,7 +113,8 @@ export class AnalysisBudget {
       manifest_entries: this.#manifestEntries,
       patches_requested: this.#patchesRequested,
       patches_read: this.#patchesRead,
-      collected_patch_bytes: this.#collectedPatchBytes,
+      patch_bytes_read: this.#readBytes,
+      patch_bytes_delivered: this.#deliveredBytes,
       preparation_calls: this.#calls.preparation,
       preparation_bytes: this.#bytes.preparation,
       observation_calls: this.#calls.observation,
@@ -128,24 +133,51 @@ export class AnalysisBudget {
     this.#manifestEntries = entries;
   }
 
-  /** Bytes still available for one patch unit, never above the per-unit cap. */
+  /**
+   * Bytes still available for one patch unit, never above the per-unit cap.
+   *
+   * The allowance is computed from bytes already *read*, so an attempt that was
+   * rejected and retried has already consumed part of it.
+   */
   patchUnitAllowance(): number {
-    return Math.max(0, Math.min(PATCH_UNIT_BYTES, this.limits.maxCollectedPatchBytes - this.#collectedPatchBytes));
+    const remaining = this.limits.maxCollectedPatchBytes - this.#readBytes;
+    if (remaining <= 0) this.#reached.add('collected-patch-bytes');
+    return Math.max(0, Math.min(PATCH_UNIT_BYTES, remaining));
   }
 
   notePatchRequested(): void {
     this.#patchesRequested += 1;
   }
 
-  /** Record a unit that was really read. Throws once the cumulative cap is hit. */
+  /**
+   * Charge the work a read really cost, whatever its outcome.
+   *
+   * Git produces bytes before an oversized read is interrupted, and a patch
+   * rejected as binary or unrepresentable was still produced in full. Charging
+   * only accepted patches would bound the useful context rather than the work,
+   * which is not the guarantee the input advertises. An interrupted read yields
+   * a lower bound, never an exact size.
+   */
+  chargeRead(bytes: number): void {
+    if (!Number.isSafeInteger(bytes) || bytes < 0) throw new Error('invalid-patch-bytes');
+    this.#readBytes += bytes;
+    if (this.#readBytes >= this.limits.maxCollectedPatchBytes) this.#reached.add('collected-patch-bytes');
+  }
+
+  /** Record a complete unit handed to the analysis. Throws past the cap. */
   spendPatchBytes(bytes: number): void {
     if (!Number.isSafeInteger(bytes) || bytes < 0) throw new Error('invalid-patch-bytes');
-    if (this.#collectedPatchBytes + bytes > this.limits.maxCollectedPatchBytes) {
+    if (this.#deliveredBytes + bytes > this.limits.maxCollectedPatchBytes) {
       this.#reached.add('collected-patch-bytes');
-      throw new BudgetError('collected-patch-bytes', this.limits.maxCollectedPatchBytes, this.#collectedPatchBytes + bytes);
+      throw new BudgetError('collected-patch-bytes', this.limits.maxCollectedPatchBytes, this.#deliveredBytes + bytes);
     }
-    this.#collectedPatchBytes += bytes;
+    this.#deliveredBytes += bytes;
     this.#patchesRead += 1;
+  }
+
+  /** Register a ceiling that was reached elsewhere, for the report's registry. */
+  noteLimit(kind: BudgetKind): void {
+    this.#reached.add(kind);
   }
 
   remainingMs(): number {

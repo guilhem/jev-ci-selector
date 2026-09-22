@@ -7175,7 +7175,6 @@ var report_schema_default = {
         "manifest_entries",
         "patches_requested",
         "patches_read",
-        "collected_patch_bytes",
         "preparation_calls",
         "preparation_bytes",
         "observation_calls",
@@ -7188,7 +7187,11 @@ var report_schema_default = {
         "task_states",
         "coverage",
         "fallback_scope",
-        "fallback_tasks"
+        "fallback_tasks",
+        "patch_bytes_read",
+        "patch_bytes_delivered",
+        "changes_read",
+        "changes_total"
       ],
       properties: {
         manifest_entries: {
@@ -7202,9 +7205,6 @@ var report_schema_default = {
           $ref: "#/definitions/counter"
         },
         patches_read: {
-          $ref: "#/definitions/counter"
-        },
-        collected_patch_bytes: {
           $ref: "#/definitions/counter"
         },
         preparation_calls: {
@@ -7272,6 +7272,22 @@ var report_schema_default = {
         },
         fallback_tasks: {
           $ref: "#/definitions/taskIdList"
+        },
+        patch_bytes_read: {
+          $ref: "#/definitions/counter"
+        },
+        patch_bytes_delivered: {
+          $ref: "#/definitions/counter"
+        },
+        changes_read: {
+          $ref: "#/definitions/counter"
+        },
+        changes_total: {
+          type: [
+            "integer",
+            "null"
+          ],
+          minimum: 0
         }
       }
     }

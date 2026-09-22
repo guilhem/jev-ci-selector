@@ -11,7 +11,8 @@ function report(): Report {
     selection_hash: 'd'.repeat(64), diff_hash: null, diff_bytes: null, changed_path_count: null,
     manifest: { complete: false, hash: null, change_count: null },
     analysis: {
-      manifest_entries: null, patches_requested: 0, patches_read: 0, collected_patch_bytes: 0,
+      manifest_entries: null, patches_requested: 0, patches_read: 0,
+      patch_bytes_read: 0, patch_bytes_delivered: 0, changes_read: 0, changes_total: null,
       preparation_calls: 0, preparation_bytes: 0, observation_calls: 0, observation_bytes: 0,
       jev_calls: 0, analysis_bytes: 0, limits_reached: [],
       analysed_tasks: [], required_without_analysis: ['unit'], task_states: {}, coverage: {},
@@ -168,7 +169,8 @@ test('named outputs preserve effective booleans and stable ordering, including a
 test('the summary reports what was measured and what was never read', () => {
   const value: Report = { ...report(), status: 'fallback', manifest: { complete: true, hash: 'a'.repeat(64), change_count: 3 },
     analysis: { ...report().analysis, manifest_entries: 3, patches_requested: 2, patches_read: 1,
-      collected_patch_bytes: 4096, preparation_calls: 1, preparation_bytes: 700,
+      patch_bytes_read: 6000, patch_bytes_delivered: 4096, changes_read: 2, changes_total: 3,
+      preparation_calls: 1, preparation_bytes: 700,
       observation_calls: 2, observation_bytes: 1300, jev_calls: 3, analysis_bytes: 2000,
       limits_reached: ['collected-patch-bytes'], analysed_tasks: ['unit'], required_without_analysis: [],
       task_states: { unit: 'fallback-run' }, coverage: { unit: false },
@@ -176,7 +178,7 @@ test('the summary reports what was measured and what was never read', () => {
   validateReport(value);
   const text = summary(value);
   assert.match(text, /Inventory: complete, 3 change\(s\), hash aaaaaaaaaaaa\./);
-  assert.match(text, /Collection: 1\/2 patch unit\(s\) read, 4096 byte\(s\) collected\./);
+  assert.match(text, /Collection: 2\/3 change\(s\) read over 1\/2 patch unit\(s\); 6000 byte\(s\) read, 4096 delivered\./);
   assert.match(text, /Inference: 3 call\(s\) and 2000 request byte\(s\) \(preparation 1\/700, observation 2\/1300\)\./);
   assert.match(text, /Limits reached: collected-patch-bytes; partial fallback: unit\./);
   assert.match(text, /not token counts\.|not token counts/);

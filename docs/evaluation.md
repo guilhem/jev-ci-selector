@@ -21,6 +21,21 @@ Replay checks two committed live Choice regressions without a network connection
 or API key. It checks that each response belongs to the complete recorded request. Changes to the
 context or questions make the affected recordings explicitly stale.
 
+**What replay does and does not qualify.** Replay exercises the whole-diff path:
+a diff that is already built, effectively unlimited ceilings, and a question for
+every task on every group. It therefore verifies that the recorded request
+contract is preserved. It does **not** exercise the progressive path the action
+actually uses — demand-driven unit collection, budgets, per-task coverage and
+early stopping — so "0 stale recordings" means the historical contract is intact,
+never that the new grouping has been validated against the recorded judgments.
+
+Qualifying the progressive path needs its own campaign, over cases the current
+corpus does not contain: changes spread across several collection units, and
+interdependent changes deliberately placed on either side of a unit boundary.
+Until that campaign has run, the unit and integration tests cover the scheduler's
+mechanics only. Mechanics are not judgment quality: simulated responses show that
+the software behaves as specified, never that Jev decides well.
+
 Use `npm run eval:live` explicitly to record a new campaign with the configured
 Jev API. Follow the corpus guide for credentials, output directories and campaign
 comparisons. Live execution does not replace the committed reference recordings.
@@ -36,6 +51,8 @@ live API observations.
 Compare results only for matching corpus inputs and trial settings. A campaign
 from different examples cannot qualify the synthetic corpus. Context changes
 require new measurements before selecting a context strategy or drawing a conclusion.
+Grouping changes count as context changes: a judgment recorded against one
+grouping does not transfer to another.
 
 Reports separate proposed selection from effective policy outputs. Shadow mode
 keeps every task. Synthetic relevance results do not demonstrate runtime savings

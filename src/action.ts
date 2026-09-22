@@ -59,7 +59,8 @@ async function main(): Promise<void> {
   core.info(`jev-ci-selector: ${plan.status}, ${plan.selected.length}/${Object.keys(plan.tasks).length} tasks (${plan.mode})`);
   const { analysis } = report;
   core.info(`analysis: ${analysis.required_without_analysis.length} forced, ${analysis.analysed_tasks.length} analysed;`
-    + ` ${analysis.collected_patch_bytes} patch bytes; ${analysis.jev_calls} Jev calls`);
+    + ` ${analysis.changes_read}/${analysis.changes_total ?? 0} changes read;`
+    + ` ${analysis.patch_bytes_read} patch bytes; ${analysis.jev_calls} Jev calls`);
   if (analysis.fallback_scope !== 'none') {
     // Reasons and task IDs come from fixed allowlists, never from error text.
     core.info(`reason=${analysis.limits_reached.join(',') || plan.status} scope=${analysis.fallback_scope}`

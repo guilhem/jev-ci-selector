@@ -31,8 +31,8 @@ GitHub passes strings. Validation and normalization precede Git or HTTP access, 
 | `tested-ref` | `merge` | `merge` or `head` |
 | `pull-request` | Empty | Open PR number for `workflow_dispatch`; add `pull-requests: read` |
 | `force-all` | `'false'` | All tasks, no Jev request |
-| `timeout-ms` | `10000` | Integer from 1 to 2147483647; shared context-preparation and final evaluation deadline |
-| `max-collected-patch-bytes` | `1048576` | Positive safe integer; UTF-8 patch text actually collected, summed over every unit read |
+| `timeout-ms` | `10000` | Integer from 1 to 2147483647; shared context-preparation and analysis deadline, started once the inventory is built |
+| `max-collected-patch-bytes` | `1048576` | Positive safe integer; UTF-8 patch bytes Git actually produced, rejected and retried attempts included |
 | `max-analysis-bytes` | `524288` | Positive safe integer; complete request JSON sent to the API, preparation and observation together |
 | `max-jev-calls` | `16` | Positive safe integer; API calls dispatched, failures included |
 
@@ -41,6 +41,10 @@ Boolean inputs accept only `true` and `false`; quote them in YAML. Integers use 
 `max-diff-bytes` has been removed. The action no longer builds a complete diff, so the input has no meaning it could keep; supplying it fails with a migration diagnostic rather than being reinterpreted. Replace it with `max-collected-patch-bytes`, whose value bounds a different thing: the patch text actually read, not the size of a whole diff. Runs pinned to an earlier release are unaffected.
 
 Every budget counts what it names: real UTF-8 or JSON bytes produced or sent, and calls actually dispatched. None of them is a token count or an estimate of one. Beyond these three, the inventory ceiling, the per-unit patch ceiling, the per-request ceilings and the Git timeouts are fixed constants, centralized in `src/budget.ts` and `src/observations.ts`.
+
+`max-collected-patch-bytes` bounds the **work**, not the useful context: a read that Git interrupted, and a patch produced in full but then rejected as binary or unrepresentable, are both charged. The report separates the two, as `analysis.patch_bytes_read` and `analysis.patch_bytes_delivered`. An interrupted read contributes a lower bound, never an exact size.
+
+`timeout-ms` keeps its historical meaning — the shared deadline for context preparation and analysis — and its clock starts once the comparison is verified and the inventory is built. A slow fetch therefore cannot silently consume the analysis allowance. Git commands keep their own separate timeouts, and no read or call is started once the deadline has passed.
 
 There are no per-task providers or budgets, no file path interpretation of `tasks`, and no configuration source precedence.
 
@@ -156,7 +160,7 @@ Version 8 follows the removal of the whole-diff step. `diff_hash` and `diff_byte
 | Metadata | `metadata_sha`, `job_metadata` |
 | Definition | `selection_hash` |
 | Inventory | `manifest.complete`, `manifest.hash`, `manifest.change_count`, `changed_path_count` |
-| Collection | `analysis.patches_requested`, `analysis.patches_read`, `analysis.collected_patch_bytes` |
+| Collection | `analysis.patches_requested`, `analysis.patches_read`, `analysis.patch_bytes_read`, `analysis.patch_bytes_delivered`, `analysis.changes_read`, `analysis.changes_total` |
 | Inference | `analysis.preparation_calls`, `analysis.preparation_bytes`, `analysis.observation_calls`, `analysis.observation_bytes`, `analysis.jev_calls`, `analysis.analysis_bytes`, `analysis.limits_reached` |
 | Coverage | `analysis.analysed_tasks`, `analysis.required_without_analysis`, `analysis.task_states`, `analysis.coverage`, `analysis.fallback_scope`, `analysis.fallback_tasks` |
 | Legacy diff | `diff_hash`, `diff_bytes` (null unless a complete diff was built) |
@@ -169,6 +173,8 @@ Version 8 follows the removal of the whole-diff step. `diff_hash` and `diff_byte
 `metadata_sha` is the reference revision for metadata even when no task requests it. `selection_hash` is SHA-256 of canonical JSON `{ model, tasks }` after normalization and defaults: recursively sorted object keys, preserved array order. YAML formatting does not change it.
 
 Each task decision contains `proposed_run`, `run` and `reasons`. Judgments live in observations by group. Observations include groups, requests, judgments, errors, models, usages and durations. `context_resolution` records task IDs, complete or incomplete status, context errors, trusted source paths with SHA-256 hashes and preparation passes. Calls record paths, request hashes, status, judgments, model, usage, duration and a fixed error code. It contains no file contents, raw source, diffs, secrets or provider error text. An empty object represents disabled or bypassed context resolution.
+
+`analysis.changes_read` against `analysis.changes_total` says how much of the inventory the analysis actually reached. A lower `changes_read` is how an early stop is recognised, including when it happens between two collection units and therefore materialises no skipped group at all: the observation is then `stopped-early`, never `complete`.
 
 `analysis.task_states` reports the per-task outcome: `settled-run` for an acquired execution, `settled-skip` for an exclusion backed by complete coverage, `fallback-run` for a task retained for lack of evidence, and `pending` only if analysis never reached it. `analysis.coverage` is true only when every obligation was really discharged. A group whose status is `not-needed` was skipped because every task was already decided; that is a success of the decision, reported as `stopped-early`, and never a timeout. `analysis.limits_reached` names the budgets that were actually hit.
 

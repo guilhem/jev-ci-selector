@@ -59,16 +59,19 @@ test('patch allowance never exceeds the per-unit cap and is exhausted by real re
   const value = budget({ maxCollectedPatchBytes: PATCH_UNIT_BYTES * 3 });
   assert.equal(value.patchUnitAllowance(), PATCH_UNIT_BYTES);
   value.notePatchRequested();
+  value.chargeRead(PATCH_UNIT_BYTES);
   value.spendPatchBytes(PATCH_UNIT_BYTES);
-  assert.equal(value.counters.collected_patch_bytes, PATCH_UNIT_BYTES);
+  assert.equal(value.counters.patch_bytes_read, PATCH_UNIT_BYTES);
+  assert.equal(value.counters.patch_bytes_delivered, PATCH_UNIT_BYTES);
   assert.equal(value.counters.patches_read, 1);
   assert.equal(value.counters.patches_requested, 1);
 
   const small = budget({ maxCollectedPatchBytes: 100 });
+  small.chargeRead(60);
   small.spendPatchBytes(60);
   assert.equal(small.patchUnitAllowance(), 40);
   assert.throws(() => small.spendPatchBytes(41), BudgetError);
-  assert.equal(small.counters.collected_patch_bytes, 60, 'a refused read is never counted');
+  assert.equal(small.counters.patch_bytes_delivered, 60, 'a refused delivery is never counted');
   assert.deepEqual(small.limitsReached, ['collected-patch-bytes']);
 });
 

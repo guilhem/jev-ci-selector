@@ -19,6 +19,10 @@ export interface ReportManifest {
 }
 
 export interface ReportAnalysis extends BudgetCounters {
+  /** Inventoried changes whose patch reached the analysis. */
+  changes_read: number;
+  /** Inventoried changes in total; a lower `changes_read` means an early stop. */
+  changes_total: number | null;
   analysed_tasks: string[];
   /** Tasks settled by the deterministic rules, for which nothing was read. */
   required_without_analysis: string[];
@@ -81,7 +85,9 @@ function analysisSummary(report: Report): string[] {
       + `, ${analysis.manifest_entries ?? '—'} change(s)`
       + `, hash ${manifest.hash ? manifest.hash.slice(0, 12) : '—'}.`,
     '',
-    `Collection: ${analysis.patches_read}/${analysis.patches_requested} patch unit(s) read, ${analysis.collected_patch_bytes} byte(s) collected.`,
+    `Collection: ${analysis.changes_read}/${analysis.changes_total ?? '—'} change(s) read`
+      + ` over ${analysis.patches_read}/${analysis.patches_requested} patch unit(s);`
+      + ` ${analysis.patch_bytes_read} byte(s) read, ${analysis.patch_bytes_delivered} delivered.`,
     '',
     `Inference: ${analysis.jev_calls} call(s) and ${analysis.analysis_bytes} request byte(s)`
       + ` (preparation ${analysis.preparation_calls}/${analysis.preparation_bytes}, observation ${analysis.observation_calls}/${analysis.observation_bytes}).`,

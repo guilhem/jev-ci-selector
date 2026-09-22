@@ -36892,7 +36892,8 @@ var JEV_CALLS = 16;
 var PREPARATION_SHARE = 0.5;
 var AnalysisBudget = class {
   limits;
-  #collectedPatchBytes = 0;
+  #readBytes = 0;
+  #deliveredBytes = 0;
   #patchesRequested = 0;
   #patchesRead = 0;
   #manifestEntries = null;
@@ -36913,7 +36914,8 @@ var AnalysisBudget = class {
       manifest_entries: this.#manifestEntries,
       patches_requested: this.#patchesRequested,
       patches_read: this.#patchesRead,
-      collected_patch_bytes: this.#collectedPatchBytes,
+      patch_bytes_read: this.#readBytes,
+      patch_bytes_delivered: this.#deliveredBytes,
       preparation_calls: this.#calls.preparation,
       preparation_bytes: this.#bytes.preparation,
       observation_calls: this.#calls.observation,
@@ -36929,22 +36931,47 @@ var AnalysisBudget = class {
   noteManifest(entries) {
     this.#manifestEntries = entries;
   }
-  /** Bytes still available for one patch unit, never above the per-unit cap. */
+  /**
+   * Bytes still available for one patch unit, never above the per-unit cap.
+   *
+   * The allowance is computed from bytes already *read*, so an attempt that was
+   * rejected and retried has already consumed part of it.
+   */
   patchUnitAllowance() {
-    return Math.max(0, Math.min(PATCH_UNIT_BYTES, this.limits.maxCollectedPatchBytes - this.#collectedPatchBytes));
+    const remaining = this.limits.maxCollectedPatchBytes - this.#readBytes;
+    if (remaining <= 0) this.#reached.add("collected-patch-bytes");
+    return Math.max(0, Math.min(PATCH_UNIT_BYTES, remaining));
   }
   notePatchRequested() {
     this.#patchesRequested += 1;
   }
-  /** Record a unit that was really read. Throws once the cumulative cap is hit. */
+  /**
+   * Charge the work a read really cost, whatever its outcome.
+   *
+   * Git produces bytes before an oversized read is interrupted, and a patch
+   * rejected as binary or unrepresentable was still produced in full. Charging
+   * only accepted patches would bound the useful context rather than the work,
+   * which is not the guarantee the input advertises. An interrupted read yields
+   * a lower bound, never an exact size.
+   */
+  chargeRead(bytes3) {
+    if (!Number.isSafeInteger(bytes3) || bytes3 < 0) throw new Error("invalid-patch-bytes");
+    this.#readBytes += bytes3;
+    if (this.#readBytes >= this.limits.maxCollectedPatchBytes) this.#reached.add("collected-patch-bytes");
+  }
+  /** Record a complete unit handed to the analysis. Throws past the cap. */
   spendPatchBytes(bytes3) {
     if (!Number.isSafeInteger(bytes3) || bytes3 < 0) throw new Error("invalid-patch-bytes");
-    if (this.#collectedPatchBytes + bytes3 > this.limits.maxCollectedPatchBytes) {
+    if (this.#deliveredBytes + bytes3 > this.limits.maxCollectedPatchBytes) {
       this.#reached.add("collected-patch-bytes");
-      throw new BudgetError("collected-patch-bytes", this.limits.maxCollectedPatchBytes, this.#collectedPatchBytes + bytes3);
+      throw new BudgetError("collected-patch-bytes", this.limits.maxCollectedPatchBytes, this.#deliveredBytes + bytes3);
     }
-    this.#collectedPatchBytes += bytes3;
+    this.#deliveredBytes += bytes3;
     this.#patchesRead += 1;
+  }
+  /** Register a ceiling that was reached elsewhere, for the report's registry. */
+  noteLimit(kind) {
+    this.#reached.add(kind);
   }
   remainingMs() {
     return Math.floor(this.limits.deadline - performance.now());
@@ -37374,7 +37401,7 @@ var GitRepository = class _GitRepository {
   async readPatch(comparison, entries, limits) {
     this.ensureOpen();
     const paths = changedPathsOf(entries);
-    const unit = { changeIds: entries.map((entry) => entry.id), paths, diff: "", bytes: 0, issue: null };
+    const unit = { changeIds: entries.map((entry) => entry.id), paths, diff: "", bytes: 0, bytesRead: 0, issue: null };
     if (!Number.isSafeInteger(limits.maxUnitBytes) || limits.maxUnitBytes <= 0) return { ...unit, issue: "too-large" };
     const blocked = entries.find((entry) => entry.issue !== null);
     if (blocked) return { ...unit, issue: blocked.issue };
@@ -37414,14 +37441,16 @@ var GitRepository = class _GitRepository {
         ...paths
       ], limits.maxUnitBytes, limits.timeoutMs);
     } catch (error) {
-      return { ...unit, issue: error instanceof OutputLimitError ? "too-large" : "git-read-failed" };
+      if (error instanceof OutputLimitError) return { ...unit, issue: "too-large", bytesRead: limits.maxUnitBytes };
+      return { ...unit, issue: "git-read-failed" };
     }
-    if (patch.length > limits.maxUnitBytes) return { ...unit, issue: "too-large" };
-    if (patch.includes(0)) return { ...unit, issue: "binary" };
+    if (patch.length > limits.maxUnitBytes) return { ...unit, issue: "too-large", bytesRead: limits.maxUnitBytes };
+    const read = { ...unit, bytesRead: patch.length };
+    if (patch.includes(0)) return { ...read, issue: "binary" };
     const diff = decodeUtf8(patch);
-    if (diff === void 0) return { ...unit, issue: "unrepresentable" };
-    if (patchIsBinary(diff)) return { ...unit, issue: "binary" };
-    return { ...unit, diff, bytes: patch.length };
+    if (diff === void 0) return { ...read, issue: "unrepresentable" };
+    if (patchIsBinary(diff)) return { ...read, issue: "binary" };
+    return { ...read, diff, bytes: patch.length };
   }
   /** Object sizes from metadata alone: no content is streamed. */
   async objectSizes(oids) {
@@ -40644,7 +40673,6 @@ var report_schema_default = {
         "manifest_entries",
         "patches_requested",
         "patches_read",
-        "collected_patch_bytes",
         "preparation_calls",
         "preparation_bytes",
         "observation_calls",
@@ -40657,7 +40685,11 @@ var report_schema_default = {
         "task_states",
         "coverage",
         "fallback_scope",
-        "fallback_tasks"
+        "fallback_tasks",
+        "patch_bytes_read",
+        "patch_bytes_delivered",
+        "changes_read",
+        "changes_total"
       ],
       properties: {
         manifest_entries: {
@@ -40671,9 +40703,6 @@ var report_schema_default = {
           $ref: "#/definitions/counter"
         },
         patches_read: {
-          $ref: "#/definitions/counter"
-        },
-        collected_patch_bytes: {
           $ref: "#/definitions/counter"
         },
         preparation_calls: {
@@ -40741,6 +40770,22 @@ var report_schema_default = {
         },
         fallback_tasks: {
           $ref: "#/definitions/taskIdList"
+        },
+        patch_bytes_read: {
+          $ref: "#/definitions/counter"
+        },
+        patch_bytes_delivered: {
+          $ref: "#/definitions/counter"
+        },
+        changes_read: {
+          $ref: "#/definitions/counter"
+        },
+        changes_total: {
+          type: [
+            "integer",
+            "null"
+          ],
+          minimum: 0
         }
       }
     }
@@ -41533,7 +41578,7 @@ function analysisSummary(report) {
   return [
     `Inventory: ${manifest.complete ? "complete" : "incomplete"}, ${analysis.manifest_entries ?? "—"} change(s), hash ${manifest.hash ? manifest.hash.slice(0, 12) : "—"}.`,
     "",
-    `Collection: ${analysis.patches_read}/${analysis.patches_requested} patch unit(s) read, ${analysis.collected_patch_bytes} byte(s) collected.`,
+    `Collection: ${analysis.changes_read}/${analysis.changes_total ?? "—"} change(s) read over ${analysis.patches_read}/${analysis.patches_requested} patch unit(s); ${analysis.patch_bytes_read} byte(s) read, ${analysis.patch_bytes_delivered} delivered.`,
     "",
     `Inference: ${analysis.jev_calls} call(s) and ${analysis.analysis_bytes} request byte(s) (preparation ${analysis.preparation_calls}/${analysis.preparation_bytes}, observation ${analysis.observation_calls}/${analysis.observation_bytes}).`,
     "",
@@ -42126,6 +42171,7 @@ async function analyseChange(request, evaluate) {
   const states = new Map(candidates.map((id) => [id, "pending"]));
   const taskErrors = /* @__PURE__ */ new Map();
   const obligations = new Set(request.changeIds);
+  const delivered = /* @__PURE__ */ new Set();
   const covered = new Map(candidates.map((id) => [id, /* @__PURE__ */ new Set()]));
   const chunks = [];
   const model = request.apiModel ?? request.selection.model;
@@ -42146,7 +42192,7 @@ async function analyseChange(request, evaluate) {
     return state === "settled-run" || state === "settled-skip";
   });
   let failure;
-  let stoppedEarly = false;
+  let exhaustedStream = false;
   let unitIndex = -1;
   while (candidates.length && !exhausted()) {
     let delivery;
@@ -42156,7 +42202,10 @@ async function analyseChange(request, evaluate) {
       retainOpen(error instanceof BudgetError ? "analysis-budget-exceeded" : "patch-unavailable");
       break;
     }
-    if (delivery === null) break;
+    if (delivery === null) {
+      exhaustedStream = true;
+      break;
+    }
     unitIndex += 1;
     if (delivery.issue !== null) {
       retainOpen(delivery.issue);
@@ -42172,6 +42221,7 @@ async function analyseChange(request, evaluate) {
       break;
     }
     const deliveredIds = [...delivery.changeIds];
+    for (const changeId of deliveredIds) delivered.add(changeId);
     const unitChunks = [];
     for (const group of groups) {
       const record3 = {
@@ -42202,7 +42252,6 @@ async function analyseChange(request, evaluate) {
         const open = askable();
         if (!open.length) {
           slot.record.status = "not-needed";
-          stoppedEarly = true;
           continue;
         }
         for (const ids of batchesFor(open, allQuestions, model, slot.state)) {
@@ -42217,7 +42266,6 @@ async function analyseChange(request, evaluate) {
               request_bytes: null,
               error: null
             });
-            stoppedEarly = true;
             continue;
           }
           const questions = Object.fromEntries(taskIds.map((id) => [id, allQuestions[id]]));
@@ -42309,8 +42357,7 @@ async function analyseChange(request, evaluate) {
       const requests = record3.requests;
       if (!requests.length) {
         record3.status = unneeded ? "not-needed" : "not-started";
-        if (unneeded) stoppedEarly = true;
-        else record3.error = failure ?? "jev-timeout";
+        if (!unneeded) record3.error = failure ?? "jev-timeout";
         chunks.push(record3);
         continue;
       }
@@ -42322,7 +42369,6 @@ async function analyseChange(request, evaluate) {
       chunks.push(record3);
     }
   }
-  if (stopWhenSettled && !openTasks(states).length) stoppedEarly = stoppedEarly || chunks.length > 0;
   for (const id of candidates) {
     if (states.get(id) !== "pending") continue;
     const complete = [...obligations].every((changeId) => covered.get(id).has(changeId));
@@ -42336,9 +42382,11 @@ async function analyseChange(request, evaluate) {
     coverage[id] = state === "settled-skip";
   }
   const dispatched = chunks.flatMap((chunk) => chunk.requests).filter((call) => call.status !== "not-needed");
+  const skippedGroups = chunks.some((chunk) => chunk.status === "not-needed");
+  const sweptWholeChangeSet = exhaustedStream && delivered.size >= obligations.size && !skippedGroups;
   const observation = chunks.length ? {
     strategy: chunks.length === 1 ? "whole-diff" : "chunked-diff",
-    status: chunks.every((chunk) => chunk.status === "completed" || chunk.status === "not-needed") ? stoppedEarly && chunks.some((chunk) => chunk.status === "not-needed") ? "stopped-early" : "complete" : "incomplete",
+    status: chunks.every((chunk) => chunk.status === "completed" || chunk.status === "not-needed") ? sweptWholeChangeSet ? "complete" : "stopped-early" : "incomplete",
     chunks
   } : null;
   return {
@@ -42346,6 +42394,8 @@ async function analyseChange(request, evaluate) {
     decisions,
     coverage,
     taskErrors: Object.fromEntries([...taskErrors]),
+    changesRead: delivered.size,
+    changesTotal: obligations.size,
     ...failure ? { failure } : {},
     states: Object.fromEntries([...states]),
     model: singleModel(dispatched.map((call) => call.model)),
@@ -42633,6 +42683,20 @@ var ISSUE_REASONS = {
   unrepresentable: "unrepresentable-change",
   "git-read-failed": "git-read-failed"
 };
+var EMPTY_COUNTERS = {
+  manifest_entries: null,
+  patches_requested: 0,
+  patches_read: 0,
+  patch_bytes_read: 0,
+  patch_bytes_delivered: 0,
+  preparation_calls: 0,
+  preparation_bytes: 0,
+  observation_calls: 0,
+  observation_bytes: 0,
+  jev_calls: 0,
+  analysis_bytes: 0,
+  limits_reached: []
+};
 var UNIT_ENTRIES = 16;
 function patchStream(repository, comparison, entries, budget) {
   const pending = [];
@@ -42645,15 +42709,20 @@ function patchStream(repository, comparison, entries, budget) {
         const changeIds = unit.map((entry) => entry.id);
         const allowance = budget.patchUnitAllowance();
         if (allowance <= 0) return { changeIds, paths: [], diff: "", issue: PATCH_UNIT_LIMIT_REASON };
+        if (budget.expired()) return { changeIds, paths: [], diff: "", issue: PATCH_UNIT_LIMIT_REASON };
         budget.notePatchRequested();
         const result = await repository.readPatch(comparison, unit, {
           maxUnitBytes: Math.min(allowance, PATCH_UNIT_BYTES),
-          timeoutMs: Math.max(1, budget.remainingMs())
+          timeoutMs: budget.remainingMs()
         });
-        if (result.issue === "too-large" && unit.length > 1) {
-          const middle = Math.ceil(unit.length / 2);
-          pending.unshift(unit.slice(0, middle), unit.slice(middle));
-          continue;
+        budget.chargeRead(result.bytesRead);
+        if (result.issue === "too-large") {
+          budget.noteLimit("patch-unit-bytes");
+          if (unit.length > 1) {
+            const middle = Math.ceil(unit.length / 2);
+            pending.unshift(unit.slice(0, middle), unit.slice(middle));
+            continue;
+          }
         }
         if (result.issue !== null) return { changeIds, paths: result.paths, diff: "", issue: ISSUE_REASONS[result.issue] };
         try {
@@ -42668,6 +42737,12 @@ function patchStream(repository, comparison, entries, budget) {
     }
   };
 }
+function stillOpen(taskIds, resolved, mode) {
+  if (mode === "shadow") return [...taskIds];
+  return taskIds.filter((id) => !resolved.metadata.tasks[id]?.incomplete && resolved.selection.tasks[id]?.always !== true);
+}
+var NothingLeftToAnalyse = class extends Error {
+};
 function restrict(configured, taskIds) {
   const keep = new Set(taskIds);
   return { model: configured.model, tasks: Object.fromEntries(Object.entries(configured.tasks).filter(([id]) => keep.has(id))) };
@@ -42689,12 +42764,7 @@ async function planChange(inputs, context, dependencies = {}) {
   const configured = { model: inputs.model, tasks: inputs.tasks };
   const api = resolveJevApi(inputs);
   const started = performance.now();
-  const budget = new AnalysisBudget({
-    maxCollectedPatchBytes: inputs.maxCollectedPatchBytes,
-    maxAnalysisBytes: inputs.maxAnalysisBytes,
-    maxJevCalls: inputs.maxJevCalls,
-    deadline: started + inputs.timeoutMs
-  });
+  let budget;
   const metadataSha = context.metadataSha ?? context.baseSha;
   let forced;
   if (context.eventName !== "pull_request") forced = { status: "bypassed", code: "non-pull-request" };
@@ -42725,6 +42795,12 @@ async function planChange(inputs, context, dependencies = {}) {
           testedRef: inputs.testedRef ?? "merge"
         });
         manifest = await repository.collectManifest(comparison);
+        budget = new AnalysisBudget({
+          maxCollectedPatchBytes: inputs.maxCollectedPatchBytes,
+          maxAnalysisBytes: inputs.maxAnalysisBytes,
+          maxJevCalls: inputs.maxJevCalls,
+          deadline: performance.now() + inputs.timeoutMs
+        });
         budget.noteManifest(manifest.entries.length);
         forced = globalPathReason(manifest.changedPaths);
         if (!manifest.complete) forced ??= { status: "fallback", code: "manifest-incomplete" };
@@ -42765,6 +42841,7 @@ async function planChange(inputs, context, dependencies = {}) {
               tasks: { ...plainSelection(inputs).tasks, ...scopedResolution.selection.tasks }
             }
           };
+          analysisTaskIds = stillOpen(analysisTaskIds, resolved, inputs.mode);
         }
       }
     }
@@ -42779,8 +42856,10 @@ async function planChange(inputs, context, dependencies = {}) {
     let metadata = { model: null, usage: null };
     let jevMs = null;
     let observation = null;
+    let changesRead = 0;
     let contextResolution = {};
-    if (manifest && repository && analysisTaskIds.length) {
+    if (manifest && repository && budget && analysisTaskIds.length) {
+      const activeBudget = budget;
       const callStarted = performance.now();
       try {
         contextResolution = await resolveContextFiles({
@@ -42789,18 +42868,20 @@ async function planChange(inputs, context, dependencies = {}) {
           repository,
           commit: metadataSha,
           apiKey: inputs.apiKey,
-          deadline: budget.limits.deadline,
-          budget,
+          deadline: activeBudget.limits.deadline,
+          budget: activeBudget,
           apiBaseUrl: api.baseURL,
           apiModel: requestedModel
         }, dependencies.evaluateContext ?? evaluateChoices);
+        analysisTaskIds = stillOpen(analysisTaskIds, resolved, inputs.mode);
+        if (!analysisTaskIds.length) throw new NothingLeftToAnalyse();
         const outcome = await analyseChange({
           selection,
           taskIds: analysisTaskIds,
           workingDirectories: resolved.workingDirectories,
           changeIds: manifest.entries.map((entry) => entry.id),
-          patches: patchStream(repository, manifest.comparison, manifest.entries, budget),
-          budget,
+          patches: patchStream(repository, manifest.comparison, manifest.entries, activeBudget),
+          budget: activeBudget,
           apiBaseUrl: api.baseURL,
           apiModel: requestedModel,
           apiKey: inputs.apiKey,
@@ -42812,12 +42893,15 @@ async function planChange(inputs, context, dependencies = {}) {
         coverage = outcome.coverage;
         taskErrors = outcome.taskErrors;
         taskStates = outcome.states;
+        changesRead = outcome.changesRead;
         metadata = outcome;
         observationError = outcome.failure;
       } catch (error) {
-        if (!(error instanceof ObservationSizeError)) throw error;
-        observationError = error.code;
-        forced ??= { status: "fallback", code: error.code };
+        if (error instanceof NothingLeftToAnalyse) {
+        } else if (error instanceof ObservationSizeError) {
+          observationError = error.code;
+          forced ??= { status: "fallback", code: error.code };
+        } else throw error;
       } finally {
         jevMs = performance.now() - callStarted;
         const calls = Object.values(contextResolution).flatMap((job) => job.passes.flatMap((pass) => pass.calls));
@@ -42852,7 +42936,7 @@ async function planChange(inputs, context, dependencies = {}) {
     if (observation && plan.status === "bypassed") {
       for (const id of analysisTaskIds) plan.tasks[id].reasons.push("observation-only");
     }
-    const counters = budget.counters;
+    const counters = budget?.counters ?? EMPTY_COUNTERS;
     const retained = Object.keys(plan.tasks).filter((id) => plan.tasks[id].proposed_run === null).sort();
     const report = {
       version: 8,
@@ -42878,6 +42962,8 @@ async function planChange(inputs, context, dependencies = {}) {
       },
       analysis: {
         ...counters,
+        changes_read: changesRead,
+        changes_total: manifest?.entries.length ?? null,
         analysed_tasks: [...analysisTaskIds].sort(),
         required_without_analysis: Object.keys(plan.tasks).filter((id) => !analysisTaskIds.includes(id)).sort(),
         task_states: taskStates,
@@ -42968,7 +43054,7 @@ async function main() {
   }
   core.info(`jev-ci-selector: ${plan.status}, ${plan.selected.length}/${Object.keys(plan.tasks).length} tasks (${plan.mode})`);
   const { analysis } = report;
-  core.info(`analysis: ${analysis.required_without_analysis.length} forced, ${analysis.analysed_tasks.length} analysed; ${analysis.collected_patch_bytes} patch bytes; ${analysis.jev_calls} Jev calls`);
+  core.info(`analysis: ${analysis.required_without_analysis.length} forced, ${analysis.analysed_tasks.length} analysed; ${analysis.changes_read}/${analysis.changes_total ?? 0} changes read; ${analysis.patch_bytes_read} patch bytes; ${analysis.jev_calls} Jev calls`);
   if (analysis.fallback_scope !== "none") {
     core.info(`reason=${analysis.limits_reached.join(",") || plan.status} scope=${analysis.fallback_scope} affected_tasks=${analysis.fallback_tasks.join(",")}`);
   }

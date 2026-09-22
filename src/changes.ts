@@ -95,7 +95,13 @@ export interface PatchUnit {
   changeIds: string[];
   paths: string[];
   diff: string;
+  /** Bytes of the complete patch delivered; 0 whenever `issue` is set. */
   bytes: number;
+  /**
+   * Bytes Git really produced for this attempt, including one that was then
+   * rejected. For an interrupted read this is a lower bound, never exact.
+   */
+  bytesRead: number;
   issue: EntryIssueCode | null;
 }
 
@@ -525,7 +531,7 @@ export class GitRepository {
   async readPatch(comparison: VerifiedComparison, entries: readonly ChangeEntry[], limits: ReadPatchLimits): Promise<PatchUnit> {
     this.ensureOpen();
     const paths = changedPathsOf(entries);
-    const unit: PatchUnit = { changeIds: entries.map(entry => entry.id), paths, diff: '', bytes: 0, issue: null };
+    const unit: PatchUnit = { changeIds: entries.map(entry => entry.id), paths, diff: '', bytes: 0, bytesRead: 0, issue: null };
     if (!Number.isSafeInteger(limits.maxUnitBytes) || limits.maxUnitBytes <= 0) return { ...unit, issue: 'too-large' };
     const blocked = entries.find(entry => entry.issue !== null);
     if (blocked) return { ...unit, issue: blocked.issue };
@@ -569,14 +575,20 @@ export class GitRepository {
         ...paths,
       ], limits.maxUnitBytes, limits.timeoutMs);
     } catch (error) {
-      return { ...unit, issue: error instanceof OutputLimitError ? 'too-large' : 'git-read-failed' };
+      // An interrupted read still cost the bytes Git emitted before the kill.
+      // The cap is the only lower bound available for it.
+      if (error instanceof OutputLimitError) return { ...unit, issue: 'too-large', bytesRead: limits.maxUnitBytes };
+      return { ...unit, issue: 'git-read-failed' };
     }
-    if (patch.length > limits.maxUnitBytes) return { ...unit, issue: 'too-large' };
-    if (patch.includes(0)) return { ...unit, issue: 'binary' };
+    if (patch.length > limits.maxUnitBytes) return { ...unit, issue: 'too-large', bytesRead: limits.maxUnitBytes };
+    // Everything below was produced in full, so it is charged in full even when
+    // the result is rejected.
+    const read = { ...unit, bytesRead: patch.length };
+    if (patch.includes(0)) return { ...read, issue: 'binary' };
     const diff = decodeUtf8(patch);
-    if (diff === undefined) return { ...unit, issue: 'unrepresentable' };
-    if (patchIsBinary(diff)) return { ...unit, issue: 'binary' };
-    return { ...unit, diff, bytes: patch.length };
+    if (diff === undefined) return { ...read, issue: 'unrepresentable' };
+    if (patchIsBinary(diff)) return { ...read, issue: 'binary' };
+    return { ...read, diff, bytes: patch.length };
   }
 
   /** Object sizes from metadata alone: no content is streamed. */

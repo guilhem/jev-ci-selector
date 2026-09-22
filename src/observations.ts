@@ -103,6 +103,10 @@ export interface AnalysisOutcome {
   states: Record<string, TaskState>;
   /** First provider-level error seen, for the report's observation_error. */
   failure?: ObservationError;
+  /** Inventoried changes whose patch was delivered to the analysis. */
+  changesRead: number;
+  /** Inventoried changes in total. `changesRead < changesTotal` means an early stop. */
+  changesTotal: number;
   model: string | null;
   usage: Usage | null;
 }
@@ -205,6 +209,7 @@ export async function analyseChange(request: AnalysisRequest, evaluate: typeof e
   // Obligations start as every inventoried change: with no impact map, a change
   // that has not been read is potentially relevant to every candidate.
   const obligations = new Set(request.changeIds);
+  const delivered = new Set<string>();
   const covered = new Map<string, Set<string>>(candidates.map(id => [id, new Set<string>()]));
   const chunks: ObservationChunk[] = [];
   const model = request.apiModel ?? request.selection.model;
@@ -236,7 +241,7 @@ export async function analyseChange(request: AnalysisRequest, evaluate: typeof e
     return state === 'settled-run' || state === 'settled-skip';
   });
   let failure: ObservationError | undefined;
-  let stoppedEarly = false;
+  let exhaustedStream = false;
   let unitIndex = -1;
   while (candidates.length && !exhausted()) {
       let delivery: PatchDelivery | null;
@@ -245,7 +250,7 @@ export async function analyseChange(request: AnalysisRequest, evaluate: typeof e
         retainOpen(error instanceof BudgetError ? 'analysis-budget-exceeded' : 'patch-unavailable');
         break;
       }
-      if (delivery === null) break;
+      if (delivery === null) { exhaustedStream = true; break; }
       unitIndex += 1;
       if (delivery.issue !== null) {
         // The unit could not be read, so its changes stay undischarged for every
@@ -265,6 +270,7 @@ export async function analyseChange(request: AnalysisRequest, evaluate: typeof e
       }
 
       const deliveredIds = [...delivery.changeIds];
+      for (const changeId of deliveredIds) delivered.add(changeId);
       const unitChunks: Array<{ record: ObservationChunk; state: unknown; answered: Set<string> }> = [];
       for (const group of groups) {
         const record: ObservationChunk = {
@@ -289,7 +295,7 @@ export async function analyseChange(request: AnalysisRequest, evaluate: typeof e
           if (exhausted()) break;
           const slot = unitChunks[index++]!;
           const open = askable();
-          if (!open.length) { slot.record.status = 'not-needed'; stoppedEarly = true; continue; }
+          if (!open.length) { slot.record.status = 'not-needed'; continue; }
           for (const ids of batchesFor(open, allQuestions, model, slot.state)) {
             // Rebuild the open set per call: a task settled by a sibling call is
             // dropped before this request is even constructed.
@@ -297,7 +303,6 @@ export async function analyseChange(request: AnalysisRequest, evaluate: typeof e
             if (!taskIds.length) {
               slot.record.requests!.push({ task_ids: ids, status: 'not-needed', model: null, usage: null,
                 duration_ms: null, request_bytes: null, error: null });
-              stoppedEarly = true;
               continue;
             }
             const questions = Object.fromEntries(taskIds.map(id => [id, allQuestions[id]]));
@@ -369,8 +374,7 @@ export async function analyseChange(request: AnalysisRequest, evaluate: typeof e
         const requests = record.requests!;
         if (!requests.length) {
           record.status = unneeded ? 'not-needed' : 'not-started';
-          if (unneeded) stoppedEarly = true;
-          else record.error = failure ?? 'jev-timeout';
+          if (!unneeded) record.error = failure ?? 'jev-timeout';
           chunks.push(record);
           continue;
         }
@@ -385,7 +389,6 @@ export async function analyseChange(request: AnalysisRequest, evaluate: typeof e
         chunks.push(record);
       }
   }
-  if (stopWhenSettled && !openTasks(states).length) stoppedEarly = stoppedEarly || chunks.length > 0;
 
   for (const id of candidates) {
     if (states.get(id) !== 'pending') continue;
@@ -402,10 +405,16 @@ export async function analyseChange(request: AnalysisRequest, evaluate: typeof e
   }
 
   const dispatched = chunks.flatMap(chunk => chunk.requests!).filter(call => call.status !== 'not-needed');
+  // An early stop is measured against the change set, not against the groups
+  // that happen to have been materialised. Stopping on the first unit of a
+  // multi-unit manifest creates no `not-needed` group at all, so the stream's
+  // own state is what distinguishes a complete sweep from an early stop.
+  const skippedGroups = chunks.some(chunk => chunk.status === 'not-needed');
+  const sweptWholeChangeSet = exhaustedStream && delivered.size >= obligations.size && !skippedGroups;
   const observation: Observation | null = chunks.length ? {
     strategy: chunks.length === 1 ? 'whole-diff' : 'chunked-diff',
     status: chunks.every(chunk => chunk.status === 'completed' || chunk.status === 'not-needed')
-      ? (stoppedEarly && chunks.some(chunk => chunk.status === 'not-needed') ? 'stopped-early' : 'complete')
+      ? (sweptWholeChangeSet ? 'complete' : 'stopped-early')
       : 'incomplete',
     chunks,
   } : null;
@@ -415,6 +424,8 @@ export async function analyseChange(request: AnalysisRequest, evaluate: typeof e
     decisions,
     coverage,
     taskErrors: Object.fromEntries([...taskErrors]),
+    changesRead: delivered.size,
+    changesTotal: obligations.size,
     ...(failure ? { failure } : {}),
     states: Object.fromEntries([...states]),
     model: singleModel(dispatched.map(call => call.model)),

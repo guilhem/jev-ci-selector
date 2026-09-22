@@ -46,7 +46,7 @@ function entriesFor(paths: string[]): ChangeEntry[] {
 
 function fixture(options: {
   paths?: string[]; diff?: string; failure?: Error; jevFailure?: Error;
-  patchIssue?: EntryIssueCode; manifestIncomplete?: boolean;
+  patchIssue?: EntryIssueCode; issueBytesRead?: number; manifestIncomplete?: boolean;
 } = {}) {
   const calls = { fetch: [] as string[], read: [] as string[], collect: 0, evaluate: 0, dispose: 0, patches: 0 };
   const paths = options.paths ?? ['source.txt'];
@@ -75,10 +75,14 @@ function fixture(options: {
         calls.patches++;
         const changeIds = entries.map(entry => entry.id);
         const unitPaths = entries.map(entry => entry.newPath!).filter(Boolean);
-        if (options.patchIssue) return { changeIds, paths: unitPaths, diff: '', bytes: 0, issue: options.patchIssue };
+        if (options.patchIssue) {
+          // A rejected read still cost the bytes Git produced for it.
+          return { changeIds, paths: unitPaths, diff: '', bytes: 0, bytesRead: options.issueBytesRead ?? 0, issue: options.patchIssue };
+        }
         // The whole fixture diff belongs to the first unit; later units are empty.
         const diff = calls.patches === 1 ? options.diff ?? patch() : '';
-        return { changeIds, paths: unitPaths, diff, bytes: Buffer.byteLength(diff), issue: null };
+        const bytes = Buffer.byteLength(diff);
+        return { changeIds, paths: unitPaths, diff, bytes, bytesRead: bytes, issue: null };
       },
       dispose: async () => { calls.dispose++; },
     }),
@@ -335,7 +339,8 @@ test('a fully deterministic selection costs nothing in enforce and is still obse
   assert.equal(enforce.calls.collect, 1);
   assert.equal(enforced.report.observation, null);
   assert.equal(enforced.report.analysis.jev_calls, 0);
-  assert.equal(enforced.report.analysis.collected_patch_bytes, 0);
+  assert.equal(enforced.report.analysis.patch_bytes_read, 0);
+  assert.equal(enforced.report.analysis.changes_read, 0);
   assert.deepEqual(enforced.report.analysis.analysed_tasks, []);
   assert.deepEqual(enforced.report.analysis.required_without_analysis, ['unit']);
   assert.equal(enforced.report.manifest.complete, true);
@@ -609,7 +614,7 @@ test('an exhausted collection budget retains the tasks it could not cover', asyn
   assert.equal(plan.status, 'fallback');
   assert.deepEqual(plan.tasks.check!.reasons, ['analysis-budget-exceeded']);
   assert.equal(f.calls.evaluate, 0);
-  assert.equal(report.analysis.collected_patch_bytes, 0);
+  assert.equal(report.analysis.patch_bytes_delivered, 0);
   assert.deepEqual(report.analysis.limits_reached, ['collected-patch-bytes']);
 });
 
@@ -658,6 +663,7 @@ test('a complete independent decision excludes the task and reports its coverage
   assert.deepEqual(report.analysis.fallback_tasks, []);
   assert.ok(report.analysis.observation_bytes > 0);
   assert.equal(report.analysis.patches_read, 1);
+  assert.equal(report.analysis.changes_read, report.analysis.changes_total);
 });
 
 test('preparation draws on a sub-limit and keeps its own job without starving the decision', async () => {
@@ -688,8 +694,12 @@ test('preparation draws on a sub-limit and keeps its own job without starving th
   assert.equal(plan.tasks.build!.run, false);
   assert.ok(plan.tasks.helm!.reasons.includes('context-resolution-incomplete'));
   assert.ok(preparation >= 1 && observation >= 1, 'preparation never consumed the decision budget');
-  assert.ok(report.analysis.preparation_bytes <= report.analysis.analysis_bytes / 2 + 1);
+  // The sub-limit is a fraction of the configured ceiling, not of what was used.
+  assert.ok(report.analysis.preparation_bytes <= 32768 / 2, 'preparation stayed inside its sub-limit');
   assert.ok(report.analysis.observation_calls >= 1);
+  // `helm` became mandatory when its preparation failed, so it was dropped from
+  // the observation instead of being asked about a decision that cannot change.
+  assert.deepEqual(report.analysis.analysed_tasks, ['build']);
 });
 
 test('an exhausted preparation sub-limit retains its job instead of sending a partial context', async () => {
@@ -747,4 +757,193 @@ test('reducing any budget never produces a new exclusion', async () => {
         `${JSON.stringify(tightened)} turned ${id} from run into skip`);
     }
   }
+});
+
+test('a task made mandatory by its preparation is never analysed further', async () => {
+  // One task only: its context preparation fails, which makes it mandatory.
+  // Nothing may be collected or asked for it after that point.
+  const f = fixture();
+  const definition: SelectionDefinition = { model: 'jev-1.13.0', tasks: {
+    helm: { resolve_context_files: true, description: 'Renders charts', jobs: [{ workflow: '.github/workflows/ci.yml', job: 'helm' }] },
+  } };
+  const create = f.dependencies.createRepository!;
+  let observations = 0;
+  const { plan, report } = await planChange({ ...inputs, ...definition }, context, {
+    ...f.dependencies,
+    createRepository: async options => ({ ...await create(options), listFiles: async () => ['config.ini'] }),
+    evaluateContext: async () => { throw new JevError('jev-error', { model: 'jev-1.13.0', usage: { input_tokens: 7, output_tokens: 1 } }); },
+    evaluate: async () => { observations++; throw new Error('a settled task must not be observed'); },
+  });
+  assert.equal(plan.run.helm, true);
+  assert.equal(observations, 0, 'no observation call after the task became mandatory');
+  assert.equal(f.calls.patches, 0, 'no patch collected after the task became mandatory');
+  assert.equal(report.observation, null);
+  assert.deepEqual(report.analysis.analysed_tasks, []);
+  assert.equal(report.analysis.observation_calls, 0);
+  assert.equal(report.analysis.patch_bytes_read, 0);
+  assert.ok(plan.tasks.helm!.reasons.includes('context-resolution-incomplete'));
+});
+
+test('a healthy task stays in the questions when a sibling preparation fails', async () => {
+  const f = fixture();
+  const definition: SelectionDefinition = { model: 'jev-1.13.0', tasks: {
+    helm: { resolve_context_files: true, description: 'Renders charts', jobs: [{ workflow: '.github/workflows/ci.yml', job: 'helm' }] },
+    build: { description: 'Builds', resolve_context_files: false },
+  } };
+  const create = f.dependencies.createRepository!;
+  const asked: string[][] = [];
+  const { plan } = await planChange({ ...inputs, ...definition }, context, {
+    ...f.dependencies,
+    createRepository: async options => ({ ...await create(options), listFiles: async () => ['config.ini'] }),
+    evaluateContext: async () => { throw new JevError('jev-error', { model: 'jev-1.13.0', usage: { input_tokens: 7, output_tokens: 1 } }); },
+    evaluate: async request => {
+      asked.push([...request.taskIds]);
+      return { answers: Object.fromEntries(request.taskIds.map(id => [id, judgment()])),
+        model: 'jev-1.13.0', usage: { input_tokens: 5, output_tokens: 1 } };
+    },
+  });
+  assert.ok(asked.length > 0);
+  assert.ok(asked.every(ids => !ids.includes('helm')), 'the settled task left the questions');
+  assert.ok(asked.every(ids => ids.includes('build')));
+  assert.equal(plan.run.helm, true);
+  assert.equal(plan.run.build, false);
+});
+
+test('rejected read attempts consume the collection budget and register their ceiling', async () => {
+  // Every unit is refused as too large. The budget must charge the attempts,
+  // not just the patches that were finally accepted.
+  const f = fixture({ patchIssue: 'too-large', issueBytesRead: 4096 });
+  const { plan, report } = await planChange(
+    { ...inputs, maxCollectedPatchBytes: 16384, tasks: { check: { description: 'Checks backend rules.' } } },
+    context, f.dependencies);
+  assert.equal(plan.run.check, true);
+  assert.equal(report.analysis.patch_bytes_read, 4096, 'the rejected attempt was charged');
+  assert.equal(report.analysis.patch_bytes_delivered, 0, 'nothing was delivered');
+  assert.ok(report.analysis.limits_reached.includes('patch-unit-bytes'));
+  assert.deepEqual(plan.tasks.check!.reasons, ['diff-too-large']);
+});
+
+test('an exhausted collection budget names the ceiling it reached', async () => {
+  const f = fixture({ diff: patch(40) });
+  const { report } = await planChange(
+    { ...inputs, maxCollectedPatchBytes: 1, tasks: { check: { description: 'Checks backend rules.' } } },
+    context, f.dependencies);
+  assert.ok(report.analysis.limits_reached.includes('collected-patch-bytes'),
+    'the budget that stopped the run is named in the registry');
+});
+
+test('an already expired deadline starts no further read and no further call', async () => {
+  const f = fixture({ diff: patch(40) });
+  const { plan, report } = await planChange(
+    { ...inputs, timeoutMs: 1, tasks: { check: { description: 'Checks backend rules.' } } },
+    context, {
+      ...f.dependencies,
+      createRepository: async () => {
+        const repository = await f.dependencies.createRepository!({ remoteUrl: '' });
+        return { ...repository, collectManifest: async (comparison: never) => {
+          // Spend the whole allowance before the analysis clock is consulted.
+          const until = performance.now() + 20;
+          while (performance.now() < until) { /* burn the deadline */ }
+          return repository.collectManifest(comparison);
+        } };
+      },
+    });
+  assert.equal(plan.run.check, true);
+  assert.equal(f.calls.evaluate, 0, 'no call once the deadline has passed');
+  assert.equal(f.calls.patches, 0, 'no Git read once the deadline has passed');
+});
+
+test('stopping on the first of several units is reported as an early stop, not a complete sweep', async () => {
+  // More changes than fit in one read unit, so the stream holds several. The
+  // first answer settles the task, so later units are never requested and no
+  // group is ever materialised for them.
+  const paths = Array.from({ length: 20 }, (_, index) => `file-${index}.txt`);
+  const f = fixture({ paths });
+  const { plan, report } = await planChange(
+    { ...inputs, tasks: { check: { description: 'Checks backend rules.' } } },
+    context, {
+      ...f.dependencies,
+      evaluate: async request => ({ answers: Object.fromEntries(request.taskIds.map(id => [id, judgment('required')])),
+        model: 'jev-1.13.0', usage: { input_tokens: 5, output_tokens: 1 } }),
+    });
+  assert.equal(plan.run.check, true);
+  assert.equal(report.manifest.change_count, 20);
+  assert.equal(report.analysis.changes_total, 20);
+  assert.ok(report.analysis.changes_read < 20, 'the sweep stopped before the whole change set');
+  assert.equal(f.calls.patches, 1, 'later units were never requested');
+  assert.equal(report.observation!.status, 'stopped-early');
+  assert.ok(report.observation!.chunks.every(chunk => chunk.status === 'completed'),
+    'no group failed; the run simply stopped');
+});
+
+test('reading every unit without skipping a group is reported as complete', async () => {
+  const f = fixture({ paths: ['a.txt'] });
+  const { report } = await planChange(
+    { ...inputs, tasks: { check: { description: 'Checks backend rules.' } } },
+    context, f.dependencies);
+  assert.equal(report.observation!.status, 'complete');
+  assert.equal(report.analysis.changes_read, report.analysis.changes_total);
+});
+
+test('changes spread over several units are all covered before an exclusion', async () => {
+  // Two units, both judged independent. The exclusion is only legitimate because
+  // every inventoried change was read and judged.
+  const paths = Array.from({ length: 20 }, (_, index) => `file-${index}.txt`);
+  const f = fixture({ paths });
+  const create = f.dependencies.createRepository!;
+  const units: string[][] = [];
+  const { plan, report } = await planChange(
+    { ...inputs, tasks: { check: { description: 'Checks backend rules.' } } },
+    context, {
+      ...f.dependencies,
+      createRepository: async options => {
+        const repository = await create(options);
+        return { ...repository, readPatch: async (comparison, entries, limits) => {
+          units.push(entries.map(entry => entry.id));
+          // Each unit gets its own real patch text, so every change is covered.
+          const diff = entries.map(entry => patch(1, entry.newPath!)).join('');
+          void comparison; void limits;
+          return { changeIds: entries.map(entry => entry.id), paths: entries.map(entry => entry.newPath!),
+            diff, bytes: Buffer.byteLength(diff), bytesRead: Buffer.byteLength(diff), issue: null };
+        } };
+      },
+      evaluate: async request => ({ answers: Object.fromEntries(request.taskIds.map(id => [id, judgment()])),
+        model: 'jev-1.13.0', usage: { input_tokens: 5, output_tokens: 1 } }),
+    });
+  assert.ok(units.length > 1, 'the change set really spanned several units');
+  assert.equal(plan.run.check, false);
+  assert.equal(report.analysis.coverage.check, true);
+  assert.equal(report.analysis.changes_read, 20);
+  assert.equal(report.observation!.status, 'complete');
+});
+
+test('a single unit left unread keeps the task, even when every other unit is independent', async () => {
+  // The interdependent half of the change sits in the second unit and cannot be
+  // read. Judging the first unit independent must not be enough to exclude.
+  const paths = Array.from({ length: 20 }, (_, index) => `file-${index}.txt`);
+  const f = fixture({ paths });
+  const create = f.dependencies.createRepository!;
+  let unit = 0;
+  const { plan, report } = await planChange(
+    { ...inputs, tasks: { check: { description: 'Checks backend rules.' } } },
+    context, {
+      ...f.dependencies,
+      createRepository: async options => {
+        const repository = await create(options);
+        return { ...repository, readPatch: async (_comparison, entries) => {
+          const changeIds = entries.map(entry => entry.id);
+          const unitPaths = entries.map(entry => entry.newPath!);
+          if (unit++ > 0) return { changeIds, paths: unitPaths, diff: '', bytes: 0, bytesRead: 512, issue: 'too-large' as const };
+          const diff = entries.map(entry => patch(1, entry.newPath!)).join('');
+          return { changeIds, paths: unitPaths, diff, bytes: Buffer.byteLength(diff), bytesRead: Buffer.byteLength(diff), issue: null };
+        } };
+      },
+      evaluate: async request => ({ answers: Object.fromEntries(request.taskIds.map(id => [id, judgment()])),
+        model: 'jev-1.13.0', usage: { input_tokens: 5, output_tokens: 1 } }),
+    });
+  assert.equal(plan.run.check, true, 'an unread unit blocks the exclusion');
+  assert.equal(report.analysis.coverage.check, false);
+  assert.equal(report.analysis.task_states.check, 'fallback-run');
+  assert.ok(report.analysis.changes_read < 20);
+  assert.deepEqual(plan.tasks.check!.reasons.filter(reason => reason !== 'chunked-observation'), ['diff-too-large']);
 });

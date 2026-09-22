@@ -81,6 +81,14 @@ const ISSUE_REASONS: Record<EntryIssueCode, Reason> = {
   unrepresentable: 'unrepresentable-change',
   'git-read-failed': 'git-read-failed',
 };
+/** Counters for a run that never reached the analysis stage. */
+const EMPTY_COUNTERS: BudgetCounters = {
+  manifest_entries: null, patches_requested: 0, patches_read: 0,
+  patch_bytes_read: 0, patch_bytes_delivered: 0,
+  preparation_calls: 0, preparation_bytes: 0, observation_calls: 0, observation_bytes: 0,
+  jev_calls: 0, analysis_bytes: 0, limits_reached: [],
+};
+
 /** Entries grouped per read. Large files end up isolated by the halving retry. */
 const UNIT_ENTRIES = 16;
 
@@ -107,17 +115,26 @@ function patchStream(
         const unit = pending.shift()!;
         if (!unit.length) continue;
         const changeIds = unit.map(entry => entry.id);
+        // `patchUnitAllowance` registers the ceiling itself when it is reached.
         const allowance = budget.patchUnitAllowance();
         if (allowance <= 0) return { changeIds, paths: [], diff: '', issue: PATCH_UNIT_LIMIT_REASON };
+        // An expired deadline must not start another Git command.
+        if (budget.expired()) return { changeIds, paths: [], diff: '', issue: PATCH_UNIT_LIMIT_REASON };
         budget.notePatchRequested();
         const result = await repository.readPatch(comparison, unit, {
           maxUnitBytes: Math.min(allowance, PATCH_UNIT_BYTES),
-          timeoutMs: Math.max(1, budget.remainingMs()),
+          timeoutMs: budget.remainingMs(),
         });
-        if (result.issue === 'too-large' && unit.length > 1) {
-          const middle = Math.ceil(unit.length / 2);
-          pending.unshift(unit.slice(0, middle), unit.slice(middle));
-          continue;
+        // Charge the work before judging the outcome: a rejected attempt still
+        // made Git produce bytes, and a retry must not read them for free.
+        budget.chargeRead(result.bytesRead);
+        if (result.issue === 'too-large') {
+          budget.noteLimit('patch-unit-bytes');
+          if (unit.length > 1) {
+            const middle = Math.ceil(unit.length / 2);
+            pending.unshift(unit.slice(0, middle), unit.slice(middle));
+            continue;
+          }
         }
         if (result.issue !== null) return { changeIds, paths: result.paths, diff: '', issue: ISSUE_REASONS[result.issue] };
         try { budget.spendPatchBytes(result.bytes); }
@@ -131,6 +148,22 @@ function patchStream(
     },
   };
 }
+
+/**
+ * Tasks still worth analysing.
+ *
+ * Both metadata resolution and context preparation can settle a task by making
+ * it mandatory when its evidence is unusable. `enforce` therefore re-filters
+ * after each of those steps. `shadow` keeps every task so evaluation campaigns
+ * still see a proposal.
+ */
+function stillOpen(taskIds: readonly string[], resolved: ResolveTasksResult, mode: Mode): string[] {
+  if (mode === 'shadow') return [...taskIds];
+  return taskIds.filter(id => !resolved.metadata.tasks[id]?.incomplete && resolved.selection.tasks[id]?.always !== true);
+}
+
+/** Raised when preparation settled every remaining task. Never an error. */
+class NothingLeftToAnalyse extends Error {}
 
 /** Keep only the tasks worth resolving; the rest never reach a file read. */
 function restrict(configured: SelectionDefinition, taskIds: readonly string[]): SelectionDefinition {
@@ -154,12 +187,11 @@ export async function planChange(inputs: Inputs, context: Context, dependencies:
   const configured: SelectionDefinition = { model: inputs.model, tasks: inputs.tasks };
   const api = resolveJevApi(inputs);
   const started = performance.now();
-  const budget = new AnalysisBudget({
-    maxCollectedPatchBytes: inputs.maxCollectedPatchBytes,
-    maxAnalysisBytes: inputs.maxAnalysisBytes,
-    maxJevCalls: inputs.maxJevCalls,
-    deadline: started + inputs.timeoutMs,
-  });
+  // `timeout-ms` keeps its historical meaning: the shared deadline for context
+  // preparation and evaluation. It therefore starts once the comparison is
+  // verified and the inventory is built, so a slow fetch cannot silently eat
+  // the analysis allowance. Git commands keep their own separate timeouts.
+  let budget: AnalysisBudget | undefined;
   const metadataSha = context.metadataSha ?? context.baseSha;
   let forced: ForceAllReason | undefined;
   if (context.eventName !== 'pull_request') forced = { status: 'bypassed', code: 'non-pull-request' };
@@ -186,6 +218,12 @@ export async function planChange(inputs: Inputs, context: Context, dependencies:
           testedSha: context.testedSha, testedRef: inputs.testedRef ?? 'merge' });
         // Names, modes and object ids only. No numstat, no blob, no patch.
         manifest = await repository.collectManifest(comparison);
+        budget = new AnalysisBudget({
+          maxCollectedPatchBytes: inputs.maxCollectedPatchBytes,
+          maxAnalysisBytes: inputs.maxAnalysisBytes,
+          maxJevCalls: inputs.maxJevCalls,
+          deadline: performance.now() + inputs.timeoutMs,
+        });
         budget.noteManifest(manifest.entries.length);
         forced = globalPathReason(manifest.changedPaths);
         // A partial inventory can never justify a new exclusion.
@@ -232,6 +270,11 @@ export async function planChange(inputs: Inputs, context: Context, dependencies:
             selection: { model: scopedResolution.selection.model,
               tasks: { ...plainSelection(inputs).tasks, ...scopedResolution.selection.tasks } },
           };
+          // Resolving metadata can itself settle a task: unusable evidence makes
+          // it mandatory. Asking Jev about it would spend budget on a decision
+          // that can no longer change, and would record an analysis state that
+          // contradicts the effective plan.
+          analysisTaskIds = stillOpen(analysisTaskIds, resolved, inputs.mode);
         }
       }
     }
@@ -246,18 +289,24 @@ export async function planChange(inputs: Inputs, context: Context, dependencies:
     let metadata: JevMetadata = { model: null, usage: null };
     let jevMs: number | null = null;
     let observation: Observation | null = null;
+    let changesRead = 0;
     let contextResolution: ContextResolutionReport = {};
-    if (manifest && repository && analysisTaskIds.length) {
+    if (manifest && repository && budget && analysisTaskIds.length) {
+      const activeBudget = budget;
       const callStarted = performance.now();
       try {
         contextResolution = await resolveContextFiles({ configured: restrict(configured, analysisTaskIds), resolved,
-          repository, commit: metadataSha, apiKey: inputs.apiKey, deadline: budget.limits.deadline, budget,
+          repository, commit: metadataSha, apiKey: inputs.apiKey, deadline: activeBudget.limits.deadline, budget: activeBudget,
           apiBaseUrl: api.baseURL, apiModel: requestedModel }, dependencies.evaluateContext ?? evaluateChoices);
+        // Preparation can settle a task too: an incomplete context makes it
+        // mandatory. Drop it before a single patch byte is collected.
+        analysisTaskIds = stillOpen(analysisTaskIds, resolved, inputs.mode);
+        if (!analysisTaskIds.length) throw new NothingLeftToAnalyse();
         const outcome: AnalysisOutcome = await analyseChange({
           selection, taskIds: analysisTaskIds, workingDirectories: resolved.workingDirectories,
           changeIds: manifest.entries.map(entry => entry.id),
-          patches: patchStream(repository, manifest.comparison, manifest.entries, budget),
-          budget, apiBaseUrl: api.baseURL, apiModel: requestedModel, apiKey: inputs.apiKey,
+          patches: patchStream(repository, manifest.comparison, manifest.entries, activeBudget),
+          budget: activeBudget, apiBaseUrl: api.baseURL, apiModel: requestedModel, apiKey: inputs.apiKey,
           stopWhenSettled: inputs.mode !== 'shadow',
           state: { base_sha: manifest.comparison.diffBaseSha, head_sha: context.headSha, tested_sha: context.testedSha },
         }, dependencies.evaluate ?? evaluateJev);
@@ -266,12 +315,17 @@ export async function planChange(inputs: Inputs, context: Context, dependencies:
         coverage = outcome.coverage;
         taskErrors = outcome.taskErrors;
         taskStates = outcome.states;
+        changesRead = outcome.changesRead;
         metadata = outcome;
         observationError = outcome.failure;
       } catch (error) {
-        if (!(error instanceof ObservationSizeError)) throw error;
-        observationError = error.code;
-        forced ??= { status: 'fallback', code: error.code };
+        // Every remaining task became mandatory during preparation: stopping is
+        // the correct outcome, not a failure.
+        if (error instanceof NothingLeftToAnalyse) { /* Nothing left to observe. */ }
+        else if (error instanceof ObservationSizeError) {
+          observationError = error.code;
+          forced ??= { status: 'fallback', code: error.code };
+        } else throw error;
       } finally {
         jevMs = performance.now() - callStarted;
         const calls = Object.values(contextResolution).flatMap(job => job.passes.flatMap(pass => pass.calls));
@@ -297,7 +351,7 @@ export async function planChange(inputs: Inputs, context: Context, dependencies:
     if (observation && plan.status === 'bypassed') {
       for (const id of analysisTaskIds) plan.tasks[id]!.reasons.push('observation-only');
     }
-    const counters: BudgetCounters = budget.counters;
+    const counters: BudgetCounters = budget?.counters ?? EMPTY_COUNTERS;
     // A partial fallback names exactly the tasks left without a qualified
     // proposal, whether the gap came from the analysis or from their metadata.
     const retained = Object.keys(plan.tasks).filter(id => plan.tasks[id]!.proposed_run === null).sort();
@@ -318,6 +372,8 @@ export async function planChange(inputs: Inputs, context: Context, dependencies:
       },
       analysis: {
         ...counters,
+        changes_read: changesRead,
+        changes_total: manifest?.entries.length ?? null,
         analysed_tasks: [...analysisTaskIds].sort(),
         required_without_analysis: Object.keys(plan.tasks).filter(id => !analysisTaskIds.includes(id)).sort(),
         task_states: taskStates,

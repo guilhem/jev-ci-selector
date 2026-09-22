@@ -72,7 +72,8 @@ test('distributed bundle runs against real Git objects, publishes shadow/enforce
       assert.deepEqual(report.analysis.required_without_analysis, mode === 'shadow' ? [] : ['unit']);
       assert.ok(report.manifest.complete);
       assert.equal(report.manifest.change_count, 1);
-      assert.ok(report.analysis.collected_patch_bytes > 0);
+      assert.ok(report.analysis.patch_bytes_delivered > 0);
+      assert.equal(report.analysis.changes_read, report.analysis.changes_total);
       assert.equal(outputs.status, 'planned', JSON.stringify(report));
       assert.deepEqual(JSON.parse(outputs.run!), { helm: mode === 'shadow', unit: true });
       assert.equal(outputs.helm, mode === 'shadow' ? 'true' : 'false');
@@ -173,7 +174,8 @@ test('distributed bundle runs against real Git objects, publishes shadow/enforce
     assert.equal(report.diff_hash, null);
     assert.ok(report.manifest.complete);
     assert.equal(report.manifest.change_count, 2);
-    assert.ok(report.analysis.collected_patch_bytes > 65536);
+    assert.ok(report.analysis.patch_bytes_delivered > 65536);
+    assert.equal(report.analysis.patch_bytes_read, report.analysis.patch_bytes_delivered);
     assert.ok(report.analysis.observation_bytes > 0);
     assert.deepEqual(report.analysis.limits_reached, []);
     assert.deepEqual(JSON.parse(manual.outputs.run!), { helm: true, unit: true });
@@ -183,9 +185,9 @@ test('distributed bundle runs against real Git objects, publishes shadow/enforce
     // Every collected byte reached exactly one group: the groups partition the
     // patch text actually read, with no global diff string in between.
     const reconstructed = requests.map(request => request.state.diff).join('');
-    assert.equal(Buffer.byteLength(reconstructed), report.analysis.collected_patch_bytes);
+    assert.equal(Buffer.byteLength(reconstructed), report.analysis.patch_bytes_delivered);
     assert.equal(report.observation!.chunks.reduce((total, chunk) => total + chunk.diff_bytes, 0),
-      report.analysis.collected_patch_bytes);
+      report.analysis.patch_bytes_delivered);
     for (const request of requests) {
       assert.deepEqual(Object.keys(request.questions).sort(), ['helm', 'unit']);
       assert.match(JSON.stringify(request.questions.unit), /Reviewed backend verification scope/);
