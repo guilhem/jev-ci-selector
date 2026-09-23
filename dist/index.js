@@ -42553,16 +42553,15 @@ async function analyseChange(request, evaluate) {
       const release = await rate.acquire();
       let dispatched2;
       try {
-        const result = await evaluate({
-          selection: request.selection,
-          taskIds,
+        const result = await (request.evaluateInventory ?? evaluateChoices)({
+          model: request.selection.model,
           state,
+          questions: asked,
           apiKey: request.apiKey,
           timeoutMs: Math.min(1e4, remaining),
           totalMs: remaining,
           ...request.apiBaseUrl ? { apiBaseUrl: request.apiBaseUrl } : {},
-          ...request.apiModel ? { apiModel: request.apiModel } : {},
-          questions: asked
+          ...request.apiModel ? { apiModel: request.apiModel } : {}
         });
         const validated = validateChoicesResponse(
           {
@@ -42824,7 +42823,9 @@ async function analyseChange(request, evaluate) {
   const skippedGroups = chunks.some((chunk) => chunk.status === "not-needed");
   const sweptWholeChangeSet = delivered.size >= obligations.size && !skippedGroups;
   const observation = chunks.length || inventory.calls.length ? {
-    strategy: chunks.length === 1 ? "whole-diff" : "chunked-diff",
+    // An observation can now exist with no content group at all (the coarse
+    // pass ran, the content pass did not), and that is not "chunked".
+    strategy: chunks.length > 1 ? "chunked-diff" : "whole-diff",
     status: collectionFailed || chunks.some((chunk) => chunk.status !== "completed" && chunk.status !== "not-needed") ? "incomplete" : sweptWholeChangeSet ? "complete" : "stopped-early",
     chunks,
     ...inventory.calls.length ? { inventory } : {}
@@ -42881,24 +42882,17 @@ var QUESTION_CONTRACT = {
 var pointerCriteria = (kind) => Object.fromEntries(
   Object.keys(kind === "keep" ? KEEP_CRITERIA : READ_CRITERIA).map((option) => [option, `See \`question_contract.${kind}.${option}\`.`])
 );
-function questionsFor(paths, sources, style = "inline") {
+function questionsFor(paths, sources) {
   return Object.fromEntries(paths.map((path2) => {
     const kind = sources.has(path2) ? "keep" : "read";
-    if (style === "shared") {
-      return [hash2(path2), choice(
-        { judgment: `Answer \`question_contract.${kind}.judgment\` for this path.`, path: path2 },
-        pointerCriteria(kind)
-      )];
-    }
-    return [hash2(path2), choice({
-      judgment: kind === "keep" ? KEEP_JUDGMENT : READ_JUDGMENT,
-      path: path2,
-      scope: SCOPE
-    }, kind === "keep" ? KEEP_CRITERIA : READ_CRITERIA)];
+    return [hash2(path2), choice(
+      { judgment: `Answer \`question_contract.${kind}.judgment\` for this path.`, path: path2 },
+      pointerCriteria(kind)
+    )];
   }));
 }
-function batches(paths, state, sources, model, style) {
-  const questions = questionsFor(paths, sources, style);
+function batches(paths, state, sources, model) {
+  const questions = questionsFor(paths, sources);
   const result = [];
   let batch = [];
   let size = bytes2({ model, state, questions: {} });
@@ -42919,15 +42913,14 @@ function batches(paths, state, sources, model, style) {
   if (batch.length) result.push({ paths: batch, questions: Object.fromEntries(batch.map((path2) => [hash2(path2), questions[hash2(path2)]])) });
   return result;
 }
-function preparePass(paths, evidence, selected, model, style) {
-  const contract = style === "shared" ? { question_contract: QUESTION_CONTRACT } : {};
+function preparePass(paths, evidence, selected, model) {
   const stateFor = (sources) => ({
     ...evidence,
     context_policy: CONTEXT_POLICY,
-    ...contract,
+    question_contract: QUESTION_CONTRACT,
     sources: [...sources.values()].map(({ source }) => source)
   });
-  const largestQuestion = Math.max(...Object.values(questionsFor(paths, selected, style)).map(bytes2));
+  const largestQuestion = Math.max(...Object.values(questionsFor(paths, selected)).map(bytes2));
   const groups = [];
   let group = /* @__PURE__ */ new Map();
   for (const [path2, selection] of [...selected].sort(([a], [b]) => compare(a, b))) {
@@ -42942,10 +42935,10 @@ function preparePass(paths, evidence, selected, model, style) {
   groups.push(group);
   return groups.flatMap((sources) => {
     const state = stateFor(sources);
-    return batches(paths.filter((path2) => !selected.has(path2) || sources.has(path2)), state, sources, model, style).map((batch) => ({ ...batch, state }));
+    return batches(paths.filter((path2) => !selected.has(path2) || sources.has(path2)), state, sources, model).map((batch) => ({ ...batch, state }));
   });
 }
-async function resolveContextFiles(request, evaluate = evaluateChoices, passCount = 2, style = "inline") {
+async function resolveContextFiles(request, evaluate = evaluateChoices, passCount = 2) {
   if (![1, 2, 3].includes(passCount)) throw new Error("invalid-context-pass-count");
   const { configured, resolved, repository, commit } = request;
   const rate = request.rate ?? new RateController();
@@ -42988,7 +42981,7 @@ async function resolveContextFiles(request, evaluate = evaluateChoices, passCoun
       for (let index = 1; index <= passCount && paths.length; index++) {
         if (performance.now() >= request.deadline) throw new ContextFailure("jev-timeout");
         if (index > 1 && !selected.size) break;
-        const prepared = preparePass(paths, job.evidence, selected, request.apiModel ?? configured.model, style);
+        const prepared = preparePass(paths, job.evidence, selected, request.apiModel ?? configured.model);
         const pass = { index, calls: prepared.map(({ paths: paths2, questions, state }) => ({
           paths: paths2,
           request_hash: hash2(JSON.stringify({ model: request.apiModel ?? configured.model, state, questions })),
@@ -43373,6 +43366,17 @@ async function planChange(inputs, context, dependencies = {}) {
           taskIds: analysisTaskIds,
           workingDirectories: resolved.workingDirectories,
           changeIds: manifest.entries.map((entry) => entry.id),
+          // Names, statuses and modes only. A task the paths alone already
+          // implicate is settled before any content is read.
+          inventory: manifest.entries.map((entry) => ({
+            id: entry.id,
+            status: entry.status,
+            oldPath: entry.oldPath,
+            newPath: entry.newPath,
+            oldMode: entry.oldMode,
+            newMode: entry.newMode
+          })),
+          evaluateInventory: dependencies.evaluateInventory ?? evaluateChoices,
           patches: patchStream(repository, manifest.comparison, manifest.entries, activeBudget, meter),
           budget: activeBudget,
           rate,

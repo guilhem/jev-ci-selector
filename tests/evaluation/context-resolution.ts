@@ -6,7 +6,7 @@ import { choice, type EntryType } from '@typesafe-ai/sdk';
 import { resolveTasks, type ResolveTasksResult } from '../../src/metadata.js';
 import { buildQuestions, evaluateChoices, evaluateJev, JevError, type ChoiceJudgment, type JevResult, type Usage } from '../../src/jev.js';
 import { ObservationSizeError, observeChange, type Observation } from '../../src/observations.js';
-import { resolveContextFiles, type ContextResolutionReport, type QuestionStyle } from '../../src/context.js';
+import { resolveContextFiles, type ContextResolutionReport } from '../../src/context.js';
 import { selectTasks, type ExecutionPlan } from '../../src/policy.js';
 import type { SelectionDefinition } from '../../src/tasks.js';
 
@@ -197,14 +197,14 @@ function metricsFor(item: ContextCase, selected: Record<string, Array<{ path: st
   };
 }
 
-async function evaluateCase(item: ContextCase, passCount: PassCount, mode: 'offline' | 'live', apiKey: string, style: QuestionStyle, apiBaseUrl?: string, apiModel?: string): Promise<CaseRecord> {
+async function evaluateCase(item: ContextCase, passCount: PassCount, mode: 'offline' | 'live', apiKey: string, apiBaseUrl?: string, apiModel?: string): Promise<CaseRecord> {
   const started = new Date().toISOString();
   const totalStart = performance.now();
   const reasons: string[] = [];
   const { configured, resolved, repository, commit } = await freshResolution(item);
   const contextStart = performance.now();
   const contextRequest: ContextRequest = { configured, resolved, repository, commit, apiKey, deadline: performance.now() + DEADLINE_MS, ...(apiBaseUrl ? { apiBaseUrl } : {}), ...(apiModel ? { apiModel } : {}) };
-  const context = await resolveContextFiles(contextRequest, mode === 'offline' ? offlineContextEvaluator(item) : evaluateChoices, passCount, style);
+  const context = await resolveContextFiles(contextRequest, mode === 'offline' ? offlineContextEvaluator(item) : evaluateChoices, passCount);
   const contextDuration = performance.now() - contextStart;
   const finalCalls: FinalCall[] = [];
   const finalStart = performance.now();
@@ -265,7 +265,7 @@ function summarize(records: CaseRecord[]) {
 
 async function writeJson(path: string, value: unknown): Promise<void> { await writeFile(path, `${JSON.stringify(value, null, 2)}\n`, 'utf8'); }
 
-async function run(mode: 'offline' | 'live', output: string, apiKey: string, style: QuestionStyle, apiBaseUrl?: string, apiModel?: string): Promise<void> {
+async function run(mode: 'offline' | 'live', output: string, apiKey: string, apiBaseUrl?: string, apiModel?: string): Promise<void> {
   const directory = resolve(output);
   await mkdir(directory);
   const cases = syntheticCases();
@@ -275,7 +275,7 @@ async function run(mode: 'offline' | 'live', output: string, apiKey: string, sty
   const records: CaseRecord[] = [];
   let index = 0;
   for (const item of cases) for (const passCount of [1, 2, 3] as const) {
-    const record = await evaluateCase(item, passCount, mode, apiKey, style, apiBaseUrl, apiModel);
+    const record = await evaluateCase(item, passCount, mode, apiKey, apiBaseUrl, apiModel);
     const name = `records/${String(index).padStart(2, '0')}-${item.id}-${passCount}.json`;
     await writeJson(`${directory}/${name}`, record); manifest.records.push(name); manifest.updated = new Date().toISOString(); await writeJson(`${directory}/manifest.json`, manifest);
     records.push(record); index += 1;
@@ -298,12 +298,10 @@ async function main(): Promise<void> {
   const args = argumentsFor(rest); const output = args.get('output'); if (!output) throw new Error('context-evaluation-requires-output');
   const key = mode === 'live' ? process.env.JEV_API_KEY || process.env.JEV_KEY_API || process.env.TYPESAFE_API_KEY || '' : 'offline-evaluation-key';
   if (mode === 'live' && !key.trim()) throw new Error('live-requires-api-key');
-  const style = args.get('style') ?? 'inline';
-  if (style !== 'inline' && style !== 'shared') throw new Error('invalid-argument:--style');
-  await run(mode, output, key, style, args.get('api-base-url'), args.get('api-model'));
+  await run(mode, output, key, args.get('api-base-url'), args.get('api-model'));
 }
 
 const isMain = typeof __filename === 'string' && process.argv[1] !== undefined && resolve(process.argv[1]) === resolve(__filename);
 if (isMain) main().catch(error => { process.stderr.write(`${error instanceof Error ? error.message : 'context-evaluation-error'}\n`); process.exitCode = 1; });
 
-export { syntheticCases, evaluateCase, metricsFor, summarize };
+export { syntheticCases, evaluateCase, metricsFor, summarize, freshResolution, changedPaths };

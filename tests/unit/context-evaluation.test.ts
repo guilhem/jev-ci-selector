@@ -5,17 +5,12 @@ import { selectTasks } from '../../src/policy.js';
 
 test('offline context comparison measures bounded preparation waves', async () => {
   const item = syntheticCases()[0]!;
-  const records = await Promise.all(([1, 2, 3] as const).map(passCount => evaluateCase(item, passCount, 'offline', 'offline', 'inline')));
+  const records = await Promise.all(([1, 2, 3] as const).map(passCount => evaluateCase(item, passCount, 'offline', 'offline')));
   assert.deepEqual(records.map(record => record.metrics.recalled_files), [1, 2, 3]);
   assert.deepEqual(records.map(record => record.metrics.incorrect_skips.length), [1, 1, 0]);
   assert.ok(records.every(record => record.status === 'complete'));
   assert.deepEqual(summarize(records).waves.map(wave => wave.incomplete), [0, 0, 0]);
 
-  // Stating the wording once in the state must not change which files the
-  // preparation selects. Only a live campaign can speak to judgment quality.
-  const shared = await Promise.all(([1, 2, 3] as const).map(passCount => evaluateCase(item, passCount, 'offline', 'offline', 'shared')));
-  assert.deepEqual(shared.map(record => record.metrics.recalled_files), records.map(record => record.metrics.recalled_files));
-  assert.deepEqual(shared.map(record => record.metrics.incorrect_skips), records.map(record => record.metrics.incorrect_skips));
 });
 
 test('recall stays per task and fallback is not an incorrect model skip', () => {

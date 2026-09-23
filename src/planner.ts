@@ -59,6 +59,7 @@ export interface PlannerDependencies {
   createRepository?: (options: { remoteUrl: string; token?: string }) => Promise<Repository>;
   evaluate?: typeof evaluateJev;
   evaluateContext?: typeof evaluateChoices;
+  evaluateInventory?: typeof evaluateChoices;
   resolveExternal?: ResolveTasksOptions['resolveExternal'];
 }
 
@@ -351,6 +352,11 @@ export async function planChange(inputs: Inputs, context: Context, dependencies:
         const outcome: AnalysisOutcome = await analyseChange({
           selection, taskIds: analysisTaskIds, workingDirectories: resolved.workingDirectories,
           changeIds: manifest.entries.map(entry => entry.id),
+          // Names, statuses and modes only. A task the paths alone already
+          // implicate is settled before any content is read.
+          inventory: manifest.entries.map(entry => ({ id: entry.id, status: entry.status,
+            oldPath: entry.oldPath, newPath: entry.newPath, oldMode: entry.oldMode, newMode: entry.newMode })),
+          evaluateInventory: dependencies.evaluateInventory ?? evaluateChoices,
           patches: patchStream(repository, manifest.comparison, manifest.entries, activeBudget, meter),
           budget: activeBudget, rate, meter, apiBaseUrl: api.baseURL, apiModel: requestedModel, apiKey: inputs.apiKey,
           stopWhenSettled: inputs.mode !== 'shadow',

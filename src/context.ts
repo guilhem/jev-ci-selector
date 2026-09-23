@@ -73,23 +73,22 @@ const READ_CRITERIA = {
 };
 
 /**
- * Where the wording of a per-path question lives.
+ * The question wording, stated once in the state.
  *
- * `inline` repeats the judgment, the scope and all three criteria in every
- * question: about 890 bytes of identical prose per path, which caps a request
- * at roughly 75 paths and makes discovery cost scale with the size of the
- * repository rather than with the change.
+ * Repeating it in every per-path question cost about 890 bytes of identical
+ * prose per path against roughly 30 bytes of actual path, which capped a
+ * request at ~75 paths and made discovery scale with the size of the repository
+ * rather than with the change. The provider ingests the state once and
+ * evaluates every question against it, so stating it here says the same thing
+ * for a fifth of the bytes.
  *
- * `shared` states that wording once in the state — which the provider ingests
- * once and evaluates every question against — and leaves each question holding
- * its path and a reference. That is the same meaning in about a fifth of the
- * bytes. It changes what is sent, so it stays off until a campaign has measured
- * it against the labelled corpus.
+ * Measured live on the labelled corpus against the inline form: recall 4/7/7
+ * against 3/6/7 over one, two and three passes, no incorrect skips either way,
+ * and 11% fewer input tokens.
+ *
+ * Kept at the top of the state so the references inside questions stay short:
+ * every byte here is written once, every byte in a question is written per path.
  */
-export type QuestionStyle = 'inline' | 'shared';
-
-// Kept at the top of the state so the references inside questions stay short:
-// every byte here is written once, every byte in a question is written per path.
 const QUESTION_CONTRACT = {
   read: { judgment: READ_JUDGMENT, scope: SCOPE, ...READ_CRITERIA },
   keep: { judgment: KEEP_JUDGMENT, scope: SCOPE, ...KEEP_CRITERIA },
@@ -100,24 +99,17 @@ const pointerCriteria = (kind: 'read' | 'keep') => Object.fromEntries(
     .map(option => [option, `See \`question_contract.${kind}.${option}\`.`]),
 ) as typeof KEEP_CRITERIA & typeof READ_CRITERIA;
 
-function questionsFor(paths: string[], sources: Map<string, Selection>, style: QuestionStyle = 'inline') {
+function questionsFor(paths: string[], sources: Map<string, Selection>) {
   return Object.fromEntries(paths.map(path => {
     const kind = sources.has(path) ? 'keep' : 'read';
-    if (style === 'shared') {
-      return [hash(path), choice(
-        { judgment: `Answer \`question_contract.${kind}.judgment\` for this path.`, path },
-        pointerCriteria(kind))];
-    }
-    return [hash(path), choice({
-      judgment: kind === 'keep' ? KEEP_JUDGMENT : READ_JUDGMENT,
-      path,
-      scope: SCOPE,
-    }, kind === 'keep' ? KEEP_CRITERIA : READ_CRITERIA)];
+    return [hash(path), choice(
+      { judgment: `Answer \`question_contract.${kind}.judgment\` for this path.`, path },
+      pointerCriteria(kind))];
   }));
 }
 
-function batches(paths: string[], state: EntryType, sources: Map<string, Selection>, model: string, style: QuestionStyle) {
-  const questions = questionsFor(paths, sources, style);
+function batches(paths: string[], state: EntryType, sources: Map<string, Selection>, model: string) {
+  const questions = questionsFor(paths, sources);
   const result: Array<{ paths: string[]; questions: typeof questions }> = [];
   let batch: string[] = [];
   let size = bytes({ model, state, questions: {} });
@@ -137,14 +129,11 @@ function batches(paths: string[], state: EntryType, sources: Map<string, Selecti
   return result;
 }
 
-function preparePass(paths: string[], evidence: Record<string, unknown>, selected: Map<string, Selection>, model: string,
-  style: QuestionStyle) {
-  // The shared style states the question wording once, here, where the provider
-  // ingests it once and evaluates every question against it.
-  const contract = style === 'shared' ? { question_contract: QUESTION_CONTRACT } : {};
-  const stateFor = (sources: Map<string, Selection>) => ({ ...evidence, context_policy: CONTEXT_POLICY, ...contract,
+function preparePass(paths: string[], evidence: Record<string, unknown>, selected: Map<string, Selection>, model: string) {
+  const stateFor = (sources: Map<string, Selection>) => ({ ...evidence, context_policy: CONTEXT_POLICY,
+    question_contract: QUESTION_CONTRACT,
     sources: [...sources.values()].map(({ source }) => source) }) as EntryType;
-  const largestQuestion = Math.max(...Object.values(questionsFor(paths, selected, style)).map(bytes));
+  const largestQuestion = Math.max(...Object.values(questionsFor(paths, selected)).map(bytes));
   const groups: Array<Map<string, Selection>> = [];
   let group = new Map<string, Selection>();
   for (const [path, selection] of [...selected].sort(([a], [b]) => compare(a, b))) {
@@ -162,15 +151,14 @@ function preparePass(paths: string[], evidence: Record<string, unknown>, selecte
   // several probabilities form one global probability.
   return groups.flatMap(sources => {
     const state = stateFor(sources);
-    return batches(paths.filter(path => !selected.has(path) || sources.has(path)), state, sources, model, style)
+    return batches(paths.filter(path => !selected.has(path) || sources.has(path)), state, sources, model)
       .map(batch => ({ ...batch, state }));
   });
 }
 
 // The production pipeline always uses two passes. The bounded override exists
 // only so the evaluation harness can compare one/two/three on identical cases.
-export async function resolveContextFiles(request: Request, evaluate = evaluateChoices, passCount: 1 | 2 | 3 = 2,
-  style: QuestionStyle = 'inline'): Promise<ContextResolutionReport> {
+export async function resolveContextFiles(request: Request, evaluate = evaluateChoices, passCount: 1 | 2 | 3 = 2): Promise<ContextResolutionReport> {
   if (![1, 2, 3].includes(passCount)) throw new Error('invalid-context-pass-count');
   const { configured, resolved, repository, commit } = request;
   const rate = request.rate ?? new RateController();
@@ -208,7 +196,7 @@ export async function resolveContextFiles(request: Request, evaluate = evaluateC
       for (let index = 1; index <= passCount && paths.length; index++) {
         if (performance.now() >= request.deadline) throw new ContextFailure('jev-timeout');
         if (index > 1 && !selected.size) break;
-        const prepared = preparePass(paths, job.evidence, selected, request.apiModel ?? configured.model, style);
+        const prepared = preparePass(paths, job.evidence, selected, request.apiModel ?? configured.model);
         const pass = { index, calls: prepared.map(({ paths, questions, state }): ContextCall => ({ paths,
           request_hash: hash(JSON.stringify({ model: request.apiModel ?? configured.model, state, questions })),
           status: 'not-started', judgments: null, model: null, usage: null, duration_ms: null, error: null })) };

@@ -32,6 +32,18 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- Context preparation states its question wording once in the state instead of
+  repeating it in every per-path question. Measured live on the labelled
+  corpus: recall 4/7/7 against 3/6/7 over one, two and three passes, no
+  incorrect skips either way, 11% fewer input tokens, and roughly half the
+  calls and bytes at 20 000 tracked files.
+- A coarse pass asks one question per task over the manifest's paths, statuses
+  and modes before any patch is read. Its question has two options, `required`
+  and `undetermined`: with no `independent` option a wrong exclusion cannot be
+  expressed. It never grants coverage, and a failed coarse call retains
+  nothing. Measured live it settled 2 of 2 conclusive path cases and wrongly
+  forced none, and abstained entirely on a corpus of indirect links. Costs one
+  call per run; saves the whole content sweep for every task it settles.
 - Nothing needs sizing for scale. Every ceiling defaults to `0`, meaning none:
   a run is bounded by the provider's window and rate limits and by the job's
   own `timeout-minutes`. Measured with one task over changes judged

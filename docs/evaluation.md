@@ -36,32 +36,26 @@ Until that campaign has run, the unit and integration tests cover the scheduler'
 mechanics only. Mechanics are not judgment quality: simulated responses show that
 the software behaves as specified, never that Jev decides well.
 
-## Question style
+## Question wording, measured live
 
-Context preparation can state its question wording in two places, selected by
-`--style` on this harness and by the fourth argument to `resolveContextFiles`:
+Context preparation used to repeat the judgment, scope and all three criteria in
+every per-path question. It now states that wording once in the state and leaves
+each question with its path and a reference.
 
-- `inline` (default) repeats the judgment, scope and all three criteria in every
-  per-path question.
-- `shared` states that wording once in the state and leaves each question with
-  its path and a reference.
+A live campaign on the labelled corpus compared the two, three cases over one,
+two and three passes:
 
-Measured over a synthetic repository, one job anchor, two passes:
+| | recall | incorrect skips | input tokens |
+| --- | ---: | ---: | ---: |
+| repeated in every question | 3 / 6 / 7 | 0 | 65 282 |
+| stated once in the state | **4 / 7 / 7** | 0 | **57 790** |
 
-| Tracked files | `inline` | `shared` |
-| ---: | ---: | ---: |
-| 243 | 4 calls, 416 KB | 2 calls, 237 KB |
-| 2 000 | 28 calls, 3.4 MB | 16 calls, 2.0 MB |
-| 20 000 | 263 calls, 34.2 MB | 151 calls, 19.6 MB |
+Recall better or equal at every pass count, no incorrect skips either way, 11%
+fewer input tokens. Synthetic scaling over a larger repository puts the saving
+at roughly half the calls and bytes at 20 000 tracked files — not the five-fold
+the question bytes alone suggest, because the path and the JSON envelope remain.
 
-So roughly **half the calls and bytes** — not the five-fold saving the question
-bytes alone suggest, because the path and the JSON envelope remain.
-
-`offline --style shared` reproduces `inline`'s recall and incorrect-skip counts
-exactly, which is the most the simulated evaluator can establish: it shows the
-selection mechanics are unchanged, and says nothing about how Jev judges a
-question that points at its state. **`shared` therefore stays off** until a live
-campaign compares the two on the labelled corpus.
+On that evidence the shared form is simply how it works; there is no option.
 
 Use `npm run eval:live` explicitly to record a new campaign with the configured
 Jev API. Follow the corpus guide for credentials, output directories and campaign
@@ -93,11 +87,9 @@ those campaigns; its default replay checks the frozen Choice evidence instead.
 
 ## Coarse inventory pass
 
-`analyseChange` accepts an `inventory`: the manifest's paths, statuses and modes,
-with no file content at all. Supplying it enables one question per still-open
-task before any patch is read; leaving it out skips the pass entirely. **The
-action does not supply it**, so the pass is inert until a campaign has measured
-it; enabling it afterwards is one argument in `planChange`.
+Before any patch is read, one question per still-open task is asked over the
+manifest's paths, statuses and modes — no file content at all. A task the paths
+already implicate is settled there and never reaches the content pass.
 
 Its question has exactly two options, `required` and `undetermined`. That is the
 design, not an omission: with no `independent` option the shortcut the pass must
@@ -117,6 +109,17 @@ decided in one call instead of reading all of it. It does **not** help prove a
 task independent of a large change set — that requires reading everything, and
 is irreducible.
 
-A campaign must measure two things before it ships on: how often `required`
-agrees with what the content pass concludes, and how often `undetermined` costs
-an extra call that the content pass would have avoided.
+Measured live. On the labelled corpus — built around *indirect* links, where a
+path cannot be conclusive — it settled nothing and wrongly forced nothing, which
+is the correct abstention. On paths that are conclusive on their own
+(`tests/e2e/checkout.spec.ts` against an end-to-end task, `.eslintrc.json`
+against a lint task, an ordinary source file against both) it settled 2 of 2
+correctly and forced none wrongly.
+
+So it is precise rather than eager: it settles when the paths are conclusive and
+abstains otherwise. It costs one call of roughly 900 input tokens per run, which
+buys skipping the entire content sweep for every task it settles — on a large
+change set, up to hundreds of calls. It is on by default.
+
+It is still `shadow` that keeps observing every task, so the coarse pass does not
+run there.

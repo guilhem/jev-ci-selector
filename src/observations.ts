@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { splitDiff, ChunkError } from './chunks.js';
-import { buildQuestions, validateChoicesResponse, JevError, type Usage, type evaluateJev, type ChoiceJudgment } from './jev.js';
+import { buildQuestions, evaluateChoices, validateChoicesResponse, JevError, type Usage, type evaluateJev, type ChoiceJudgment } from './jev.js';
 import { choice, type EntryType } from '@typesafe-ai/sdk';
 import { AnalysisBudget, BudgetError } from './budget.js';
 import { RateController } from './concurrency.js';
@@ -112,6 +112,11 @@ export interface AnalysisRequest {
    * it out skips it entirely.
    */
   inventory?: readonly InventoryEntry[];
+  /**
+   * The coarse pass asks its own two-option question, so it cannot go through
+   * `evaluateJev`, which builds the three-option content question itself.
+   */
+  evaluateInventory?: typeof evaluateChoices;
   /**
    * Stop asking about a task once its execution is acquired, and stop pulling
    * patch text once every task is settled. Disabled by the evaluation harness,
@@ -348,11 +353,11 @@ export async function analyseChange(request: AnalysisRequest, evaluate: typeof e
       const release = await rate.acquire();
       let dispatched: { attempts: number; sentBytes: number } | undefined;
       try {
-        const result = await evaluate({ selection: request.selection, taskIds, state: state as never,
+        const result = await (request.evaluateInventory ?? evaluateChoices)({
+          model: request.selection.model, state: state as never, questions: asked,
           apiKey: request.apiKey, timeoutMs: Math.min(10000, remaining), totalMs: remaining,
           ...(request.apiBaseUrl ? { apiBaseUrl: request.apiBaseUrl } : {}),
-          ...(request.apiModel ? { apiModel: request.apiModel } : {}),
-          questions: asked } as never);
+          ...(request.apiModel ? { apiModel: request.apiModel } : {}) });
         const validated = validateChoicesResponse({ ...result,
           answers: Object.fromEntries(Object.entries(result.answers ?? {}).map(([id, answer]) => [id, { ...answer, type: 'choice' }])) },
         asked, request.selection.model);
@@ -612,7 +617,9 @@ export async function analyseChange(request: AnalysisRequest, evaluate: typeof e
   const skippedGroups = chunks.some(chunk => chunk.status === 'not-needed');
   const sweptWholeChangeSet = delivered.size >= obligations.size && !skippedGroups;
   const observation: Observation | null = (chunks.length || inventory.calls.length) ? {
-    strategy: chunks.length === 1 ? 'whole-diff' : 'chunked-diff',
+    // An observation can now exist with no content group at all (the coarse
+    // pass ran, the content pass did not), and that is not "chunked".
+    strategy: chunks.length > 1 ? 'chunked-diff' : 'whole-diff',
     status: collectionFailed || chunks.some(chunk => chunk.status !== 'completed' && chunk.status !== 'not-needed')
       ? 'incomplete'
       : sweptWholeChangeSet ? 'complete' : 'stopped-early',

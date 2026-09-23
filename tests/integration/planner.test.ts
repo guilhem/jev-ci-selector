@@ -52,7 +52,7 @@ function fixture(options: {
   paths?: string[]; diff?: string; failure?: Error; jevFailure?: Error;
   patchIssue?: EntryIssueCode; issueBytesRead?: number; manifestIncomplete?: boolean;
 } = {}) {
-  const calls = { fetch: [] as string[], read: [] as string[], collect: 0, evaluate: 0, dispose: 0, patches: 0 };
+  const calls = { fetch: [] as string[], read: [] as string[], collect: 0, evaluate: 0, dispose: 0, patches: 0, coarse: 0 };
   const paths = options.paths ?? ['source.txt'];
   const dependencies: PlannerDependencies = {
     createRepository: async () => ({
@@ -90,6 +90,18 @@ function fixture(options: {
       },
       dispose: async () => { calls.dispose++; },
     }),
+    // The coarse inventory pass abstains by default, so these tests stay about
+    // the content pass. Cases that want it to settle override this.
+    evaluateInventory: async request => {
+      calls.coarse++;
+      return { model: 'jev-1.13.0', usage: { input_tokens: 100, output_tokens: 1 },
+        answers: Object.fromEntries(Object.entries(request.questions).map(([id, question]) => {
+          const options = Object.keys((question as { criteria: Record<string, unknown> }).criteria);
+          const chosen = options.includes('undetermined') ? 'undetermined' : options[0]!;
+          return [id, { choice: chosen, confidence: 1,
+            probabilities: Object.fromEntries(options.map(option => [option, option === chosen ? 1 : 0])) }];
+        })) };
+    },
     evaluate: async request => {
       calls.evaluate++; assert.equal(request.selection.model, 'jev-1.13.0');
       if (options.jevFailure) throw options.jevFailure;
@@ -102,8 +114,9 @@ function fixture(options: {
 test('planner uses only base metadata, tested merge SHA, source-free report and stable effective outputs', async () => {
   const { calls, dependencies } = fixture();
   const { plan, report } = await planChange({ ...inputs, mode: 'shadow' }, context, dependencies);
+  // shadow keeps observing every task, so the coarse pass does not run there.
   assert.deepEqual(calls, { fetch: [context.baseSha], read: [`${context.baseSha}:.github/workflows/ci.yml`],
-    collect: 1, evaluate: 1, dispose: 1, patches: 1 });
+    collect: 1, evaluate: 1, dispose: 1, patches: 1, coarse: 0 });
   assert.equal(report.tested_sha, context.testedSha); assert.equal(report.metadata_sha, context.baseSha);
   assert.equal(report.version, 8); assert.ok(report.observation);
   assert.deepEqual(report.model, { requested: 'jev-1.13.0', expected: 'jev-1.13.0', returned: 'jev-1.13.0' });
@@ -552,7 +565,7 @@ test('an acquired execution removes a task from every request that has not start
   assert.equal(report.analysis.task_states.check, 'settled-run');
   assert.equal(report.analysis.coverage.check, false, 'no coverage is claimed for an acquired execution');
   assert.equal(report.observation_error, null);
-  assert.equal(report.analysis.jev_calls, asked.length);
+  assert.equal(report.analysis.jev_calls, asked.length + f.calls.coarse, 'the coarse call counts too');
   assert.ok(report.observation!.chunks.some(chunk => chunk.status === 'not-needed'));
   assert.ok(report.observation!.chunks.every(chunk => chunk.error === null));
   assert.equal(report.observation!.status, 'stopped-early');
@@ -635,7 +648,8 @@ test('an exhausted call budget never dispatches beyond its ceiling', async () =>
           model: 'jev-1.13.0', usage: { input_tokens: 5, output_tokens: 1 } };
       },
     });
-  assert.equal(dispatched, 2, 'exactly the ceiling, never more');
+  // The coarse pass spends one of the two, so only one is left for content.
+  assert.equal(dispatched + f.calls.coarse, 2, 'exactly the ceiling, never more');
   assert.equal(report.analysis.jev_calls, 2);
   // Groups remained unanswered, so the exclusion is refused and the task kept.
   assert.equal(plan.run.check, true);
@@ -1102,7 +1116,8 @@ test('a request too large to send is not reported as a provider failure', async 
   // Nothing was ever sent, so the report must not blame the provider.
   assert.equal(report.observation_error, null, 'nothing came back, so nothing was invalid');
   assert.equal(report.analysis.task_states.check, 'fallback-run');
-  assert.equal(report.analysis.observation_calls, 0);
+  // Only the coarse call was dispatched; no content request was ever sent.
+  assert.equal(report.analysis.observation_calls, f.calls.coarse);
   assert.deepEqual(report.analysis.fallback_tasks, ['check']);
 });
 
@@ -1157,4 +1172,37 @@ test('a refused oversized request is split and retried rather than retained', as
   assert.equal(plan.run.check, false);
   assert.equal(report.analysis.coverage.check, true);
   assert.equal(plan.status, 'planned');
+});
+
+test('the inventory settles a task before any patch is read', async () => {
+  const f = fixture({ paths: ['tests/e2e/checkout.spec.ts'] });
+  const create = f.dependencies.createRepository!;
+  const { plan, report } = await planChange(
+    { ...inputs, tasks: {
+      e2e: { description: 'Runs end-to-end specs under tests/e2e.' },
+      lint: { description: 'Runs ESLint over the repository.' },
+    } },
+    context, {
+      ...f.dependencies,
+      createRepository: async options => ({ ...await create(options),
+        readPatch: async () => { throw new Error('no patch may be read for a task settled coarsely'); } }),
+      // The path alone implicates e2e; lint is left undetermined.
+      evaluateInventory: async request => ({ model: 'jev-1.13.0', usage: { input_tokens: 100, output_tokens: 1 },
+        answers: Object.fromEntries(Object.entries(request.questions).map(([id, question]) => {
+          const options = Object.keys((question as { criteria: Record<string, unknown> }).criteria);
+          const chosen = id === 'e2e' ? 'required' : 'undetermined';
+          return [id, { choice: chosen, confidence: 1,
+            probabilities: Object.fromEntries(options.map(option => [option, option === chosen ? 1 : 0])) }];
+        })) }),
+      evaluate: async request => {
+        assert.ok(!request.taskIds.includes('e2e'), 'a settled task never reaches the content pass');
+        throw new JevError('jev-error');
+      },
+    });
+  assert.equal(plan.run.e2e, true);
+  assert.deepEqual(report.observation!.inventory!.settled, ['e2e']);
+  assert.deepEqual(plan.tasks.e2e!.reasons, ['jev-not-independent']);
+  // lint was not settled coarsely, so it still needed the content it could not get.
+  assert.equal(plan.run.lint, true);
+  assert.equal(report.analysis.task_states.lint, 'fallback-run');
 });
