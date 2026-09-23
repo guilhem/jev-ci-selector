@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { analyseChange, type AnalysisRequest, type InventoryEntry } from '../../src/observations.js';
+import { analyseChange, REQUEST_BYTES, type AnalysisRequest, type InventoryEntry } from '../../src/observations.js';
 import { AnalysisBudget } from '../../src/budget.js';
 import { patch } from '../fixtures/diff.js';
 import { JevError } from '../../src/jev.js';
@@ -80,6 +80,56 @@ test('the inventory alone can settle a task to run, without reading any content'
   // beta was not settled coarsely, so it still swept the content and can skip.
   assert.equal(outcome.states.beta, 'settled-skip');
   assert.equal(outcome.coverage.beta, true);
+  assert.equal(outcome.observation!.status, 'complete');
+  assert.equal(outcome.model, 'jev-1.13.0');
+  assert.deepEqual(outcome.usage, { input_tokens: 1200, output_tokens: 2 });
+});
+
+test('inventory questions are batched within the request limit on every page', async () => {
+  const inventory = entries(600);
+  const taskIds = Array.from({ length: 200 }, (_, index) => `task_${index}`);
+  const selection = { model: 'jev-1.13.0', tasks: Object.fromEntries(taskIds.map(id =>
+    [id, { evidence: { description: `Checks ${id}.` } }])) };
+  const pages = new Map<string, string[]>();
+  let calls = 0;
+  const outcome = await analyseChange(request(call => {
+    // Measure the provider body, not the API key and local timeout options.
+    const bodyBytes = Buffer.byteLength(JSON.stringify({ model: selection.model,
+      state: call.state, questions: call.questions }));
+    assert.ok(bodyBytes <= REQUEST_BYTES, `${bodyBytes} exceeds ${REQUEST_BYTES}`);
+    const changes = call.state.changes as Array<{ id: string }>;
+    const page = changes[0]!.id;
+    pages.set(page, [...(pages.get(page) ?? []), ...Object.keys(call.questions)]);
+    calls++;
+    return coarseReply(call, () => changes.at(-1)!.id === inventory.at(-1)!.id ? 'required' : 'undetermined');
+  }, { selection, taskIds, inventory, changeIds: inventory.map(entry => entry.id),
+    patches: { next: async () => assert.fail('the inventory settled every task') } }),
+  async () => assert.fail('no content call is needed'));
+
+  assert.ok(pages.size > 1, 'the inventory spans several pages');
+  assert.ok(calls > pages.size, 'each page needs several question batches');
+  for (const ids of pages.values()) assert.deepEqual(ids.sort(), [...taskIds].sort());
+  assert.ok(Object.values(outcome.decisions).every(value => value === true));
+  assert.ok(Object.values(outcome.coverage).every(value => value === false));
+  assert.equal(outcome.observation!.status, 'stopped-early');
+  assert.equal(outcome.model, 'jev-1.13.0');
+  assert.deepEqual(outcome.usage, { input_tokens: 600 * calls, output_tokens: calls });
+});
+
+test('an oversized single inventory question is never dispatched or charged', async () => {
+  const input = request(() => assert.fail('an oversized request must not be sent'), {
+    selection: { model: 'jev-1.13.0', tasks: {
+      alpha: { evidence: { description: 'x'.repeat(REQUEST_BYTES) } },
+    } },
+    taskIds: ['alpha'],
+  });
+  const outcome = await analyseChange(input, async () => assert.fail('the content question is also too large'));
+  assert.equal(input.budget.counters.jev_calls, 0);
+  assert.equal(input.budget.counters.analysis_bytes, 0);
+  assert.equal(outcome.observation!.inventory!.calls[0]!.status, 'not-started');
+  assert.equal(outcome.states.alpha, 'fallback-run');
+  assert.equal(outcome.taskErrors.alpha, 'context-too-large');
+  assert.equal(outcome.usage, null);
 });
 
 test('the coarse question offers no way to express a skip', async () => {
@@ -96,6 +146,9 @@ test('the coarse question offers no way to express a skip', async () => {
   assert.deepEqual(options.sort(), ['required', 'undetermined']);
   assert.equal(outcome.observation!.inventory!.calls[0]!.status, 'failed');
   assert.deepEqual(outcome.observation!.inventory!.settled, []);
+  assert.equal(outcome.observation!.status, 'incomplete');
+  assert.equal(outcome.failure, 'invalid-response');
+  assert.deepEqual(outcome.usage, { input_tokens: 1200, output_tokens: 2 });
   // The content pass still decided both tasks on real evidence.
   assert.deepEqual(outcome.coverage, { alpha: true, beta: true });
 });
@@ -113,6 +166,9 @@ test('a failed coarse pass is uninformative, never a retention', async () => {
   assert.deepEqual(outcome.coverage, { alpha: true, beta: true });
   assert.deepEqual(outcome.observation!.inventory!.settled, []);
   assert.equal(outcome.observation!.inventory!.calls[0]!.status, 'failed');
+  assert.equal(outcome.observation!.status, 'incomplete');
+  assert.equal(outcome.failure, 'jev-error');
+  assert.deepEqual(outcome.usage, { input_tokens: 600, output_tokens: 1 });
 });
 
 test('without an inventory the coarse pass does not run at all', async () => {

@@ -239,7 +239,7 @@ const openTasks = (states: Map<string, TaskState>) =>
  * are built immediately before dispatch, from the tasks still open at that
  * moment, so a settled task never appears in a request that has not started.
  */
-function batchesFor(taskIds: string[], questions: ReturnType<typeof buildQuestions>, model: string, state: unknown): string[][] {
+function batchesFor(taskIds: string[], questions: Record<string, ReturnType<typeof choice>>, model: string, state: unknown): string[][] {
   const batches: string[][] = [];
   let batch: string[] = [];
   const envelope = (ids: string[]) => bytes({ model, state, questions: Object.fromEntries(ids.map(id => [id, questions[id]])) });
@@ -309,6 +309,7 @@ export async function analyseChange(request: AnalysisRequest, evaluate: typeof e
   };
 
   const inventory: InventoryObservation = { calls: [], settled: [] };
+  let failure: ObservationError | undefined;
 
   /**
    * Settle what the inventory alone already decides, before reading anything.
@@ -339,48 +340,53 @@ export async function analyseChange(request: AnalysisRequest, evaluate: typeof e
       const taskIds = openTasks(states);
       if (!taskIds.length) break;
       const state = { ...shared, changes: page };
-      const asked = Object.fromEntries(taskIds.map(id => [id, questions[id]!]));
-      const requestBytes = bytes({ model, state, questions: asked });
-      const call: ObservationCall = { task_ids: taskIds, status: 'not-started', model: null, usage: null,
-        duration_ms: null, request_bytes: requestBytes, error: null };
-      inventory.calls.push(call);
-      let reservation;
-      try { reservation = budget.reserve('observation', requestBytes); }
-      catch { return; }
-      const remaining = budget.remainingMs();
-      if (remaining <= 0) { reservation.release(); return; }
-      const started = performance.now();
-      const release = await rate.acquire();
-      let dispatched: { attempts: number; sentBytes: number } | undefined;
-      try {
-        const result = await (request.evaluateInventory ?? evaluateChoices)({
-          model: request.selection.model, state: state as never, questions: asked,
-          apiKey: request.apiKey, timeoutMs: Math.min(10000, remaining), totalMs: remaining,
-          ...(request.apiBaseUrl ? { apiBaseUrl: request.apiBaseUrl } : {}),
-          ...(request.apiModel ? { apiModel: request.apiModel } : {}) });
-        const validated = validateChoicesResponse({ ...result,
-          answers: Object.fromEntries(Object.entries(result.answers ?? {}).map(([id, answer]) => [id, { ...answer, type: 'choice' }])) },
-        asked, request.selection.model);
-        call.status = 'completed'; call.model = result.model; call.usage = result.usage;
-        if (result.transport) dispatched = { attempts: result.transport.attempts, sentBytes: result.transport.sent_bytes };
-        if (result.usage && dispatched) meter.record(dispatched.sentBytes, result.usage.input_tokens);
-        rate.noteSuccess();
-        for (const [id, answer] of Object.entries(validated.answers)) {
-          if (answer.choice !== 'required') continue;
-          settle(id, 'settled-run');
-          inventory.settled.push(id);
+      for (const ids of batchesFor(taskIds, questions, model, state)) {
+        const asked = Object.fromEntries(ids.map(id => [id, questions[id]!]));
+        const requestBytes = bytes({ model, state, questions: asked });
+        const call: ObservationCall = { task_ids: ids, status: 'not-started', model: null, usage: null,
+          duration_ms: null, request_bytes: requestBytes, error: null };
+        inventory.calls.push(call);
+        if (requestBytes > REQUEST_BYTES) return;
+        let reservation;
+        try { reservation = budget.reserve('observation', requestBytes); }
+        catch { return; }
+        const remaining = budget.remainingMs();
+        if (remaining <= 0) { reservation.release(); return; }
+        const started = performance.now();
+        const release = await rate.acquire();
+        let dispatched: { attempts: number; sentBytes: number } | undefined;
+        try {
+          const result = await (request.evaluateInventory ?? evaluateChoices)({
+            model: request.selection.model, state: state as never, questions: asked,
+            apiKey: request.apiKey, timeoutMs: Math.min(10000, remaining), totalMs: remaining,
+            ...(request.apiBaseUrl ? { apiBaseUrl: request.apiBaseUrl } : {}),
+            ...(request.apiModel ? { apiModel: request.apiModel } : {}) });
+          const validated = validateChoicesResponse({ ...result,
+            answers: Object.fromEntries(Object.entries(result.answers ?? {}).map(([id, answer]) => [id, { ...answer, type: 'choice' }])) },
+          asked, request.selection.model);
+          call.status = 'completed'; call.model = result.model; call.usage = result.usage;
+          if (result.transport) dispatched = { attempts: result.transport.attempts, sentBytes: result.transport.sent_bytes };
+          if (result.usage && dispatched) meter.record(dispatched.sentBytes, result.usage.input_tokens);
+          rate.noteSuccess();
+          for (const [id, answer] of Object.entries(validated.answers)) {
+            if (answer.choice !== 'required') continue;
+            settle(id, 'settled-run');
+            inventory.settled.push(id);
+          }
+        } catch (error) {
+          if (!(error instanceof JevError)) throw error;
+          // Uninformative, not fatal: the content pass still runs for everyone.
+          call.status = 'failed'; call.error = error.code === 'request-too-large' ? 'invalid-response' : error.code;
+          failure ??= call.error;
+          call.model = error.metadata.model; call.usage = error.metadata.usage;
+          if (error.code === 'jev-rate-limited') rate.noteRateLimit();
+          if (error.metadata.transport) dispatched = { attempts: error.metadata.transport.attempts, sentBytes: error.metadata.transport.sent_bytes };
+          return;
+        } finally {
+          release();
+          call.duration_ms = performance.now() - started;
+          reservation.commit(dispatched);
         }
-      } catch (error) {
-        if (!(error instanceof JevError)) throw error;
-        // Uninformative, not fatal: the content pass still runs for everyone.
-        call.status = 'failed'; call.error = error.code === 'request-too-large' ? 'invalid-response' : error.code;
-        if (error.code === 'jev-rate-limited') rate.noteRateLimit();
-        if (error.metadata.transport) dispatched = { attempts: error.metadata.transport.attempts, sentBytes: error.metadata.transport.sent_bytes };
-        return;
-      } finally {
-        release();
-        call.duration_ms = performance.now() - started;
-        reservation.commit(dispatched);
       }
     }
   };
@@ -399,7 +405,6 @@ export async function analyseChange(request: AnalysisRequest, evaluate: typeof e
     const state = states.get(id);
     return state === 'settled-run' || state === 'settled-skip';
   });
-  let failure: ObservationError | undefined;
   let collectionFailed = false;
   let unitIndex = -1;
   await settleFromInventory();
@@ -608,7 +613,8 @@ export async function analyseChange(request: AnalysisRequest, evaluate: typeof e
     coverage[id] = state === 'settled-skip';
   }
 
-  const dispatched = chunks.flatMap(chunk => chunk.requests!).filter(call => call.status !== 'not-needed');
+  const dispatched = [...inventory.calls, ...chunks.flatMap(chunk => chunk.requests!)]
+    .filter(call => call.status !== 'not-needed');
   // An early stop is measured against the change set itself, never against the
   // groups that happen to have been materialised, and never by asking the
   // stream for one more unit just to observe that it has none. Every
@@ -620,7 +626,8 @@ export async function analyseChange(request: AnalysisRequest, evaluate: typeof e
     // An observation can now exist with no content group at all (the coarse
     // pass ran, the content pass did not), and that is not "chunked".
     strategy: chunks.length > 1 ? 'chunked-diff' : 'whole-diff',
-    status: collectionFailed || chunks.some(chunk => chunk.status !== 'completed' && chunk.status !== 'not-needed')
+    status: collectionFailed || inventory.calls.some(call => call.status === 'failed')
+      || chunks.some(chunk => chunk.status !== 'completed' && chunk.status !== 'not-needed')
       ? 'incomplete'
       : sweptWholeChangeSet ? 'complete' : 'stopped-early',
     chunks,

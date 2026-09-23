@@ -199,7 +199,7 @@ test('opt-in context resolution feeds the final evaluation and reports all infer
   });
   assert.equal(plan.tasks.helm!.run, true);
   assert.equal(report.context_resolution['.github/workflows/ci.yml#helm']!.passes.length, 2);
-  assert.deepEqual(report.usage, { input_tokens: 50, output_tokens: 7 });
+  assert.deepEqual(report.usage, { input_tokens: 150, output_tokens: 8 });
   assert.ok(finalBudget > 0 && finalBudget < inputs.timeoutMs);
   assert.ok(!JSON.stringify(report).includes('PRIVATE-CONFIG-SENTINEL'));
 });
@@ -264,7 +264,7 @@ test('a preparation failure keeps its job while an explicitly configured unrelat
   assert.equal(plan.status, 'fallback');
   assert.ok(plan.tasks.helm!.reasons.includes('context-resolution-incomplete'));
   assert.equal(report.context_resolution['.github/workflows/ci.yml#helm']!.status, 'incomplete');
-  assert.deepEqual(report.usage, { input_tokens: 107, output_tokens: 21 });
+  assert.deepEqual(report.usage, { input_tokens: 207, output_tokens: 22 });
 });
 test('custom API selection reports the sent alias and pinned version and falls back on a version change', async () => {
   for (const mode of ['shadow', 'enforce'] as const) for (const returnedModel of ['jev-1.13.0', 'jev-1.13.1']) {
@@ -283,7 +283,10 @@ test('custom API selection reports the sent alias and pinned version and falls b
       }),
     });
     assert.equal(requests, 1);
-    assert.deepEqual(report.model, { requested: customApi.apiModel, expected: 'jev-1.13.0', returned: returnedModel });
+    const mixedModels = mode === 'enforce' && returnedModel !== 'jev-1.13.0';
+    assert.deepEqual(report.model, { requested: customApi.apiModel, expected: 'jev-1.13.0',
+      returned: mixedModels ? null : returnedModel });
+    assert.equal(report.observation!.chunks[0]!.model, returnedModel);
     assert.equal(plan.status, returnedModel === 'jev-1.13.0' ? 'planned' : 'fallback');
     assert.equal(plan.tasks.helm!.run, mode === 'shadow' || returnedModel !== 'jev-1.13.0');
     if (returnedModel !== 'jev-1.13.0') {
@@ -1201,6 +1204,8 @@ test('the inventory settles a task before any patch is read', async () => {
     });
   assert.equal(plan.run.e2e, true);
   assert.deepEqual(report.observation!.inventory!.settled, ['e2e']);
+  assert.equal(report.model.returned, 'jev-1.13.0');
+  assert.deepEqual(report.usage, { input_tokens: 100, output_tokens: 1 });
   assert.deepEqual(plan.tasks.e2e!.reasons, ['jev-not-independent']);
   // lint was not settled coarsely, so it still needed the content it could not get.
   assert.equal(plan.run.lint, true);
