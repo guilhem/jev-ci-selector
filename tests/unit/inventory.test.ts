@@ -2,6 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { analyseChange, REQUEST_BYTES, type AnalysisRequest, type InventoryEntry } from '../../src/observations.js';
 import { AnalysisBudget } from '../../src/budget.js';
+import { TokenMeter } from '../../src/window.js';
 import { patch } from '../fixtures/diff.js';
 import { JevError } from '../../src/jev.js';
 
@@ -130,6 +131,30 @@ test('an oversized single inventory question is never dispatched or charged', as
   assert.equal(outcome.states.alpha, 'fallback-run');
   assert.equal(outcome.taskErrors.alpha, 'context-too-large');
   assert.equal(outcome.usage, null);
+});
+
+test('long renamed paths cannot overflow an inventory page or the state/question window', async () => {
+  for (const pathBytes of [4000, 30000]) {
+    const inventory = entries(20).map(entry => ({ ...entry, status: 'R100',
+      oldPath: `old/${'x'.repeat(pathBytes)}`, newPath: `new/${'x'.repeat(pathBytes)}` }));
+    const meter = new TokenMeter();
+    const ceiling = meter.stateAndQuestionBytes();
+    const seen: string[] = [];
+    const outcome = await analyseChange(request(call => {
+      const stateBytes = Buffer.byteLength(JSON.stringify(call.state));
+      const questionBytes = Math.max(...Object.values(call.questions).map(question =>
+        Buffer.byteLength(JSON.stringify(question))));
+      assert.ok(stateBytes + questionBytes <= ceiling,
+        `${stateBytes + questionBytes} exceeds the ${ceiling}-byte state/question window`);
+      seen.push(...(call.state.changes as Array<{ id: string }>).map(entry => entry.id));
+      return coarseReply(call, () => 'undetermined');
+    }, { inventory, meter, changeIds: inventory.map(entry => entry.id),
+      patches: { next: async () => null } }),
+    async () => assert.fail('no patch was supplied'));
+
+    assert.deepEqual(seen, pathBytes * 2 < ceiling ? inventory.map(entry => entry.id) : []);
+    assert.deepEqual(outcome.coverage, { alpha: false, beta: false });
+  }
 });
 
 test('the coarse question offers no way to express a skip', async () => {

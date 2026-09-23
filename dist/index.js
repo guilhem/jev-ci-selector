@@ -42516,17 +42516,19 @@ async function analyseChange(request, evaluate) {
       new_mode: entry.newMode
     }));
     const pages = [];
-    for (let page = [], index = 0; index < listed.length; index++) {
-      page.push(listed[index]);
-      if (bytes(page) >= room || index === listed.length - 1) {
+    let page = [];
+    for (const entry of listed) {
+      if (page.length && bytes([...page, entry]) > room) {
         pages.push(page);
         page = [];
       }
+      page.push(entry);
     }
-    for (const page of pages) {
+    if (page.length) pages.push(page);
+    for (const page2 of pages) {
       const taskIds = openTasks(states);
       if (!taskIds.length) break;
-      const state = { ...shared, changes: page };
+      const state = { ...shared, changes: page2 };
       for (const ids of batchesFor(taskIds, questions, model, state)) {
         const asked = Object.fromEntries(ids.map((id) => [id, questions[id]]));
         const requestBytes = bytes({ model, state, questions: asked });
@@ -42540,7 +42542,7 @@ async function analyseChange(request, evaluate) {
           error: null
         };
         inventory.calls.push(call);
-        if (requestBytes > REQUEST_BYTES) return;
+        if (requestBytes > REQUEST_BYTES || bytes(state) + longest > meter.stateAndQuestionBytes()) return;
         let reservation;
         try {
           reservation = budget.reserve("observation", requestBytes);

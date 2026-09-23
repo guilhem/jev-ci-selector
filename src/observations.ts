@@ -332,10 +332,12 @@ export async function analyseChange(request: AnalysisRequest, evaluate: typeof e
       old_path: entry.oldPath, new_path: entry.newPath, old_mode: entry.oldMode, new_mode: entry.newMode }));
     // Split the inventory itself when it does not fit one request.
     const pages: Array<typeof listed> = [];
-    for (let page: typeof listed = [], index = 0; index < listed.length; index++) {
-      page.push(listed[index]!);
-      if (bytes(page) >= room || index === listed.length - 1) { pages.push(page); page = []; }
+    let page: typeof listed = [];
+    for (const entry of listed) {
+      if (page.length && bytes([...page, entry]) > room) { pages.push(page); page = []; }
+      page.push(entry);
     }
+    if (page.length) pages.push(page);
     for (const page of pages) {
       const taskIds = openTasks(states);
       if (!taskIds.length) break;
@@ -346,7 +348,7 @@ export async function analyseChange(request: AnalysisRequest, evaluate: typeof e
         const call: ObservationCall = { task_ids: ids, status: 'not-started', model: null, usage: null,
           duration_ms: null, request_bytes: requestBytes, error: null };
         inventory.calls.push(call);
-        if (requestBytes > REQUEST_BYTES) return;
+        if (requestBytes > REQUEST_BYTES || bytes(state) + longest > meter.stateAndQuestionBytes()) return;
         let reservation;
         try { reservation = budget.reserve('observation', requestBytes); }
         catch { return; }
