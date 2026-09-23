@@ -181,11 +181,11 @@ test('example tasks and workflow job IDs have one stable contract', () => {
   }
 });
 
-test('published examples and action metadata use the initial release contract', () => {
+test('README targets v0.3.0 while standalone examples retain their release pins', () => {
   const action = parseYaml(readFileSync(resolve(root, 'action.yml'), 'utf8')) as Record<string, any>;
   assert.deepEqual(action.branding, { icon: 'filter', color: 'purple' });
+  assert.match(readFileSync(resolve(root, 'README.md'), 'utf8'), /guilhem\/jev-ci-selector@v0\.3\.0/);
   for (const path of [
-    'README.md',
     'examples/static-jobs/.github/workflows/ci.yml',
     'examples/matrix/.github/workflows/ci.yml',
     'examples/shadow/.github/workflows/observe.yml',
@@ -332,7 +332,7 @@ test('README quickstart has two jobs and valid inline tasks', () => {
   const selection = workflow.jobs.selection;
   assert.equal(selection.steps.length, 1);
   assert.deepEqual(taskIds(parseTasks(selection.steps[0].with.tasks)), ['unit']);
-  assert.equal(selection.steps[0].with.mode, undefined);
+  assert.equal(selection.steps[0].with.mode, 'shadow');
   assert.equal(selection.outputs.unit, '${{ steps.select.outputs.unit }}');
   assert.equal(selection.outputs['tested-sha'], '${{ steps.select.outputs.tested-sha }}');
   assert.equal(workflow.jobs.unit.needs, 'selection');
