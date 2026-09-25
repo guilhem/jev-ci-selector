@@ -131,7 +131,7 @@ test('example tasks and workflow job IDs have one stable contract', () => {
     assert.ok(jobs.plan.steps.every((step: Record<string, unknown>) => !('uses' in step && String(step.uses).startsWith('actions/checkout@'))), 'planning must not checkout PR code');
     const selector = jobs.plan.steps.find((step: Record<string, unknown>) => step.id === 'select') as Record<string, any>;
     assert.equal(selector.if, undefined);
-    assert.equal(selector.uses, 'guilhem/jev-ci-selector@v0.1.0');
+    assert.equal(selector.uses, 'guilhem/jev-ci-selector@main');
     assert.equal(selector.with.mode, undefined, 'integrated examples use enforce by default');
     assert.equal(selector.with['api-key'], '${{ secrets.JEV_API_KEY }}');
     assert.equal(selector.with['allow-external-context'], 'true');
@@ -172,27 +172,24 @@ test('example tasks and workflow job IDs have one stable contract', () => {
     }
     assert.deepEqual(jobs['ci-required'].env.EXPECTED_NEEDS.split(',').sort(), finalNeeds);
     for (const definition of Object.values(definitions)) {
-      for (const ref of definition.jobs ?? []) {
-        assert.equal(ref.workflow, '.github/workflows/ci.yml');
-        if (ref.job) assert.ok(jobs[ref.job], 'referenced job must exist');
-      }
+      assert.ok(definition.description.trim(), 'every task needs a verification scope');
+      assert.ok(!('jobs' in definition || 'context_files' in definition || 'resolve_context_files' in definition));
     }
     for (const task of tasks) assert.match(readFileSync(resolve(root, 'examples', name, '.github/workflows/ci.yml'), 'utf8'), new RegExp(`['"]?${task}['"]?`));
   }
 });
 
-test('README targets v0.3.0 while standalone examples retain their release pins', () => {
+test('README and examples use a non-tagged action reference for the new contract', () => {
   const action = parseYaml(readFileSync(resolve(root, 'action.yml'), 'utf8')) as Record<string, any>;
   assert.deepEqual(action.branding, { icon: 'filter', color: 'purple' });
-  assert.match(readFileSync(resolve(root, 'README.md'), 'utf8'), /guilhem\/jev-ci-selector@v0\.3\.0/);
+  assert.match(readFileSync(resolve(root, 'README.md'), 'utf8'), /guilhem\/jev-ci-selector@main/);
   for (const path of [
     'examples/static-jobs/.github/workflows/ci.yml',
     'examples/matrix/.github/workflows/ci.yml',
     'examples/shadow/.github/workflows/observe.yml',
   ]) {
     const source = readFileSync(resolve(root, path), 'utf8');
-    assert.match(source, /guilhem\/jev-ci-selector@v0\.1\.0/);
-    assert.doesNotMatch(source, /not a claim that the tag has been published/);
+    assert.match(source, /guilhem\/jev-ci-selector@main/);
   }
 });
 
@@ -289,7 +286,7 @@ test('shadow observer is isolated from consumer CI jobs', () => {
   assert.equal(job.steps.length, 2);
   const selector = job.steps[0];
   assert.equal(selector.id, 'select');
-  assert.equal(selector.uses, 'guilhem/jev-ci-selector@v0.1.0');
+  assert.equal(selector.uses, 'guilhem/jev-ci-selector@main');
   assert.equal(selector.if, undefined);
   assert.equal(selector.with.mode, 'shadow');
   assert.equal(selector.with['allow-external-context'], 'true');
@@ -297,9 +294,7 @@ test('shadow observer is isolated from consumer CI jobs', () => {
   assert.ok(job.steps.every((step: Record<string, any>) => !step.run && !String(step.uses).startsWith('actions/checkout@')));
   const definitions = readTasks('shadow');
   assert.deepEqual(taskIds(definitions), ['build', 'unit']);
-  for (const task of taskIds(definitions)) {
-    assert.deepEqual(definitions[task]!.jobs, [{ workflow: '.github/workflows/ci.yml', job: task }]);
-  }
+  for (const task of taskIds(definitions)) assert.ok(definitions[task]!.description.trim());
 });
 
 test('both gates preserve the event SHA contract and full bypass plans', () => {

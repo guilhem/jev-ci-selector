@@ -29,13 +29,13 @@ Prepare actual results manually from the CI run that executed the same tasks:
 }
 ```
 
-Use exactly the report's task IDs. The standalone Node.js 24 analyzer accepts report v8:
+Use exactly the report's task IDs. The standalone Node.js 24 analyzer accepts report v9:
 
 ```sh
 node dist/analyze-shadow.mjs shadow-report/report.json results.json
 ```
 
-Copy the bundle and `dist/licenses.txt` from the same release when using it outside this repository. There is no automatic collector of GitHub job results.
+Copy the bundle and `dist/licenses.txt` from the same action revision when using it outside this repository. There is no automatic collector of GitHub job results.
 
 The analyzer checks SHA and task identity. You must independently verify the task scope, commands and CI attempt: the observer and CI have different run IDs, and matching SHAs do not prove matching attempts. Do not combine unrelated retries or changed task definitions.
 
@@ -47,4 +47,4 @@ Selection is applied by default. Explicit shadow mode is useful for evaluating s
 
 ## Manual PR observation
 
-A `workflow_dispatch` can pass an open PR number via `pull-request`, with `mode: shadow` and the same inline tasks. Grant `pull-requests: read` as well as `contents: read`. Metadata uses the selected workflow revision; the tested commit belongs to the requested PR. Continue matching results to `tested-sha` rather than the dispatch event SHA. The supplied automatic templates' final gates assume the event SHA and are not manual-PR templates.
+A `workflow_dispatch` can pass an open PR number via `pull-request`, with `mode: shadow` and the same inline tasks. Grant `pull-requests: read` as well as `contents: read`. Descriptions come from the executed workflow inputs; the tested commit belongs to the requested PR. Continue matching results to `tested-sha` rather than the dispatch event SHA. The supplied automatic templates' final gates assume the event SHA and are not manual-PR templates.

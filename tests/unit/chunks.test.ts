@@ -66,15 +66,13 @@ test('groups complete nearby Git files and reports their decoded paths', async (
   const sections = diff.split(/(?=^diff --git )/mu).filter(Boolean);
   assert.equal(sections.length, 3);
   const srcBudget = bytes(sections[1]!) + bytes(sections[2]!);
-  const chunks = splitDiff(diff, srcBudget, ['src']);
+  const chunks = splitDiff(diff, srcBudget);
   assertLossless(diff, chunks, srcBudget);
   assert.deepEqual(chunks.map(chunk => chunk.paths), [['docs/guide.txt'], ['src/one.txt', 'src/two.txt']]);
   assert.equal(chunks[0]!.context, '');
   assert.equal(chunks[1]!.context, '');
 
-  const hintedBudget = bytes(sections[0]!) + bytes(sections[1]!);
-  const hinted = splitDiff(diff, hintedBudget, ['.']);
-  assert.deepEqual(hinted.map(chunk => chunk.paths), [['docs/guide.txt', 'src/one.txt'], ['src/two.txt']]);
+
 });
 
 test('partitions a large Git file at hunk or line boundaries with header context', async () => {

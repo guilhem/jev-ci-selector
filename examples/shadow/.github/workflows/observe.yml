@@ -12,19 +12,13 @@ jobs:
     steps:
       - name: Observe task selection
         id: select
-        uses: guilhem/jev-ci-selector@v0.1.0
+        uses: guilhem/jev-ci-selector@main
         with:
           tasks: |
             build:
-              description: Runs the compiled Go package checks.
-              jobs:
-                - workflow: .github/workflows/ci.yml
-                  job: build
+              description: Builds all Go packages with go build ./...; Go source, imported packages, go.mod and go.sum are inputs. It does not run tests.
             unit:
-              description: Runs package behavior tests.
-              jobs:
-                - workflow: .github/workflows/ci.yml
-                  job: unit
+              description: Runs go test ./... over Go package tests and the production code they exercise; Go dependencies and test configuration are inputs.
           mode: shadow
           github-token: ${{ secrets.GITHUB_TOKEN }}
           api-key: ${{ secrets.JEV_API_KEY }}

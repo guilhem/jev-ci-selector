@@ -1,5 +1,5 @@
 import { minimatch } from 'minimatch';
-import { validateResolvedSelection, type ResolvedSelection } from './tasks.js';
+import { validateSelection, type SelectionDefinition } from './tasks.js';
 
 export type Mode = 'shadow' | 'enforce';
 export type Status = 'planned' | 'bypassed' | 'fallback';
@@ -12,8 +12,7 @@ export const REASONS = [
   'binary-change', 'submodule-change', 'unrepresentable-change', 'manifest-incomplete',
   'analysis-budget-exceeded', 'patch-unavailable', 'coverage-incomplete',
   'jev-timeout', 'jev-error', 'invalid-response', 'jev-rate-limited', 'jev-payment-required',
-  'context-too-large', 'chunked-observation', 'observation-only', 'metadata-unavailable', 'observation-incomplete',
-  'context-resolution-incomplete',
+  'context-too-large', 'chunked-observation', 'observation-only', 'observation-incomplete',
 ] as const;
 export type Reason = typeof REASONS[number];
 
@@ -27,7 +26,7 @@ export const FALLBACK_REASONS: ReadonlySet<Reason> = new Set<Reason>([
   'binary-change', 'submodule-change', 'unrepresentable-change', 'manifest-incomplete',
   'analysis-budget-exceeded', 'patch-unavailable', 'coverage-incomplete',
   'jev-timeout', 'jev-error', 'invalid-response', 'jev-rate-limited', 'jev-payment-required', 'context-too-large',
-  'metadata-unavailable', 'observation-incomplete', 'context-resolution-incomplete',
+  'observation-incomplete',
 ]);
 export interface ForceAllReason { status: 'bypassed' | 'fallback'; code: Reason }
 export interface TaskDecision { proposed_run: boolean | null; run: boolean; reasons: Reason[] }
@@ -58,7 +57,7 @@ export function globalPathReason(changedPaths: readonly string[]): ForceAllReaso
  * a deletion or a rename out of a protected location cannot slip past
  * `force_paths`. It reads no file, resolves no metadata and calls no provider.
  */
-export function preselectTasks(selection: ResolvedSelection, changedPaths: readonly string[]): Preselection {
+export function preselectTasks(selection: SelectionDefinition, changedPaths: readonly string[]): Preselection {
   const ids = Object.keys(selection.tasks).sort();
   const reasons: Record<string, Reason[]> = {};
   for (const id of ids) {
@@ -76,7 +75,7 @@ export function preselectTasks(selection: ResolvedSelection, changedPaths: reado
 }
 
 export function selectTasks(input: {
-  selection: ResolvedSelection; changedPaths: readonly string[]; mode: Mode;
+  selection: SelectionDefinition; changedPaths: readonly string[]; mode: Mode;
   decisions?: Readonly<Record<string, boolean | null>>;
   /**
    * Per candidate: whether every relevant change was actually covered by the
@@ -91,7 +90,7 @@ export function selectTasks(input: {
   observationError?: Reason; forceAllReason?: ForceAllReason;
 }): ExecutionPlan {
   const { selection, changedPaths, mode } = input;
-  validateResolvedSelection(selection);
+  validateSelection(selection);
   if (mode !== 'shadow' && mode !== 'enforce') throw new Error('invalid-mode');
   const ids = Object.keys(selection.tasks).sort();
   const { reasons, candidates } = preselectTasks(selection, changedPaths);

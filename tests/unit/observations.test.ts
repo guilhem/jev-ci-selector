@@ -14,7 +14,7 @@ const sha = (letter: string) => letter.repeat(40);
 
 function request(diff: string, timeoutMs = 1_000): ObserveInput {
   const value = selection();
-  value.tasks = { check: { evidence: { description: 'Does this patch affect the check task?' } } };
+  value.tasks = { check: { description: 'Does this patch affect the check task?' } };
   return {
     selection: value,
     taskIds: ['check'],
@@ -141,7 +141,7 @@ test('applies one global deadline to chunk scheduling and marks remaining chunks
 
 test('batches real-sized independent questions and preserves other jobs after a batch failure', async () => {
   const value = request(patch());
-  value.selection.tasks = Object.fromEntries(['a', 'b', 'c', 'd'].map(id => [id, { evidence: { description: `${id}: ${'metadata '.repeat(4900)}` } }]));
+  value.selection.tasks = Object.fromEntries(['a', 'b', 'c', 'd'].map(id => [id, { description: `${id}: ${'metadata '.repeat(4900)}` }]));
   value.taskIds = ['a', 'b', 'c', 'd'];
   const calls: string[][] = [];
   const result = await observeChange(value, async input => {
@@ -174,7 +174,7 @@ test('group states exclude unrelated PR paths and repeated evaluations produce i
 
 test('question batches respect serialized request limits through the SDK', async () => {
   const value = request(patch());
-  value.selection.tasks = Object.fromEntries(['alpha', 'beta', 'gamma', 'delta'].map(id => [id, { evidence: { description: `${id}: ${'scope '.repeat(7400)}` } }]));
+  value.selection.tasks = Object.fromEntries(['alpha', 'beta', 'gamma', 'delta'].map(id => [id, { description: `${id}: ${'scope '.repeat(7400)}` }]));
   value.taskIds = ['alpha', 'beta', 'gamma', 'delta'];
   let calls = 0;
   const result = await observeChange(value, call => evaluateJev(call, async (_url, init) => {

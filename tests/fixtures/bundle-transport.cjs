@@ -19,16 +19,14 @@ globalThis.fetch = async (url, init) => {
   if (process.env.FIXTURE_REQUESTS) require('node:fs').appendFileSync(process.env.FIXTURE_REQUESTS, init.body + '\n');
   const request = JSON.parse(init.body);
   const fixture = JSON.parse(process.env.FIXTURE_RESPONSE);
-  if (fixture.model && fixture.answers && Object.values(request.questions).every(question => question.type === 'choice' && Object.hasOwn(question.criteria, 'uncertain'))) {
+  for (const question of Object.values(request.questions)) {
+    if (JSON.stringify(Object.keys(question.instructions.task)) !== '["description"]') throw new Error('Unexpected task context');
+  }
+  if (fixture.model && fixture.answers && Object.values(request.questions).every(question => Object.hasOwn(question.criteria, 'undetermined'))) {
     return Response.json({ model: fixture.model, usage: { input_tokens: 10, output_tokens: 1 },
-      answers: Object.fromEntries(Object.entries(request.questions).map(([id, question]) => {
-        const path = question.instructions.path;
-        const read = request.state.sources.some(source => source.path === path);
-        const relevant = request.state.job?.id === 'unit' && (path === 'check.sh' || path === 'checks.ini' && request.state.sources.some(source => source.content.includes('checks.ini')));
-        const selected = read ? 'keep' : relevant ? 'inspect' : 'ignore';
-        return [id, { type: 'choice', choice: selected, confidence: 1,
-          probabilities: Object.fromEntries(Object.keys(question.criteria).map(option => [option, option === selected ? 1 : 0])) }];
-      })) });
+      answers: Object.fromEntries(Object.keys(request.questions).map(id => [id, {
+        type: 'choice', choice: 'undetermined', confidence: 1, probabilities: { required: 0, undetermined: 1 },
+      }])) });
   }
   // Answer exactly the questions this request carries. The action now asks only
   // about tasks that are still open, so a fixed answer set would otherwise look

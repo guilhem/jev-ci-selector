@@ -46,23 +46,6 @@
         "pattern": "^(?![!/])(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\u0000).+$"
       }
     },
-    "job": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": [
-        "workflow"
-      ],
-      "properties": {
-        "workflow": {
-          "$ref": "#/definitions/filePath"
-        },
-        "job": {
-          "type": "string",
-          "minLength": 1,
-          "pattern": "\\S"
-        }
-      }
-    },
     "task": {
       "type": "object",
       "additionalProperties": false,
@@ -75,21 +58,6 @@
           "minLength": 1,
           "pattern": "\\S"
         },
-        "jobs": {
-          "type": "array",
-          "minItems": 1,
-          "items": {
-            "$ref": "#/definitions/job"
-          }
-        },
-        "context_files": {
-          "$ref": "#/definitions/files"
-        },
-        "resolve_context_files": {
-          "type": "boolean",
-          "default": false,
-          "description": "Discover additional context files for the job with Jev. Explicit context_files are always retained."
-        },
         "always": {
           "type": "boolean"
         },
@@ -97,18 +65,6 @@
           "$ref": "#/definitions/paths",
           "description": "A matching path forces this task to run."
         }
-      }
-    },
-    "filePath": {
-      "type": "string",
-      "minLength": 1,
-      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*[\\\\\\u0000])[^\\r\\n]+$"
-    },
-    "files": {
-      "type": "array",
-      "uniqueItems": true,
-      "items": {
-        "$ref": "#/definitions/filePath"
       }
     }
   }

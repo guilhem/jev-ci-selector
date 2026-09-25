@@ -1,39 +1,35 @@
 ---
 name: describe-ci-jobs
-description: Describe GitHub Actions jobs as precise Jev verification tasks, using inspected workflow commands, invoked tooling, action metadata, inputs, artifacts, and explicit context files.
+description: Write or refresh jev-ci-selector task descriptions from inspected GitHub Actions jobs, so Jev can judge changes against their actual verification scope.
 ---
 
 # Describe CI jobs
 
-Use this skill when turning existing GitHub Actions jobs into the inline `tasks` YAML consumed by `jev-ci-selector`.
+Use this skill before CI selection to write the inline `tasks` consumed by `jev-ci-selector`. The skill is never run in CI. Jev judges each change group from its diff and the task description alone, using the criteria in `src/jev.ts`: `required` when the change touches behavior checked, artifact inputs, tests, or verification tools/configuration the task consumes; `independent` only when the described scope establishes that the change is outside all of these; `unresolved` otherwise. Do the repository reading first and write every relationship Jev needs into the text, in terms a changed path or diff can be matched to. Describe the job at the revision whose checks will run; note a scope difference when evaluating older changes.
 
-Inspect the real workflow and job before writing a task:
+## Inspect the whole job
 
-- Read the job's `run` commands, `uses` steps, conditions, matrices, outputs, artifacts, and dependencies that affect what it verifies.
-- Follow each invoked repository script or command to its implementation and read the tool configuration it uses. Include the actual checks, scopes, filters, generated inputs, and artifact or report validation, rather than naming only the headline tool.
-- Read local action metadata (`action.yml`, `action.yaml`, or an action directory's metadata) for every local action the job invokes. Record the inputs the job supplies and the inputs the action declares or consumes.
-- Inspect relevant package or dependency manifests and distinguish dependencies that are installed from dependencies that the job actually executes or loads.
-- Identify the repository paths whose contents can change the job's result: workflow and action metadata, invoked scripts, tool configuration, fixtures or schemas, artifact producers and consumers, and setup files. Use paths found during inspection; do not invent names.
-- Describe the job's actual verification boundary. A passing execution alone does not prove that a change is independent of the job; inspect its inputs and consumers.
+- Read every executed step, condition, matrix, service, `needs`, artifact and local action metadata. Follow each command through package scripts and repository scripts into the configurations they load. A later build or preparation of another surface is part of the job too.
+- For each phase, follow entry points to the code they consume: explicit imports, framework-discovered entries and startup hooks such as instrumentation. Trace consumers as well as producers: generated types, contracts or schemas produced elsewhere can still be inputs here.
+- Delimit each test suite with its command and selected config, `testDir`, projects or filters. Sharing a test tool or installation does not establish that two suites run the same tests.
+- Identify the packages each phase actually executes or imports: the runner and its plugins for a test job; the framework, compiler and runtime libraries imported by the built code for a build. For external actions, state only what inspected metadata or supplied inputs support.
 
-Write one task per coherent verification scope. Make `description` concrete: name the behavior or contract checked, the commands or supported checks that implement it, and material inputs or boundaries. A description such as “runs actionlint” is insufficient when the job also validates a referenced local `action.yml` input; state the supported checks evidenced by the workflow, tool configuration, and action metadata. Do not add patch-specific hints or predict which future files will change.
+## Write the task
 
-Use `jobs` to anchor the task to the exact inspected workflow and job. Use `context_files` for the explicit paths needed to understand that verification scope, including relevant local action metadata and tool or artifact configuration. Omit `resolve_context_files` unless the user explicitly asks for discovery; its default is `false`.
+Write one task per coherent verification scope, in a few paragraphs of prose. Lead with the software behavior the job ships or checks and its stack, then cover what the criteria ask about:
 
-Return a YAML mapping accepted by the action's [task schema](../../schemas/tasks.schema.json):
+- **Artifact inputs.** Name consumed modules by responsibility with a path landmark precise enough to match a changed file ("article permission rules in `src/lib/server/policy`" rather than "`lib/`" or "shared code"), including what each startup hook loads. Say that their behavior, types and signatures become part of the artifact: a build's scope is what it ships, beyond whether it compiles.
+- **Checked behavior and tests.** Each suite's command, selection and what it asserts.
+- **Tools and packages.** Name the specific packages from inspection; a change to their version or configuration changes this job's input. Do not present the lockfile or shared install as an input by itself, and omit current version numbers, which the diff already shows.
+- **Overlap with other jobs.** Where another job's suite tests production code this job consumes, say that its boundary excludes those test files, while the production code remains an input here. Exclude their runner only if this job neither executes nor imports it; otherwise the runner remains an input here. Say when a tool is installed or run only elsewhere.
+- **Unknowns and proven exclusions.** Mark unverified relationships as unknown; state an exclusion only when inspected commands and suite boundaries prove it.
 
-```yaml
-task_id:
-  description: Verifies the repository contract using the commands and inputs exercised by the inspected job.
-  jobs:
-    - workflow: .github/workflows/ci.yml
-      job: validate
-  context_files:
-    - action.yml
-    - package.json
-    - scripts/build.mjs
-```
+Keep operational detail such as deployment branches, environment flags or runner images only where it changes an input, output or verification boundary. Paths and commands are landmarks, never an exhaustive list or path allowlist. Do not add patch-specific hints, predict failures or tell Jev which judgment to make. This fictional example illustrates the shape; replace every fact with inspected evidence:
 
-Replace every example path and job with names verified in the target repository. Keep task IDs safe and unique, descriptions nonblank, job references relative and exact, and context files repository-relative, unique, and free of `..`, absolute paths, or NUL characters. Do not add unsupported fields, aliases, duplicate keys, or `resolve_context_files: true` by habit.
+> Builds the SvelteKit knowledge-base application for editing, previewing and searching articles. Route entries consume the editor and search UI in `src/lib/ui`, Markdown parsing and rendering in `src/lib/content` and article permission rules in `src/lib/server/policy`; their behavior, types and signatures become part of the browser and server bundles. The server startup hook loads request logging from `src/lib/server/log`. Generated API types in `src/lib/client` are compilation inputs through those routes. SvelteKit, Vite, TypeScript and the runtime libraries these modules import are build inputs. Playwright runs `e2e/wiki` against the built application. Vitest suites under `tests/` run in another job: that boundary excludes those test files and Vitest itself, and the production code they exercise is still bundled here. External search-service behavior was not verified.
 
-Before returning, parse the YAML and validate it against the action's schema when available. A consumer repository need not contain that schema; report if schema validation was unavailable. Confirm named workflows, jobs, scripts, configuration and artifact paths against the repository, and tool checks against its implementation or official documentation. The task describes verification scope; it does not create workflow dependencies or change what the job runs.
+Before finishing, read each description as Jev would, with only a diff in hand. Take a few realistic change kinds from the repository tree: a consumed production module whose tests live in another job, a startup or configuration file, a version bump of a tool only another job runs, a library the built code imports, and a file from an unrelated surface. Each should land on a sentence that supports the right outcome. When a consumed change matches only a broad label or nothing, or an unrelated change matches a blanket claim, rewrite that relationship.
+
+Preserve existing task IDs, `always`, `force_paths`, and the requested task scope. A description does not replace workflow steps, conditions or `needs`. Put the relevant evidence in each description; `jobs`, `context_files` and `resolve_context_files` are unsupported task keys. Descriptions cost request space, so keep them concise without dropping a causal link.
+
+Validate the YAML against the [task schema](../../schemas/tasks.schema.json) when available and confirm referenced jobs, scripts and paths at the described revision. If live trials are authorized, compare the task against independently assessed relevant, unrelated and uncertain changes; report actual judgments and limits, then revise only from observed evidence. Refresh descriptions when the job's commands, configuration or verification boundary changes.

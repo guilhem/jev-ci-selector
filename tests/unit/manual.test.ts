@@ -23,7 +23,7 @@ function pullRequest(overrides: Record<string, unknown> = {}): Record<string, un
   };
 }
 
-test('resolves an open PR with immutable SHAs and trusted workflow metadata SHA', async () => {
+test('resolves an open PR with immutable SHAs', async () => {
   let seenUrl = '';
   let seenInit: RequestInit | undefined;
   const context = await manualContext(env, '42', 'shadow', 'github-token', async (url, init) => {
@@ -39,7 +39,7 @@ test('resolves an open PR with immutable SHAs and trusted workflow metadata SHA'
   assert.ok(seenInit?.signal instanceof AbortSignal);
   assert.deepEqual(context, {
     eventName: 'pull_request', repository: 'acme/example', serverUrl: 'https://github.com',
-    testedSha: mergeSha, baseSha, headSha, fork: false, metadataSha: workflowSha,
+    testedSha: mergeSha, baseSha, headSha, fork: false,
   });
 });
 
@@ -49,7 +49,6 @@ test('supports enforce diagnostics and exact head testing without a merge commit
   })), 'head');
   assert.equal(context.testedSha, headSha);
   assert.equal(context.headSha, headSha);
-  assert.equal(context.metadataSha, workflowSha);
 });
 
 test('rejects invalid event, mode, PR number, missing merge, and unavailable API responses', async () => {

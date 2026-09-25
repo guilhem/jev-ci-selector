@@ -6885,18 +6885,15 @@ import { pathToFileURL } from "node:url";
 // schemas/report.schema.json
 var report_schema_default = {
   $schema: "http://json-schema.org/draft-07/schema#",
-  title: "jev-ci-selector source-free report v8",
+  title: "jev-ci-selector source-free report v9",
   type: "object",
   additionalProperties: false,
   required: [
     "version",
-    "metadata_sha",
     "base_sha",
     "head_sha",
     "tested_sha",
     "selection_hash",
-    "diff_hash",
-    "diff_bytes",
     "changed_path_count",
     "mode",
     "status",
@@ -6906,16 +6903,14 @@ var report_schema_default = {
     "tasks",
     "tested_ref",
     "diff_base_sha",
-    "job_metadata",
     "observation_error",
     "observation",
-    "context_resolution",
     "manifest",
     "analysis"
   ],
   properties: {
     version: {
-      const: 8
+      const: 9
     },
     base_sha: {
       $ref: "#/definitions/sha"
@@ -6925,20 +6920,6 @@ var report_schema_default = {
     },
     tested_sha: {
       $ref: "#/definitions/sha"
-    },
-    diff_hash: {
-      type: [
-        "string",
-        "null"
-      ],
-      pattern: "^[a-f0-9]{64}$"
-    },
-    diff_bytes: {
-      type: [
-        "integer",
-        "null"
-      ],
-      minimum: 0
     },
     changed_path_count: {
       type: [
@@ -7074,9 +7055,7 @@ var report_schema_default = {
                 "context-too-large",
                 "chunked-observation",
                 "observation-only",
-                "metadata-unavailable",
-                "observation-incomplete",
-                "context-resolution-incomplete"
+                "observation-incomplete"
               ]
             }
           }
@@ -7092,15 +7071,6 @@ var report_schema_default = {
           $ref: "#/definitions/observation"
         }
       ]
-    },
-    context_resolution: {
-      type: "object",
-      propertyNames: {
-        pattern: "^[^\\r\\n\\u0000]+$"
-      },
-      additionalProperties: {
-        $ref: "#/definitions/jobContextResolution"
-      }
     },
     tested_ref: {
       enum: [
@@ -7118,12 +7088,6 @@ var report_schema_default = {
         }
       ]
     },
-    job_metadata: {
-      type: "object",
-      additionalProperties: {
-        $ref: "#/definitions/taskMetadata"
-      }
-    },
     observation_error: {
       enum: [
         "jev-timeout",
@@ -7136,9 +7100,6 @@ var report_schema_default = {
         "unrepresentable-change",
         null
       ]
-    },
-    metadata_sha: {
-      $ref: "#/definitions/sha"
     },
     selection_hash: {
       type: "string",
@@ -7179,10 +7140,6 @@ var report_schema_default = {
         "manifest_entries",
         "patches_requested",
         "patches_read",
-        "preparation_calls",
-        "preparation_bytes",
-        "observation_calls",
-        "observation_bytes",
         "jev_calls",
         "analysis_bytes",
         "limits_reached",
@@ -7211,18 +7168,6 @@ var report_schema_default = {
           $ref: "#/definitions/counter"
         },
         patches_read: {
-          $ref: "#/definitions/counter"
-        },
-        preparation_calls: {
-          $ref: "#/definitions/counter"
-        },
-        preparation_bytes: {
-          $ref: "#/definitions/counter"
-        },
-        observation_calls: {
-          $ref: "#/definitions/counter"
-        },
-        observation_bytes: {
           $ref: "#/definitions/counter"
         },
         jev_calls: {
@@ -7542,136 +7487,6 @@ var report_schema_default = {
         }
       }
     },
-    sourceLocation: {
-      type: "object",
-      additionalProperties: false,
-      required: [
-        "line",
-        "column"
-      ],
-      properties: {
-        line: {
-          type: "integer",
-          minimum: 1
-        },
-        column: {
-          type: "integer",
-          minimum: 1
-        },
-        endLine: {
-          type: "integer",
-          minimum: 1
-        },
-        endColumn: {
-          type: "integer",
-          minimum: 1
-        }
-      }
-    },
-    sourceLocator: {
-      type: "object",
-      additionalProperties: false,
-      required: [
-        "repository",
-        "commit",
-        "file",
-        "location"
-      ],
-      properties: {
-        repository: {
-          type: "string"
-        },
-        commit: {
-          type: "string",
-          pattern: "^[a-f0-9]{40}$"
-        },
-        file: {
-          type: "string"
-        },
-        location: {
-          $ref: "#/definitions/sourceLocation"
-        }
-      }
-    },
-    provenance: {
-      type: "object",
-      additionalProperties: false,
-      required: [
-        "kind",
-        "locator",
-        "sha256"
-      ],
-      properties: {
-        kind: {
-          type: "string"
-        },
-        locator: {
-          $ref: "#/definitions/sourceLocator"
-        },
-        sha256: {
-          type: "string",
-          pattern: "^[a-f0-9]{64}$"
-        },
-        resolvedSha: {
-          type: "string",
-          pattern: "^[a-f0-9]{40}$"
-        }
-      }
-    },
-    taskMetadata: {
-      type: "object",
-      additionalProperties: false,
-      required: [
-        "incomplete",
-        "missing",
-        "provenance",
-        "hashes",
-        "warnings",
-        "nativeDependencies"
-      ],
-      properties: {
-        workflow: {
-          type: "string"
-        },
-        job: {
-          type: "string"
-        },
-        incomplete: {
-          type: "boolean"
-        },
-        missing: {
-          type: "array",
-          items: {
-            type: "string"
-          }
-        },
-        provenance: {
-          type: "array",
-          items: {
-            $ref: "#/definitions/provenance"
-          }
-        },
-        hashes: {
-          type: "object",
-          additionalProperties: {
-            type: "string",
-            pattern: "^[a-f0-9]{64}$"
-          }
-        },
-        warnings: {
-          type: "array",
-          items: {
-            type: "string"
-          }
-        },
-        nativeDependencies: {
-          type: "array",
-          items: {
-            type: "string"
-          }
-        }
-      }
-    },
     observationCall: {
       type: "object",
       additionalProperties: false,
@@ -7735,324 +7550,6 @@ var report_schema_default = {
             "null"
           ],
           minimum: 0
-        }
-      }
-    },
-    contextError: {
-      enum: [
-        "jev-timeout",
-        "jev-error",
-        "invalid-response",
-        "git-read-failed",
-        "context-too-large",
-        "analysis-budget-exceeded",
-        "jev-rate-limited",
-        "jev-payment-required"
-      ]
-    },
-    choiceJudgment: {
-      anyOf: [
-        {
-          $ref: "#/definitions/inspectChoiceJudgment"
-        },
-        {
-          $ref: "#/definitions/keepChoiceJudgment"
-        }
-      ]
-    },
-    inspectChoiceJudgment: {
-      type: "object",
-      additionalProperties: false,
-      required: [
-        "choice",
-        "probabilities",
-        "confidence"
-      ],
-      properties: {
-        choice: {
-          enum: [
-            "inspect",
-            "ignore",
-            "uncertain"
-          ]
-        },
-        probabilities: {
-          $ref: "#/definitions/inspectProbabilities"
-        },
-        confidence: {
-          type: "number",
-          minimum: 0,
-          maximum: 1
-        }
-      }
-    },
-    keepChoiceJudgment: {
-      type: "object",
-      additionalProperties: false,
-      required: [
-        "choice",
-        "probabilities",
-        "confidence"
-      ],
-      properties: {
-        choice: {
-          enum: [
-            "keep",
-            "discard",
-            "uncertain"
-          ]
-        },
-        probabilities: {
-          $ref: "#/definitions/keepProbabilities"
-        },
-        confidence: {
-          type: "number",
-          minimum: 0,
-          maximum: 1
-        }
-      }
-    },
-    inspectProbabilities: {
-      type: "object",
-      required: [
-        "inspect",
-        "ignore",
-        "uncertain"
-      ],
-      propertyNames: {
-        enum: [
-          "inspect",
-          "ignore",
-          "uncertain"
-        ]
-      },
-      properties: {
-        inspect: {
-          type: "number",
-          minimum: 0,
-          maximum: 1
-        },
-        ignore: {
-          type: "number",
-          minimum: 0,
-          maximum: 1
-        },
-        uncertain: {
-          type: "number",
-          minimum: 0,
-          maximum: 1
-        }
-      },
-      additionalProperties: {
-        type: "number",
-        minimum: 0,
-        maximum: 1
-      }
-    },
-    keepProbabilities: {
-      type: "object",
-      required: [
-        "keep",
-        "discard",
-        "uncertain"
-      ],
-      propertyNames: {
-        enum: [
-          "keep",
-          "discard",
-          "uncertain"
-        ]
-      },
-      properties: {
-        keep: {
-          type: "number",
-          minimum: 0,
-          maximum: 1
-        },
-        discard: {
-          type: "number",
-          minimum: 0,
-          maximum: 1
-        },
-        uncertain: {
-          type: "number",
-          minimum: 0,
-          maximum: 1
-        }
-      },
-      additionalProperties: {
-        type: "number",
-        minimum: 0,
-        maximum: 1
-      }
-    },
-    contextCall: {
-      type: "object",
-      additionalProperties: false,
-      required: [
-        "paths",
-        "request_hash",
-        "status",
-        "judgments",
-        "model",
-        "usage",
-        "duration_ms",
-        "error"
-      ],
-      properties: {
-        paths: {
-          type: "array",
-          items: {
-            type: "string",
-            pattern: "^[^\\u0000]+$"
-          }
-        },
-        request_hash: {
-          type: "string",
-          pattern: "^[a-f0-9]{64}$"
-        },
-        status: {
-          enum: [
-            "completed",
-            "failed",
-            "not-started"
-          ]
-        },
-        judgments: {
-          anyOf: [
-            {
-              type: "null"
-            },
-            {
-              type: "object",
-              propertyNames: {
-                pattern: "^[^\\u0000]+$"
-              },
-              additionalProperties: {
-                $ref: "#/definitions/choiceJudgment"
-              }
-            }
-          ]
-        },
-        model: {
-          type: [
-            "string",
-            "null"
-          ],
-          pattern: "^[^\\r\\n\\u0000]*$"
-        },
-        usage: {
-          $ref: "#/definitions/usageOrNull"
-        },
-        duration_ms: {
-          type: [
-            "number",
-            "null"
-          ],
-          minimum: 0
-        },
-        error: {
-          anyOf: [
-            {
-              $ref: "#/definitions/contextError"
-            },
-            {
-              type: "null"
-            }
-          ]
-        }
-      }
-    },
-    contextPass: {
-      type: "object",
-      additionalProperties: false,
-      required: [
-        "index",
-        "calls"
-      ],
-      properties: {
-        index: {
-          type: "integer",
-          minimum: 1,
-          maximum: 3
-        },
-        calls: {
-          type: "array",
-          items: {
-            $ref: "#/definitions/contextCall"
-          }
-        }
-      }
-    },
-    contextSource: {
-      type: "object",
-      additionalProperties: false,
-      required: [
-        "path",
-        "sha256",
-        "pass"
-      ],
-      properties: {
-        path: {
-          type: "string",
-          pattern: "^[^\\u0000]+$"
-        },
-        sha256: {
-          type: "string",
-          pattern: "^[a-f0-9]{64}$"
-        },
-        pass: {
-          type: "integer",
-          minimum: 1,
-          maximum: 3
-        }
-      }
-    },
-    jobContextResolution: {
-      type: "object",
-      additionalProperties: false,
-      required: [
-        "task_ids",
-        "status",
-        "error",
-        "sources",
-        "passes"
-      ],
-      properties: {
-        task_ids: {
-          type: "array",
-          items: {
-            type: "string",
-            pattern: "^[^\\r\\n\\u0000]*$"
-          }
-        },
-        status: {
-          enum: [
-            "complete",
-            "incomplete"
-          ]
-        },
-        error: {
-          anyOf: [
-            {
-              $ref: "#/definitions/contextError"
-            },
-            {
-              type: "null"
-            }
-          ]
-        },
-        sources: {
-          type: "array",
-          items: {
-            $ref: "#/definitions/contextSource"
-          }
-        },
-        passes: {
-          type: "array",
-          items: {
-            $ref: "#/definitions/contextPass"
-          }
         }
       }
     },

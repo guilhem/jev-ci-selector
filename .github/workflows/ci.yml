@@ -39,14 +39,8 @@ jobs:
           tasks: |
             validate:
               description: Verifies the TypeScript source, tests and committed bundle.
-              jobs:
-                - workflow: .github/workflows/ci.yml
-                  job: validate
             self-test:
               description: Verifies the local action on a GitHub-hosted Node 24 runner.
-              jobs:
-                - workflow: .github/workflows/ci.yml
-                  job: self-test
       - name: Assert local action outputs
         env:
           STATUS: ${{ steps.select.outputs.status }}
@@ -56,7 +50,7 @@ jobs:
           test "$STATUS" = bypassed
           test "$HAS_TASKS" = true
           test -s "$REPORT_PATH"
-          node -e 'const report = require(process.argv[1]); if (report.version !== 8 || report.status !== "bypassed") process.exit(1)' "$REPORT_PATH"
+          node -e 'const report = require(process.argv[1]); if (report.version !== 9 || report.status !== "bypassed") process.exit(1)' "$REPORT_PATH"
   ci-required:
     if: ${{ always() }}
     needs:

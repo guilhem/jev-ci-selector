@@ -12,16 +12,15 @@ test('shadow measurement joins by exact SHA and distinguishes regressions, flaky
     const tasks = Object.fromEntries(['build', 'e2e', 'helm', 'prepare', 'unit'].map(id => [id, {
       proposed_run: id === 'unit', run: true, reasons: [id === 'unit' ? 'always' : 'jev-independent', 'shadow-mode'],
     }]));
-    const report = { version: 8, metadata_sha: 'a'.repeat(40), base_sha: 'a'.repeat(40), head_sha: 'b'.repeat(40), tested_sha: 'c'.repeat(40),
-      tested_ref: 'merge', diff_base_sha: 'a'.repeat(40), job_metadata: {}, observation: null, observation_error: null,
-      selection_hash: 'd'.repeat(64), diff_hash: 'e'.repeat(64), diff_bytes: 1, changed_path_count: 1, mode: 'shadow', status: 'planned',
+    const report = { version: 9, base_sha: 'a'.repeat(40), head_sha: 'b'.repeat(40), tested_sha: 'c'.repeat(40),
+      tested_ref: 'merge', diff_base_sha: 'a'.repeat(40), observation: null, observation_error: null,
+      selection_hash: 'd'.repeat(64), changed_path_count: 1, mode: 'shadow', status: 'planned',
       model: { requested: 'provider/alias', expected: 'jev-1.13.0', returned: 'jev-1.13.0' }, durations_ms: { collection: 1, jev: 1, total: 2 },
-      usage: { input_tokens: 1, output_tokens: 1 }, tasks, context_resolution: {},
+      usage: { input_tokens: 1, output_tokens: 1 }, tasks,
       manifest: { complete: true, hash: 'f'.repeat(64), change_count: 1 },
       analysis: { manifest_entries: 1, patches_requested: 1, patches_read: 1,
         patch_bytes_read: 1, patch_bytes_delivered: 1, changes_read: 1, changes_total: 1,
         bytes_per_token: null,
-        preparation_calls: 0, preparation_bytes: 0, observation_calls: 1, observation_bytes: 1,
         jev_calls: 1, analysis_bytes: 1, attempts: 1, limits_reached: [],
         analysed_tasks: ['build', 'e2e', 'helm', 'prepare', 'unit'], required_without_analysis: [],
         task_states: {}, coverage: {}, fallback_scope: 'none', fallback_tasks: [] } };
@@ -47,7 +46,7 @@ test('shadow measurement joins by exact SHA and distinguishes regressions, flaky
     assert.deepEqual(analysis.manually_relevant_would_skip, ['helm']);
     assert.equal(analysis.selection_hash, report.selection_hash);
     assert.equal(Object.hasOwn(analysis, 'catalog_hash'), false);
-    for (const version of [1, 2, 3, 4, 5, 6, 7, 9]) {
+    for (const version of [1, 2, 3, 4, 5, 6, 7, 8]) {
       await writeFile(reportFile, JSON.stringify({ ...report, version }));
       assert.equal(spawnSync(process.execPath, args).status, 1);
       assert.equal(spawnSync(process.execPath, [standalone, reportFile, resultsFile]).status, 1);

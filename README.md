@@ -5,17 +5,17 @@
 [![Validate action](https://github.com/guilhem/jev-ci-selector/actions/workflows/ci.yml/badge.svg)](https://github.com/guilhem/jev-ci-selector/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Describe what your CI jobs verify. **jev-ci-selector** uses [TypeSafe's Jev](https://docs.typesafe.ai/) to assess pull request changes and returns `true` / `false` outputs for your existing jobs. Your workflow keeps its commands, runners and dependencies.
+Describe what your CI jobs verify. **jev-ci-selector** sends those descriptions and the pull request diff to [TypeSafe's Jev](https://docs.typesafe.ai/) and returns `true` / `false` outputs for your existing jobs. Your workflow keeps its commands, runners and dependencies.
 
 A Helm chart edit and a Go validation fix can need different checks. Give Jev each task's verification scope, keep explicit rules for mandatory checks, and inspect the proposed selection before applying it.
 
-- **Start with one job.** Inline YAML is enough; no extra configuration file or script.
+- **Prepare descriptions once.** Use the included skill while authoring your workflow, then paste its descriptions into inline YAML.
 - **Keep control.** Mandatory tasks and path rules take precedence; incomplete evidence keeps the affected checks running.
 - **See each decision.** The GitHub job summary shows what runs, what could skip and why, with a JSON report for deeper inspection.
 
-[Quick start](#quick-start) · [Define your tasks](#define-your-tasks) · [How selection works](#how-selection-works) · [Upgrading to v0.3.0](#upgrading-to-v030) · [Reference](docs/reference.md)
+[Quick start](#quick-start) · [Define your tasks](#define-your-tasks) · [How selection works](#how-selection-works) · [Migrating to description-only tasks](#migrating-to-description-only-tasks) · [Reference](docs/reference.md)
 
-> Examples below target **v0.3.0** and require that release tag to be published. See [releases](https://github.com/guilhem/jev-ci-selector/releases) for available versions; pin a released commit SHA when you need an immutable reference.
+> The workflows below use `@main` as a non-tagged example reference. Use them after this change reaches `main`; `@main` moves, so pin the resulting commit SHA for reproducible CI. No release tag for this breaking contract is assumed to exist.
 
 ## Quick start
 
@@ -23,9 +23,28 @@ A Helm chart edit and a Go validation fix can need different checks. Give Jev ea
 
 Get a key from the [TypeSafe dashboard](https://console.typesafe.ai/) and save it as the repository Actions secret **`JEV_API_KEY`** under **Settings → Secrets and variables → Actions**.
 
-The example sets `allow-external-context: 'true'`: this authorizes sending changed paths, patch text, task descriptions and requested job/file context to the provider. Review the [data and trust boundaries](SECURITY.md) before enabling it. Without both the key and consent, every task stays selected and no Jev request is sent.
+The example sets `allow-external-context: 'true'`: this authorizes sending changed paths, patch text and task descriptions to the provider. Review the [data and trust boundaries](SECURITY.md) before enabling it. Without both the key and consent, every task stays selected and no Jev request is sent.
 
-### 2. Add the selector and connect a job
+### 2. Describe the job before editing CI
+
+From a checkout of this repository, install the included [describe-ci-jobs skill](skills/describe-ci-jobs/SKILL.md) into Codex's personal skills directory, then invoke it while preparing the workflow:
+
+```sh
+mkdir -p ~/.codex/skills
+cp -R skills/describe-ci-jobs ~/.codex/skills/
+```
+
+```text
+$describe-ci-jobs Inspect .github/workflows/ci.yml and the commands it runs.
+Write the verification scope for the unit job as an inline jev-ci-selector task.
+Keep its task ID, always and force_paths rules.
+```
+
+If you use another coding agent, ask it to read `skills/describe-ci-jobs/SKILL.md` from the checkout and perform the same inspection.
+
+Review the result against the actual commands, scripts, configuration and tests. Paste the `description` into `tasks.unit` below and refresh it when the job's scope changes. The skill runs during authoring; GitHub Actions runs only the selector action, which sends the saved description with the diff to Jev. The Go description below is an example for a repository where `go test ./...` checks business rules and input validation; replace it with evidence from your own job.
+
+### 3. Add the selector and connect a job
 
 For a Go repository, save this as `.github/workflows/ci.yml`, or adapt the two jobs into your existing workflow. For another stack, replace the task description and the `unit` job's setup and test command.
 
@@ -47,7 +66,7 @@ jobs:
       unit: ${{ steps.select.outputs.unit }}
       tested-sha: ${{ steps.select.outputs.tested-sha }}
     steps:
-      - uses: guilhem/jev-ci-selector@v0.3.0
+      - uses: guilhem/jev-ci-selector@main
         id: select
         with:
           api-key: ${{ secrets.JEV_API_KEY }}
@@ -57,8 +76,9 @@ jobs:
           tasks: |
             unit:
               description: >
-                Verifies Go business rules and input validation with unit tests,
-                without a database or network access.
+                Runs go test ./... over Go package tests for business rules and
+                input validation. Go source and dependencies used by those tests
+                are inputs; this job does not run browser tests.
 
   unit:
     needs: selection
@@ -83,7 +103,7 @@ Three connections make this work:
 
 Keep the selector job isolated from project checkout, dependency installation and project scripts. With this minimal workflow, require both `selection` and `unit` in branch protection: a skipped test job alone does not prove selection succeeded. If you already have a final CI gate, preserve its failure checks.
 
-### 3. Read the proposed selection
+### 4. Read the proposed selection
 
 Open the workflow run's **Summary**. In `shadow` mode, every effective task output stays `true`; the **Proposed** column shows which checks selection would keep or skip.
 
@@ -95,7 +115,7 @@ For example, if all changes are judged independent of the Go unit tests, a simpl
 
 **A PR that edits `.github/workflows/` keeps every declared task.** Merge the workflow setup first, then observe ordinary code changes. Push events also keep every task without calling Jev.
 
-### 4. Apply selection when ready
+### 5. Apply selection when ready
 
 After comparing proposals with actual results on representative PRs, change the selector input:
 
@@ -109,26 +129,22 @@ Shadow observations help assess your integration; a proposed skip is not a guara
 
 ## Define your tasks
 
-A task is a named check with a required `description`. Describe **what it verifies, what it depends on and what is outside its scope**. Keep the description about the job itself, so it remains useful across PRs.
+A task is a named check with a required `description`. Describe **what it verifies, what it consumes and what is outside its scope**. Keep the description about the job itself, so it remains useful across PRs. The skill reads the job and its local scripts before you save the description; the selector does not discover job or file context during CI.
 
 | Too vague | Useful verification scope |
 | --- | --- |
 | Run integration tests. | Verifies HTTP authentication and PostgreSQL persistence using a migrated test database; does not exercise browser rendering. |
 | Check Helm. | Verifies Helm chart rendering, values validation and Kubernetes resource templates; does not execute application code. |
 
-For an existing integration job, add its workflow reference and relevant setup files to give Jev more context:
+For an integration job, put the relevant scope into the description itself:
 
 ```yaml
 tasks: |
   integration:
     description: >
       Verifies HTTP authentication and PostgreSQL persistence using a migrated
-      test database; does not exercise browser rendering.
-    jobs:
-      - workflow: .github/workflows/ci.yml
-        job: integration
-    context_files:
-      - tests/integration/setup.ts
+      test database. The API routes, authentication rules, migrations and test
+      setup are inputs; it does not exercise browser rendering.
     force_paths:
       - migrations/**
   lint:
@@ -136,22 +152,19 @@ tasks: |
     always: true
 ```
 
-Adapt the job and file paths to your repository. For each added task, forward its output and wire the matching job's `if`, as in the quick start.
+Adapt the scope to inspected commands and files in your repository. For each added task, forward its output and wire the matching job's `if`, as in the quick start.
 
 | Field | When to use it |
 | --- | --- |
 | `description` | Always. A precise description is enough to define a task. |
-| `jobs` | Provide workflow/job commands, action inputs and related metadata as evidence. |
-| `context_files` | Include known configuration, setup or helper files that explain the check. |
 | `force_paths` | Always select this task when a positive glob matches. No match still leaves the task open to analysis. |
 | `always: true` | Keep a task mandatory, such as a prerequisite build or a check you want on every run. |
-| `resolve_context_files: true` | Opt into experimental discovery of additional relevant files. Defaults to `false`; explicit context files remain available either way. |
 
-For automatic PR analysis, job and file metadata are read from the PR base commit without executing repository code. Referenced jobs and files must exist there. Discovery considers tracked repository paths and adds API work; explicit `context_files` are the more predictable option for large repositories.
+`jobs`, `context_files` and `resolve_context_files` are rejected. Migrate their useful evidence into each `description` before running CI.
 
-**Dependencies stay in your workflow.** If E2E needs a build, keep `needs: [selection, build]` and make the build mandatory with `always: true`. Task descriptions and `jobs` references do not schedule prerequisites.
+**Dependencies stay in your workflow.** If E2E needs a build, keep `needs: [selection, build]` and make the build mandatory with `always: true`. Task descriptions do not schedule prerequisites.
 
-Need help describing a large workflow? The included [describe-ci-jobs skill](skills/describe-ci-jobs/SKILL.md) follows commands, configuration and local actions to derive task descriptions and explicit context.
+Need help describing a large workflow? The included [describe-ci-jobs skill](skills/describe-ci-jobs/SKILL.md) follows commands, configuration and local actions to derive the descriptions you save inline.
 
 ## How selection works
 
@@ -172,7 +185,7 @@ There is no confidence threshold to tune. Raw choices, distributions and confide
 | --- | --- |
 | Fork PR, missing key or consent, or `force-all: 'true'` | Keep every task; no Jev call. |
 | Push, schedule or merge-group event | Keep every task; automatic selection runs on PRs. Manual PR analysis is also [supported](docs/reference.md#events-provenance-and-selection). |
-| Provider failure, unreadable context or an exhausted analysis limit | Keep affected tasks. Tasks with complete independent decisions may still skip; a global fallback keeps all tasks. |
+| Provider failure, unreadable diff or an exhausted analysis limit | Keep affected tasks. Tasks with complete independent decisions may still skip; a global fallback keeps all tasks. |
 | Invalid task definitions or unexpected internal errors | Fail the selector job; no usable plan is published. |
 
 ## Read the outputs
@@ -200,29 +213,29 @@ All four limits default to **`0`**, meaning no action-level ceiling. Requests ad
 
 | Input | What it limits |
 | --- | --- |
-| `timeout-ms` | Shared context-preparation and analysis time, starting after the change inventory is built. |
+| `timeout-ms` | Analysis time, starting after comparison and change inventory. |
 | `max-collected-patch-bytes` | Patch bytes actually received from Git, including rejected or retried reads. |
-| `max-analysis-bytes` | Complete request JSON bytes sent to the API. |
-| `max-jev-calls` | Dispatched API calls, including failed calls. |
+| `max-analysis-bytes` | Complete analysis request JSON bytes sent to the API. |
+| `max-jev-calls` | All dispatched analysis API calls, including failed calls. |
 
 The quick start sets `timeout-ms: '60000'` so an expired analysis budget can retain affected tasks and publish a fallback report. A job killed by GitHub's `timeout-minutes` publishes no selection outputs or report. Set an internal deadline if you need that graceful fallback.
 
 In `enforce`, a run whose tasks are all mandatory reads no patches and makes no Jev calls. `shadow` continues observing tasks to collect evidence, so it can do more analysis. Compare selector usage with your own CI timings when assessing savings.
 
-For preparation budget sharing and custom Jev-compatible providers, see the [input reference](docs/reference.md#inputs) and [provider contract](docs/reference.md#provider-contract).
+For exact input limits and custom Jev-compatible providers, see the [input reference](docs/reference.md#inputs) and [provider contract](docs/reference.md#provider-contract).
 
-## Upgrading to v0.3.0
+## Migrating to description-only tasks
 
-This release introduces progressive change analysis, earlier decisions for required tasks and per-task coverage. Incomplete evidence is scoped to the affected tasks, so a partial fallback can preserve another task's completed skip decision.
+This is a breaking task input and report change. Prepare complete descriptions with the skill before moving an existing workflow to this action revision.
 
 Before changing an existing integration's action reference:
 
-1. **Replace `max-diff-bytes`, if configured.** It has been removed and now causes an input error. `max-collected-patch-bytes` limits bytes actually collected, including retries, rather than the size of a complete diff.
-2. **Review your limits.** All four ceilings now default to `0`. Set explicit values if your integration needs a time, byte or call budget.
-3. **Update report consumers to v8.** Use `manifest.hash` for the change inventory; `diff_hash` and `diff_bytes` remain `null` in normal progressive runs. Use the matching analyzer version and allow partial fallback decisions in custom gates.
+1. **Rewrite each task.** Move useful job commands, scripts, configuration, test boundaries and consumed files from `jobs`, `context_files` and `resolve_context_files` into its required `description`. Remove those three keys; the new action rejects them with a migration error. Keep `always` and `force_paths` rules.
+2. **Keep existing budgets if useful.** `max-jev-calls` and `max-analysis-bytes` now count analysis only. `timeout-ms` starts after comparison and change inventory. `max-collected-patch-bytes` still counts patch bytes read; `0` means no action-level ceiling for each input.
+3. **Update report consumers to v9.** `metadata_sha`, `job_metadata`, `context_resolution`, root `diff_hash` / `diff_bytes` and preparation/observation budget counters are gone. Use total `analysis.jev_calls` and `analysis.analysis_bytes`; per-group `observation.chunks[].diff_hash` / `diff_bytes` still describe each observed group. Check the matching schema and analyzer before consuming reports.
 4. **Recheck proposals in `shadow`.** Exercise representative PRs, including changes that span several groups, before enabling selection in your repository.
 
-See the [changelog](CHANGELOG.md) for release details and validation limits. Recorded evaluation replays validate the saved request contract; they do not establish production accuracy or CI savings for the new progressive analysis.
+The evaluation replay checks the current request and selection plumbing with self-authored mock choices. It does not test a live provider or establish Jev classification accuracy or CI savings. A false skip remains possible, so compare proposals with your own CI results before enforcing them.
 
 ## More examples and documentation
 
@@ -247,7 +260,7 @@ npm run check
 npm run eval:replay
 ```
 
-Tests use temporary Git repositories, mocked HTTP and the shipped bundles. Replay checks committed evaluation recordings without a key or network; see [evaluation details](docs/evaluation.md).
+Tests use temporary Git repositories, mocked HTTP and the shipped bundles. Evaluation replay uses self-authored mock choices without a key or network; see [evaluation details](docs/evaluation.md).
 
 Commit regenerated bundles with their sources. `npm run check:dist` checks reproducibility. The action and standalone analyzer include their dependency license notices.
 

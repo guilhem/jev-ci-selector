@@ -1,10 +1,10 @@
 # Existing jobs with prerequisites
 
-Copy and adapt the [workflow](.github/workflows/ci.yml). Task definitions are inline in its selector step; no other file or script is needed. Supply your normal Go/Helm setup and the consumer-owned e2e scripts before enabling it.
+Use the [describe-ci-jobs skill](../../skills/describe-ci-jobs/SKILL.md) to inspect your jobs before copying and adapting the [workflow](.github/workflows/ci.yml). Paste the resulting descriptions into its inline tasks. The skill runs during authoring, never in CI. Supply your normal Go/Helm setup and the consumer-owned e2e scripts before enabling it.
 
-The example applies selection by default. Set `mode: shadow` explicitly to observe. Its external-context opt-in authorizes transmission when `JEV_API_KEY` exists. The `v0.1.0` reference is the intended release target; use a published commit SHA for immutable pinning.
+The example applies selection by default. Set `mode: shadow` explicitly to observe. Its external-context opt-in authorizes sending the diff and descriptions when `JEV_API_KEY` exists. It uses moving `@main` after this change is merged; pin the resulting commit SHA for reproducible CI. No new release tag is assumed.
 
-The planning job executes no project code. Every task checks out `tested-sha`. The network and upgrade jobs retain `needs: [plan, build]`; `build` stays mandatory so it is available whenever either dependent task is selected. Descriptions and metadata references do not create dependency ordering.
+The planning job executes no project code. Every task checks out `tested-sha`. The network and upgrade jobs retain `needs: [plan, build]`; `build` stays mandatory so it is available whenever either dependent task is selected. Descriptions do not create dependency ordering.
 
 The final `ci-required` job runs even after failures, validates the plan and named output consistency, verifies the tested SHA, and requires every selected job to succeed. Make it required if using this complete template. Keep task IDs, forwarded outputs, jobs and the final gate's expected sets synchronized when adapting it.
 

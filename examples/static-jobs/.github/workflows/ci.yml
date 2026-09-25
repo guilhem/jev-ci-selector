@@ -31,14 +31,11 @@ jobs:
     steps:
       - name: Select CI tasks
         id: select
-        uses: guilhem/jev-ci-selector@v0.1.0
+        uses: guilhem/jev-ci-selector@main
         with:
           tasks: |
             build:
-              description: Runs the compiled Go package checks.
-              jobs:
-                - workflow: .github/workflows/ci.yml
-                  job: build
+              description: Builds all Go packages with go build ./...; Go source, imported packages, go.mod and go.sum are inputs. It does not run tests.
               always: true
               force_paths:
                 - .github/**
@@ -46,30 +43,21 @@ jobs:
                 - go.mod
                 - go.sum
             e2e_network:
-              description: Runs the network end-to-end checks.
-              jobs:
-                - workflow: .github/workflows/ci.yml
-                  job: e2e_network
+              description: Runs ci/e2e-network.sh after a successful build to check application network behavior. The script, services it invokes, and application code on that path are inputs; exact coverage depends on the consuming repository's script.
               force_paths:
                 - .github/**
                 - ci/**
                 - go.mod
                 - go.sum
             e2e_upgrade:
-              description: Runs the upgrade path checks.
-              jobs:
-                - workflow: .github/workflows/ci.yml
-                  job: e2e_upgrade
+              description: Runs ci/e2e-upgrade.sh after a successful build to check application upgrades. The script, migration inputs, and application code on that path are inputs; exact coverage depends on the consuming repository's script.
               force_paths:
                 - .github/**
                 - ci/**
                 - go.mod
                 - go.sum
             helm:
-              description: Runs Helm chart validation.
-              jobs:
-                - workflow: .github/workflows/ci.yml
-                  job: helm
+              description: Runs helm lint charts/* to validate chart templates, values and schema files; it does not execute application code.
               force_paths:
                 - .github/**
                 - ci/**
@@ -77,10 +65,7 @@ jobs:
                 - go.sum
                 - charts/**/values.schema.json
             lint:
-              description: Runs Go static-analysis checks.
-              jobs:
-                - workflow: .github/workflows/ci.yml
-                  job: lint
+              description: Runs go vet ./... over Go packages; Go source, imports and tool configuration are inputs. It does not run tests.
               always: true
               force_paths:
                 - .github/**
@@ -88,10 +73,7 @@ jobs:
                 - go.mod
                 - go.sum
             unit:
-              description: Runs package behavior tests.
-              jobs:
-                - workflow: .github/workflows/ci.yml
-                  job: unit
+              description: Runs go test ./... over Go package tests and the production code they exercise; Go dependencies and test configuration are inputs.
               always: true
               force_paths:
                 - .github/**

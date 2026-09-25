@@ -6,7 +6,6 @@
       "split": "calibration",
       "diff": "cases/library-normalization/diff.patch",
       "baseFiles": "cases/library-normalization/base",
-      "snapshot": "snapshots/generic-app",
       "expected": {
         "unit": {
           "relevance": "relevant",
@@ -30,11 +29,9 @@
         "repository": "synthetic/generic-app",
         "base": "3810f2a591f81c289bf195a1fdbe3edd2b2a805d",
         "head": "5349c6c688f4a856031f884340325eb5cb88a5f5",
-        "metadataCommit": "3810f2a591f81c289bf195a1fdbe3edd2b2a805d",
         "origin": "Authored from scratch for this public repository; no existing project sources or changes were used.",
         "scenario": "Normalize labels to lowercase.",
         "commits": "Locally generated fixture commits. These hashes are reproducible identities, not links to an external repository.",
-        "metadata": "Shared fictional trusted snapshot used for all cases; no claim of a historical workflow run.",
         "annotationSource": "Authored code-inspection labels frozen before model calls; not independently human-validated."
       }
     },
@@ -43,7 +40,6 @@
       "split": "calibration",
       "diff": "cases/button-keyboard/diff.patch",
       "baseFiles": "cases/button-keyboard/base",
-      "snapshot": "snapshots/generic-app",
       "expected": {
         "unit": {
           "relevance": "irrelevant",
@@ -67,11 +63,9 @@
         "repository": "synthetic/generic-app",
         "base": "a15f9022393d9e29243f31c3c7714b98c0deff03",
         "head": "724c3b38363b68f4218ccdf0a6a052491d8aa791",
-        "metadataCommit": "a15f9022393d9e29243f31c3c7714b98c0deff03",
         "origin": "Authored from scratch for this public repository; no existing project sources or changes were used.",
         "scenario": "Use a native focusable button.",
         "commits": "Locally generated fixture commits. These hashes are reproducible identities, not links to an external repository.",
-        "metadata": "Shared fictional trusted snapshot used for all cases; no claim of a historical workflow run.",
         "annotationSource": "Authored code-inspection labels frozen before model calls; not independently human-validated."
       }
     },
@@ -80,7 +74,6 @@
       "split": "calibration",
       "diff": "cases/schema-nullability/diff.patch",
       "baseFiles": "cases/schema-nullability/base",
-      "snapshot": "snapshots/generic-app",
       "expected": {
         "unit": {
           "relevance": "irrelevant",
@@ -104,11 +97,9 @@
         "repository": "synthetic/generic-app",
         "base": "f7ff8b8310ea154168797cc59383cfaf91cbb58d",
         "head": "a032b6ab7d1daa4fe7e03d9752774c57f5ee7469",
-        "metadataCommit": "f7ff8b8310ea154168797cc59383cfaf91cbb58d",
         "origin": "Authored from scratch for this public repository; no existing project sources or changes were used.",
         "scenario": "Require every note to have a title.",
         "commits": "Locally generated fixture commits. These hashes are reproducible identities, not links to an external repository.",
-        "metadata": "Shared fictional trusted snapshot used for all cases; no claim of a historical workflow run.",
         "annotationSource": "Authored code-inspection labels frozen before model calls; not independently human-validated."
       }
     },
@@ -117,7 +108,6 @@
       "split": "calibration",
       "diff": "cases/shared-install/diff.patch",
       "baseFiles": "cases/shared-install/base",
-      "snapshot": "snapshots/generic-app",
       "expected": {
         "unit": {
           "relevance": "relevant",
@@ -141,11 +131,9 @@
         "repository": "synthetic/generic-app",
         "base": "1f60d495439b0108bc023bd169a3bb029a1874be",
         "head": "6b7a3b386e82ceb96c66d81b430909f966bebff2",
-        "metadataCommit": "1f60d495439b0108bc023bd169a3bb029a1874be",
         "origin": "Authored from scratch for this public repository; no existing project sources or changes were used.",
         "scenario": "Change shared dependency installation and browser test tooling.",
         "commits": "Locally generated fixture commits. These hashes are reproducible identities, not links to an external repository.",
-        "metadata": "Shared fictional trusted snapshot used for all cases; no claim of a historical workflow run.",
         "annotationSource": "Authored code-inspection labels frozen before model calls; not independently human-validated."
       }
     },
@@ -154,7 +142,6 @@
       "split": "validation",
       "diff": "cases/api-pagination/diff.patch",
       "baseFiles": "cases/api-pagination/base",
-      "snapshot": "snapshots/generic-app",
       "expected": {
         "unit": {
           "relevance": "irrelevant",
@@ -178,11 +165,9 @@
         "repository": "synthetic/generic-app",
         "base": "86d45fa46bdc4425f86649b78c22e631800c45d1",
         "head": "ad4325dc1c1be9f43ffae277a30237f482f56563",
-        "metadataCommit": "86d45fa46bdc4425f86649b78c22e631800c45d1",
         "origin": "Authored from scratch for this public repository; no existing project sources or changes were used.",
         "scenario": "Add cursor pagination to the API contract.",
         "commits": "Locally generated fixture commits. These hashes are reproducible identities, not links to an external repository.",
-        "metadata": "Shared fictional trusted snapshot used for all cases; no claim of a historical workflow run.",
         "annotationSource": "Authored code-inspection labels frozen before model calls; not independently human-validated."
       }
     },
@@ -191,7 +176,6 @@
       "split": "validation",
       "diff": "cases/documentation-only/diff.patch",
       "baseFiles": "cases/documentation-only/base",
-      "snapshot": "snapshots/generic-app",
       "expected": {
         "unit": {
           "relevance": "irrelevant",
@@ -215,11 +199,9 @@
         "repository": "synthetic/generic-app",
         "base": "52d6ca8208b546e09ebb04eabd166730350664f4",
         "head": "0620003fbe03e5dbef03a08d276455ba5b4e2bd1",
-        "metadataCommit": "52d6ca8208b546e09ebb04eabd166730350664f4",
         "origin": "Authored from scratch for this public repository; no existing project sources or changes were used.",
         "scenario": "Clarify contribution prose without changing code or verification inputs.",
         "commits": "Locally generated fixture commits. These hashes are reproducible identities, not links to an external repository.",
-        "metadata": "Shared fictional trusted snapshot used for all cases; no claim of a historical workflow run.",
         "annotationSource": "Authored code-inspection labels frozen before model calls; not independently human-validated."
       }
     },
@@ -228,7 +210,6 @@
       "split": "validation",
       "diff": "cases/schema-unique-index/diff.patch",
       "baseFiles": "cases/schema-unique-index/base",
-      "snapshot": "snapshots/generic-app",
       "expected": {
         "unit": {
           "relevance": "irrelevant",
@@ -252,11 +233,9 @@
         "repository": "synthetic/generic-app",
         "base": "918154a6780904b3d83a70de6531156dc9a65d9f",
         "head": "ffe5efc9355c875b02bafab0132dd4affaf5145c",
-        "metadataCommit": "918154a6780904b3d83a70de6531156dc9a65d9f",
         "origin": "Authored from scratch for this public repository; no existing project sources or changes were used.",
         "scenario": "Enforce unique tag names.",
         "commits": "Locally generated fixture commits. These hashes are reproducible identities, not links to an external repository.",
-        "metadata": "Shared fictional trusted snapshot used for all cases; no claim of a historical workflow run.",
         "annotationSource": "Authored code-inspection labels frozen before model calls; not independently human-validated."
       }
     },
@@ -265,7 +244,6 @@
       "split": "validation",
       "diff": "cases/theme-spacing/diff.patch",
       "baseFiles": "cases/theme-spacing/base",
-      "snapshot": "snapshots/generic-app",
       "expected": {
         "unit": {
           "relevance": "irrelevant",
@@ -289,11 +267,9 @@
         "repository": "synthetic/generic-app",
         "base": "f8d9cd1d5bdbb3200effab935ae0b6b0582f26e4",
         "head": "340198cb44390ab6de4ae6a25c92fb644a2a4ba8",
-        "metadataCommit": "f8d9cd1d5bdbb3200effab935ae0b6b0582f26e4",
         "origin": "Authored from scratch for this public repository; no existing project sources or changes were used.",
         "scenario": "Adjust a large set of generated visual spacing utilities to exercise lossless partitioning.",
         "commits": "Locally generated fixture commits. These hashes are reproducible identities, not links to an external repository.",
-        "metadata": "Shared fictional trusted snapshot used for all cases; no claim of a historical workflow run.",
         "annotationSource": "Authored code-inspection labels frozen before model calls; not independently human-validated."
       }
     }

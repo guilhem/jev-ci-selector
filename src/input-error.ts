@@ -1,5 +1,5 @@
 const constraints = {
-  tasks: 'a YAML mapping of task objects with nonempty descriptions and valid optional job references, paths and booleans',
+  tasks: 'a YAML mapping of task objects containing only description (nonempty string), always (boolean) and force_paths (positive repository-relative globs); jobs, context_files and resolve_context_files are no longer supported',
   model: 'a canonical Jev version in the form jev-X.Y.Z',
   mode: 'one of "shadow" or "enforce"',
   'tested-ref': 'one of "head" or "merge"',

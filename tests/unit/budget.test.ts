@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { AnalysisBudget, ANALYSIS_BYTES, BudgetError, MIN_PREPARATION_CALLS, PATCH_UNIT_BYTES } from '../../src/budget.js';
+import { AnalysisBudget, ANALYSIS_BYTES, BudgetError, PATCH_UNIT_BYTES } from '../../src/budget.js';
 
 const budget = (overrides: Partial<ConstructorParameters<typeof AnalysisBudget>[0]> = {}) => new AnalysisBudget({
   maxCollectedPatchBytes: 1000, maxAnalysisBytes: 1000, maxJevCalls: 4,
@@ -10,9 +10,9 @@ const budget = (overrides: Partial<ConstructorParameters<typeof AnalysisBudget>[
 test('a reservation is debited before dispatch so concurrent callers cannot race past a limit', () => {
   const value = budget({ maxAnalysisBytes: 100, maxJevCalls: 8 });
   // Three "workers" reserve before any of them sends.
-  const first = value.reserve('observation', 40);
-  const second = value.reserve('observation', 40);
-  assert.throws(() => value.reserve('observation', 40), BudgetError);
+  const first = value.reserve(40);
+  const second = value.reserve(40);
+  assert.throws(() => value.reserve(40), BudgetError);
   assert.equal(value.counters.analysis_bytes, 0, 'nothing is counted as sent yet');
   first.commit(); second.commit();
   assert.equal(value.counters.analysis_bytes, 80);
@@ -21,37 +21,31 @@ test('a reservation is debited before dispatch so concurrent callers cannot race
 
 test('an unsent reservation is released, a dispatched one is not', () => {
   const value = budget({ maxAnalysisBytes: 100 });
-  const reservation = value.reserve('observation', 90);
+  const reservation = value.reserve(90);
   reservation.release();
   assert.equal(value.counters.analysis_bytes, 0);
-  value.reserve('observation', 90).commit();
+  value.reserve(90).commit();
   assert.equal(value.counters.analysis_bytes, 90);
-  const committed = value.reserve('observation', 10);
+  const committed = value.reserve(10);
   committed.commit();
   committed.release();
   assert.equal(value.counters.analysis_bytes, 100, 'a sent call is never refunded');
 });
 
-test('preparation draws on a sub-limit and cannot starve the decision', () => {
-  const value = budget({ maxAnalysisBytes: 1000, maxJevCalls: 4 });
-  value.reserve('preparation', 400).commit();
-  // Half the analysis allowance and half the calls are the preparation ceiling.
-  assert.throws(() => value.reserve('preparation', 200), BudgetError);
-  assert.equal(value.fits('observation', 200), true);
-  value.reserve('preparation', 100).commit();
-  assert.throws(() => value.reserve('preparation', 1), BudgetError);
-  assert.equal(value.counters.preparation_calls, 2);
-  assert.equal(value.counters.observation_calls, 0);
-  value.reserve('observation', 400).commit();
-  assert.equal(value.counters.jev_calls, 3);
-  assert.equal(value.counters.analysis_bytes, 900);
+test('all configured calls and bytes are available to analysis', () => {
+  const value = budget({ maxAnalysisBytes: 1000, maxJevCalls: 1 });
+  assert.equal(value.fits(1000), true);
+  value.reserve(1000).commit();
+  assert.equal(value.counters.jev_calls, 1);
+  assert.equal(value.counters.analysis_bytes, 1000);
+  assert.equal(value.fits(1), false);
 });
 
 test('the call ceiling counts dispatched calls whatever their outcome', () => {
   const value = budget({ maxJevCalls: 2, maxAnalysisBytes: 10_000 });
-  value.reserve('observation', 1).commit();
-  value.reserve('observation', 1).commit();
-  assert.throws(() => value.reserve('observation', 1), BudgetError);
+  value.reserve(1).commit();
+  value.reserve(1).commit();
+  assert.throws(() => value.reserve(1), BudgetError);
   assert.deepEqual(value.limitsReached, ['jev-calls']);
 });
 
@@ -90,28 +84,34 @@ test('limits and counters are validated and reported, never estimated', () => {
 
 test('asking whether a call fits records nothing', () => {
   const value = budget({ maxAnalysisBytes: 100, maxJevCalls: 1 });
-  assert.equal(value.fits('observation', 4096), false);
-  assert.equal(value.fits('observation', 10), true);
+  assert.equal(value.fits(4096), false);
+  assert.equal(value.fits(10), true);
   assert.deepEqual(value.limitsReached, [], 'a question is not a ceiling that was reached');
-  assert.throws(() => value.reserve('observation', 4096), BudgetError);
+  assert.throws(() => value.reserve(4096), BudgetError);
   assert.deepEqual(value.limitsReached, ['analysis-bytes'], 'an actual attempt is recorded');
 });
 
-test('context preparation needs at least two call slots to exist at all', () => {
-  const single = budget({ maxJevCalls: 1, maxAnalysisBytes: 10_000 });
-  assert.equal(single.fits('preparation', 10), false, 'its share floors to zero');
-  assert.equal(single.fits('observation', 10), true, 'the decision keeps the only slot');
-  assert.equal(MIN_PREPARATION_CALLS, 2);
-  const pair = budget({ maxJevCalls: MIN_PREPARATION_CALLS, maxAnalysisBytes: 10_000 });
-  assert.equal(pair.fits('preparation', 10), true);
+test('zero call and byte limits leave analysis unbounded', () => {
+  const value = budget({ maxJevCalls: 0, maxAnalysisBytes: 0 });
+  assert.equal(value.fits(10_000_000), true);
+  value.reserve(10_000_000).commit();
+  assert.equal(value.fits(10_000_000), true);
 });
 
-test('the default analysis budget leaves preparation room for a real repository', () => {
-  // Measured: a 250-file repository spends about 220 KB on one anchor's two
-  // passes. The default must not sit within a hair of that.
+test('the default analysis budget admits requests up to its configured ceiling', () => {
   const value = new AnalysisBudget({ maxCollectedPatchBytes: 1 << 20, maxAnalysisBytes: ANALYSIS_BYTES,
     maxJevCalls: 16, deadline: performance.now() + 1000 });
-  assert.equal(value.fits('preparation', 230_000), true, 'one anchor over a mid-sized repository fits');
-  value.reserve('preparation', 230_000).commit();
-  assert.equal(value.fits('preparation', 230_000), true, 'a second anchor still fits');
+  assert.equal(value.fits(ANALYSIS_BYTES), true);
+  value.reserve(ANALYSIS_BYTES).commit();
+  assert.equal(value.fits(1), false);
+});
+
+test('retries charge the attempts and bytes sent over the wire', () => {
+  const value = budget({ maxAnalysisBytes: 100, maxJevCalls: 3 });
+  value.reserve(30).commit({ attempts: 2, sentBytes: 60 });
+  assert.equal(value.counters.jev_calls, 2);
+  assert.equal(value.counters.attempts, 2);
+  assert.equal(value.counters.analysis_bytes, 60);
+  assert.equal(value.fits(40), true);
+  assert.equal(value.fits(41), false);
 });

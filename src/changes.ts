@@ -163,7 +163,6 @@ const stdoutBytesOf = (error: unknown): number =>
 const SHA_PATTERN = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i;
 const ZERO_SHA_PATTERN = /^(?:0{40}|0{64})$/;
 const utf8Decoder = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true });
-const MAX_FILE_BYTES = 1024 * 1024;
 const MAX_MANIFEST_ENTRIES = 50_000;
 const MAX_UNIT_PATHS = 256;
 const MAX_UNIT_PATHSPEC_BYTES = 64 * 1024;
@@ -415,34 +414,6 @@ export class GitRepository {
       if (!(await this.hasCommit(sha))) throw new GitCommandError('missing commit');
     } catch {
       throw new ChangeError('git-fetch-failed');
-    }
-  }
-
-  async listFiles(sha: string): Promise<string[]> {
-    this.ensureOpen();
-    if (!validSha(sha)) throw new ChangeError('git-read-failed');
-    try {
-      const output = await GitRepository.runGitFrom(this.repoPath, this.env,
-        ['ls-tree', '-r', '--name-only', '-z', sha], MAX_METADATA_BYTES);
-      const paths = utf8Decoder.decode(output).split('\0');
-      if (paths.pop() !== '' || paths.some(path => !validLiteralPath(path))) throw new Error('invalid-tree');
-      return paths.sort();
-    } catch { throw new ChangeError('git-read-failed'); }
-  }
-
-  async readFile(sha: string, path: string): Promise<Buffer> {
-    this.ensureOpen();
-    if (!validSha(sha) || !validLiteralPath(path)) throw new ChangeError('git-read-failed');
-    try {
-      if (!(await this.hasCommit(sha))) throw new GitCommandError('missing commit');
-      return await GitRepository.runGitFrom(
-        this.repoPath,
-        this.env,
-        ['cat-file', 'blob', `${sha}:${path}`],
-        MAX_FILE_BYTES,
-      );
-    } catch {
-      throw new ChangeError('git-read-failed');
     }
   }
 

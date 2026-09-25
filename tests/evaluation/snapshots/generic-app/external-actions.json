@@ -1,9 +1,0 @@
-{
-  "fixture-actions/database@v1": {
-    "repository": "fixture-actions/database",
-    "commit": "dddddddddddddddddddddddddddddddddddddddd",
-    "file": "action.yml",
-    "sha": "dddddddddddddddddddddddddddddddddddddddd",
-    "content": "name: Start disposable database\ndescription: Prepare a temporary SQL database for schema and migration checks.\ninputs:\n  engine:\n    description: SQL engine used for validation.\nruns:\n  using: node24\n  main: index.js\n"
-  }
-}

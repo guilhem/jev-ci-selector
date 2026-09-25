@@ -1,6 +1,4 @@
 import { InputError } from './input-error.js';
-import { resolveTasks, type ResolveTasksOptions, type ResolveTasksResult } from './metadata.js';
-import { externalActionResolver } from './external.js';
 import {
   ChangeError, GitRepository,
   type ChangeEntry, type ChangeManifest, type EntryIssueCode, type VerifiedComparison,
@@ -13,7 +11,6 @@ import {
   analyseChange, ObservationSizeError, PATCH_UNIT_LIMIT_REASON,
   type AnalysisOutcome, type Observation, type PatchDelivery, type PatchStream, type TaskState,
 } from './observations.js';
-import { resolveContextFiles, type ContextResolutionReport } from './context.js';
 import { evaluateChoices } from './jev.js';
 import { AnalysisBudget, BudgetError, PATCH_UNIT_BYTES, type BudgetCounters } from './budget.js';
 import { RateController } from './concurrency.js';
@@ -27,13 +24,12 @@ export interface Inputs extends JevApiOptions, SelectionDefinition {
   maxCollectedPatchBytes: number;
   /** Ceiling for the sum of complete request JSON sent to Jev. */
   maxAnalysisBytes: number;
-  /** Ceiling for dispatched Jev calls, preparation and observation together. */
+  /** Ceiling for dispatched Jev calls, inventory and diff analysis together. */
   maxJevCalls: number;
 }
 export interface Context {
   eventName: string; repository: string; serverUrl: string; testedSha: string;
   baseSha: string; headSha: string; fork: boolean;
-  metadataSha?: string;
 }
 const object = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null && !Array.isArray(value);
 const sha = (value: unknown): value is string => typeof value === 'string' && /^[a-f0-9]{40}$/.test(value);
@@ -54,13 +50,11 @@ export function eventContext(env: NodeJS.ProcessEnv, event: unknown, testedRef: 
   return { eventName, repository, serverUrl: url.origin, testedSha: testedRef === 'head' ? head.sha : testedSha, baseSha: base.sha, headSha: head.sha, fork };
 }
 
-type Repository = Pick<GitRepository, 'fetchCommit' | 'readFile' | 'listFiles' | 'verifyComparison' | 'collectManifest' | 'readPatch' | 'dispose'>;
+type Repository = Pick<GitRepository, 'fetchCommit' | 'verifyComparison' | 'collectManifest' | 'readPatch' | 'dispose'>;
 export interface PlannerDependencies {
   createRepository?: (options: { remoteUrl: string; token?: string }) => Promise<Repository>;
   evaluate?: typeof evaluateJev;
-  evaluateContext?: typeof evaluateChoices;
   evaluateInventory?: typeof evaluateChoices;
-  resolveExternal?: ResolveTasksOptions['resolveExternal'];
 }
 
 export function validateInputs(inputs: Inputs): void {
@@ -89,7 +83,6 @@ const ISSUE_REASONS: Record<EntryIssueCode, Reason> = {
 const EMPTY_COUNTERS: BudgetCounters = {
   manifest_entries: null, patches_requested: 0, patches_read: 0,
   patch_bytes_read: 0, patch_bytes_delivered: 0,
-  preparation_calls: 0, preparation_bytes: 0, observation_calls: 0, observation_bytes: 0,
   jev_calls: 0, analysis_bytes: 0, attempts: 0, limits_reached: [],
 };
 
@@ -190,61 +183,22 @@ function patchStream(
   };
 }
 
-/**
- * Tasks still worth analysing.
- *
- * Both metadata resolution and context preparation can settle a task by making
- * it mandatory when its evidence is unusable. `enforce` therefore re-filters
- * after each of those steps. `shadow` keeps every task so evaluation campaigns
- * still see a proposal.
- */
-function stillOpen(taskIds: readonly string[], resolved: ResolveTasksResult, mode: Mode): string[] {
-  if (mode === 'shadow') return [...taskIds];
-  return taskIds.filter(id => !resolved.metadata.tasks[id]?.incomplete && resolved.selection.tasks[id]?.always !== true);
-}
-
-/** Raised when preparation settled every remaining task. Never an error. */
-class NothingLeftToAnalyse extends Error {}
-
-/** Keep only the tasks worth resolving; the rest never reach a file read. */
-function restrict(configured: SelectionDefinition, taskIds: readonly string[]): SelectionDefinition {
-  const keep = new Set(taskIds);
-  return { model: configured.model, tasks: Object.fromEntries(Object.entries(configured.tasks).filter(([id]) => keep.has(id))) };
-}
-
-function plainSelection(inputs: Inputs, taskIds?: readonly string[]): ResolveTasksResult['selection'] {
-  const keep = taskIds ? new Set(taskIds) : null;
-  return { model: inputs.model,
-    tasks: Object.fromEntries(Object.entries(inputs.tasks).filter(([id]) => !keep || keep.has(id)).map(([id, task]) => [id, {
-      ...(task.always === undefined ? {} : { always: task.always }),
-      ...(task.force_paths === undefined ? {} : { force_paths: task.force_paths }),
-      evidence: { description: task.description },
-    }])) };
-}
-
 export async function planChange(inputs: Inputs, context: Context, dependencies: PlannerDependencies = {}) {
   validateInputs(inputs);
   if (inputs.testedRef === 'head' && context.eventName === 'pull_request') context = { ...context, testedSha: context.headSha };
-  const configured: SelectionDefinition = { model: inputs.model, tasks: inputs.tasks };
+  const selection: SelectionDefinition = { model: inputs.model, tasks: inputs.tasks };
   const api = resolveJevApi(inputs);
   const started = performance.now();
-  // `timeout-ms` keeps its historical meaning: the shared deadline for context
-  // preparation and evaluation. It therefore starts once the comparison is
+  // The shared analysis deadline starts once the comparison is
   // verified and the inventory is built, so a slow fetch cannot silently eat
   // the analysis allowance. Git commands keep their own separate timeouts.
   let budget: AnalysisBudget | undefined;
-  const metadataSha = context.metadataSha ?? context.baseSha;
   let forced: ForceAllReason | undefined;
   if (context.eventName !== 'pull_request') forced = { status: 'bypassed', code: 'non-pull-request' };
   else if (inputs.forceAll) forced = { status: 'bypassed', code: 'force-all' };
   else if (context.fork) forced = { status: 'bypassed', code: 'fork' };
   else if (!inputs.apiKey.trim()) forced = { status: 'bypassed', code: 'missing-api-key' };
   else if (!inputs.allowExternalContext) forced = { status: 'bypassed', code: 'external-context-disabled' };
-  // Bypasses need only validated task definitions: no project files or metadata reads.
-  let resolved: ResolveTasksResult = {
-    selection: plainSelection(inputs),
-    metadata: { repository: context.repository, commit: metadataSha, tasks: {} }, workingDirectories: [],
-  };
   let repository: Repository | undefined;
   try {
     let manifest: ChangeManifest | undefined;
@@ -276,7 +230,7 @@ export async function planChange(inputs: Inputs, context: Context, dependencies:
       }
       if (manifest && repository) {
         // The deterministic rules run before a single byte of content is read.
-        const preselection = preselectTasks(plainSelection(inputs), manifest.changedPaths);
+        const preselection = preselectTasks(selection, manifest.changedPaths);
         // `enforce` never spends anything on a task whose execution is already
         // settled, nor anything at all once a global protection applies.
         // `shadow` keeps observing every task so evaluation campaigns still see
@@ -285,41 +239,8 @@ export async function planChange(inputs: Inputs, context: Context, dependencies:
         analysisTaskIds = inputs.mode === 'shadow'
           ? [...preselection.required, ...preselection.candidates].sort()
           : forced ? [] : preselection.candidates;
-        if (analysisTaskIds.length) {
-          let metadataAvailable = true;
-          const scoped = restrict(configured, analysisTaskIds);
-          if (metadataSha !== context.baseSha && Object.values(scoped.tasks).some(task => task.jobs?.length || task.context_files?.length || task.resolve_context_files === true)) {
-            try { await repository.fetchCommit(metadataSha); }
-            catch (error) {
-              if (!(error instanceof ChangeError)) throw error;
-              metadataAvailable = false;
-            }
-          }
-          const activeRepository = repository;
-          const scopedResolution = await resolveTasks(scoped, {
-            repository: context.repository, commit: metadataSha,
-            readFile: (commit, path) => {
-              if (!metadataAvailable) throw new ChangeError('git-fetch-failed');
-              return activeRepository.readFile(commit, path);
-            },
-            resolveExternal: dependencies.resolveExternal ?? externalActionResolver(context.serverUrl, inputs.githubToken),
-          });
-          resolved = {
-            ...scopedResolution,
-            // Unanalysed tasks keep their plain definition: they are already
-            // required, so nothing was read on their behalf.
-            selection: { model: scopedResolution.selection.model,
-              tasks: { ...plainSelection(inputs).tasks, ...scopedResolution.selection.tasks } },
-          };
-          // Resolving metadata can itself settle a task: unusable evidence makes
-          // it mandatory. Asking Jev about it would spend budget on a decision
-          // that can no longer change, and would record an analysis state that
-          // contradicts the effective plan.
-          analysisTaskIds = stillOpen(analysisTaskIds, resolved, inputs.mode);
-        }
       }
     }
-    const selection = resolved.selection;
     const requestedModel = api.model ?? selection.model;
     const collectionMs = performance.now() - started;
     let decisions: Record<string, boolean | null> | undefined;
@@ -332,25 +253,17 @@ export async function planChange(inputs: Inputs, context: Context, dependencies:
     let observation: Observation | null = null;
     let changesRead = 0;
     let meterReport: WindowReport | null = null;
-    let contextResolution: ContextResolutionReport = {};
     if (manifest && repository && budget && analysisTaskIds.length) {
       const activeBudget = budget;
-      // One controller for preparation and observation together: a burst in one
+      // One controller for inventory and diff analysis together: a burst in one
       // must not cause rate limiting the other pays for.
       const rate = new RateController();
       const meter = new TokenMeter();
       meterReport = meter.report;
       const callStarted = performance.now();
       try {
-        contextResolution = await resolveContextFiles({ configured: restrict(configured, analysisTaskIds), resolved,
-          repository, commit: metadataSha, apiKey: inputs.apiKey, deadline: activeBudget.limits.deadline, budget: activeBudget, rate,
-          apiBaseUrl: api.baseURL, apiModel: requestedModel }, dependencies.evaluateContext ?? evaluateChoices);
-        // Preparation can settle a task too: an incomplete context makes it
-        // mandatory. Drop it before a single patch byte is collected.
-        analysisTaskIds = stillOpen(analysisTaskIds, resolved, inputs.mode);
-        if (!analysisTaskIds.length) throw new NothingLeftToAnalyse();
         const outcome: AnalysisOutcome = await analyseChange({
-          selection, taskIds: analysisTaskIds, workingDirectories: resolved.workingDirectories,
+          selection, taskIds: analysisTaskIds,
           changeIds: manifest.entries.map(entry => entry.id),
           // Names, statuses and modes only. A task the paths alone already
           // implicate is settled before any content is read.
@@ -372,36 +285,17 @@ export async function planChange(inputs: Inputs, context: Context, dependencies:
         metadata = outcome;
         observationError = outcome.failure;
       } catch (error) {
-        // Every remaining task became mandatory during preparation: stopping is
-        // the correct outcome, not a failure.
-        if (error instanceof NothingLeftToAnalyse) { /* Nothing left to observe. */ }
-        else if (error instanceof ObservationSizeError) {
+        if (error instanceof ObservationSizeError) {
           observationError = error.code;
           forced ??= { status: 'fallback', code: error.code };
         } else throw error;
       } finally {
         jevMs = performance.now() - callStarted;
-        const calls = Object.values(contextResolution).flatMap(job => job.passes.flatMap(pass => pass.calls));
-        const usages = [metadata.usage, ...calls.map(call => call.usage)].filter(value => value !== null);
-        metadata.usage = usages.length ? usages.reduce((total, usage) => ({ input_tokens: total.input_tokens + usage.input_tokens,
-          output_tokens: total.output_tokens + usage.output_tokens }), { input_tokens: 0, output_tokens: 0 }) : null;
-        metadata.model ??= calls.find(call => call.model !== null)?.model ?? null;
       }
     }
     const plan = selectTasks({ selection, changedPaths: manifest?.changedPaths ?? [], ...(decisions ? { decisions } : {}),
       ...(coverage ? { coverage } : {}), ...(taskErrors ? { taskErrors } : {}),
       ...(observationError ? { observationError } : {}), mode: inputs.mode, ...(forced ? { forceAllReason: forced } : {}) });
-    for (const [id, info] of Object.entries(resolved.metadata.tasks)) {
-      if (!info.incomplete) continue;
-      if (!configured.tasks[id]?.always) plan.tasks[id]!.reasons = plan.tasks[id]!.reasons.filter(reason => reason !== 'always');
-      const contextIncomplete = info.missing.some(item => item.startsWith('context-resolution:'));
-      plan.tasks[id]!.reasons.push(contextIncomplete ? 'context-resolution-incomplete' : 'metadata-unavailable');
-      // Unusable metadata retains a task for want of evidence just as an
-      // incomplete context does. Both are degraded outcomes, so both report
-      // `fallback`; leaving one as `planned` would announce a scope of `none`
-      // while a task was in fact being kept.
-      if (plan.status === 'planned') plan.status = 'fallback';
-    }
     if (observation?.strategy === 'chunked-diff') {
       for (const id of analysisTaskIds) plan.tasks[id]!.reasons.push('chunked-observation');
     }
@@ -409,10 +303,7 @@ export async function planChange(inputs: Inputs, context: Context, dependencies:
       for (const id of analysisTaskIds) plan.tasks[id]!.reasons.push('observation-only');
     }
     const counters: BudgetCounters = budget?.counters ?? EMPTY_COUNTERS;
-    // A partial fallback names the tasks kept for missing evidence, read from
-    // their explicit reasons. `proposed_run` cannot serve here: a task made
-    // mandatory by unusable metadata still carries a proposal of true, so it
-    // would disappear from a fallback it is precisely the cause of.
+    // A partial fallback names tasks kept because their evidence was incomplete.
     const retained = Object.keys(plan.tasks)
       .filter(id => plan.tasks[id]!.reasons.some(reason => FALLBACK_REASONS.has(reason))).sort();
     // Every task gets a state, including those settled before any analysis, so
@@ -420,14 +311,11 @@ export async function planChange(inputs: Inputs, context: Context, dependencies:
     const states: Record<string, TaskState> = Object.fromEntries(Object.keys(plan.tasks).sort().map(id => [id,
       taskStates[id] ?? (retained.includes(id) ? 'fallback-run' : plan.tasks[id]!.run ? 'settled-run' : 'settled-skip')]));
     const report: Report = {
-      version: 8, tested_ref: inputs.testedRef ?? 'merge', context_resolution: contextResolution,
+      version: 9, tested_ref: inputs.testedRef ?? 'merge',
       diff_base_sha: manifest?.comparison.diffBaseSha ?? (inputs.testedRef === 'head' ? null : context.baseSha),
-      job_metadata: resolved.metadata.tasks, observation_error: observationError ?? null,
-      metadata_sha: metadataSha, base_sha: context.baseSha, head_sha: context.headSha, tested_sha: context.testedSha,
-      selection_hash: selectionHash(configured),
-      // No global diff is built, so the historical whole-diff fields stay null
-      // rather than being filled by a read nothing else needed.
-      diff_hash: null, diff_bytes: null,
+      observation_error: observationError ?? null,
+      base_sha: context.baseSha, head_sha: context.headSha, tested_sha: context.testedSha,
+      selection_hash: selectionHash(selection),
       changed_path_count: manifest?.changedPaths.length ?? null,
       manifest: {
         complete: manifest?.complete ?? false,

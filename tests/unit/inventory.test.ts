@@ -33,8 +33,8 @@ function request(coarse: (call: CoarseCall) => unknown, overrides: Partial<Analy
   let delivered = false;
   return {
     selection: { model: 'jev-1.13.0', tasks: {
-      alpha: { evidence: { description: 'Checks alpha.' } },
-      beta: { evidence: { description: 'Checks beta.' } },
+      alpha: { description: 'Checks alpha.' },
+      beta: { description: 'Checks beta.' },
     } },
     taskIds: ['alpha', 'beta'],
     changeIds: inventory.map(entry => entry.id),
@@ -90,7 +90,7 @@ test('inventory questions are batched within the request limit on every page', a
   const inventory = entries(600);
   const taskIds = Array.from({ length: 200 }, (_, index) => `task_${index}`);
   const selection = { model: 'jev-1.13.0', tasks: Object.fromEntries(taskIds.map(id =>
-    [id, { evidence: { description: `Checks ${id}.` } }])) };
+    [id, { description: `Checks ${id}.` }])) };
   const pages = new Map<string, string[]>();
   let calls = 0;
   const outcome = await analyseChange(request(call => {
@@ -120,7 +120,7 @@ test('inventory questions are batched within the request limit on every page', a
 test('an oversized single inventory question is never dispatched or charged', async () => {
   const input = request(() => assert.fail('an oversized request must not be sent'), {
     selection: { model: 'jev-1.13.0', tasks: {
-      alpha: { evidence: { description: 'x'.repeat(REQUEST_BYTES) } },
+      alpha: { description: 'x'.repeat(REQUEST_BYTES) },
     } },
     taskIds: ['alpha'],
   });

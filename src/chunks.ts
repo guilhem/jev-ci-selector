@@ -365,32 +365,11 @@ function parseDiff(value: string, lines: DiffLine[]): DiffFile[] {
   return files;
 }
 
-function normalizeDirectory(value: string): string | undefined {
-  const normalized = value.replace(/^\.\//u, '').replace(/\/+$/u, '');
-  if (normalized === '') return '.';
-  if (normalized === '.' || normalized.includes('\0')) return normalized === '.' ? '.' : undefined;
-  if (normalized.split('/').some(part => part === '' || part === '..')) return undefined;
-  return normalized;
-}
-
-function isUnder(path: string, directory: string): boolean {
-  return directory === '.' || path === directory || path.startsWith(`${directory}/`);
-}
-
 function treeDirectory(path: string): string {
   const slash = path.lastIndexOf('/');
   const directory = slash < 0 ? '.' : path.slice(0, slash);
   const first = directory.indexOf('/');
   return first < 0 ? directory : directory.slice(0, first);
-}
-
-function assignGroupKeys(files: DiffFile[], workingDirectories: string[] | undefined): void {
-  const hints = [...new Set((workingDirectories ?? []).map(normalizeDirectory).filter((value): value is string => value !== undefined))]
-    .sort((left, right) => right.length - left.length || left.localeCompare(right));
-  for (const file of files) {
-    const hint = hints.find(directory => file.paths.some(path => isUnder(path, directory)));
-    file.groupKey = hint === undefined ? `tree:${treeDirectory(file.paths[0]!)}` : `workdir:${hint}`;
-  }
 }
 
 function continuationContext(lines: DiffLine[], file: DiffFile, startLine: number): string {
@@ -447,11 +426,10 @@ function chunkPaths(files: DiffFile[], first: number, last: number): string[] {
 
 /**
  * Partition a valid Git patch into deterministic, contiguous source ranges.
- * Complete files are grouped when they share a nearby tree or working-directory
- * hint. A file larger than the budget is split only at complete line boundaries,
+ * Complete files are grouped when they share a nearby tree. A file larger than the budget is split only at complete line boundaries,
  * preferring hunk boundaries and repeating identifying headers as context.
  */
-export function splitDiff(diff: string, maxBytes: number, workingDirectories?: string[]): DiffChunk[] {
+export function splitDiff(diff: string, maxBytes: number): DiffChunk[] {
   if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) {
     throw new ChunkError('invalid-budget', 'maxBytes must be a positive safe integer.');
   }
@@ -459,7 +437,7 @@ export function splitDiff(diff: string, maxBytes: number, workingDirectories?: s
   if (diff.length === 0) return [{ diff: '', context: '', startByte: 0, endByte: 0, paths: [] }];
   const lines = linesOf(diff, offsets);
   const files = parseDiff(diff, lines);
-  assignGroupKeys(files, workingDirectories);
+  for (const file of files) file.groupKey = `tree:${treeDirectory(file.paths[0]!)}`;
 
   const chunks: DiffChunk[] = [];
   let fileIndex = 0;

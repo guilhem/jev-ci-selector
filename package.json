@@ -11,9 +11,7 @@
     "analyze:shadow": "node dist/analyze-shadow.mjs",
     "typecheck": "tsc --noEmit",
     "test": "tsx --test tests/unit/*.test.ts tests/integration/*.test.ts",
-    "eval:replay": "./node_modules/.bin/tsx tests/evaluation/runner.ts replay",
-    "eval:live": "./node_modules/.bin/tsx tests/evaluation/runner.ts live",
-    "eval:context": "node --import tsx tests/evaluation/context-resolution.ts",
+    "eval:replay": "node --import tsx tests/evaluation/runner.ts replay",
     "check": "npm run typecheck && npm test && npm run check:dist"
   },
   "dependencies": {

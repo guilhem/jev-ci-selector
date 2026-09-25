@@ -4,20 +4,13 @@ import { createHash } from 'node:crypto';
 import schema from '../schemas/tasks.schema.json';
 import { InputError } from './input-error.js';
 
-export interface JobReference { workflow: string; job?: string }
 export interface TaskDefinition {
   description: string;
-  jobs?: JobReference[];
-  context_files?: string[];
-  resolve_context_files?: boolean;
   always?: boolean;
   force_paths?: string[];
 }
 export type TaskDefinitions = Record<string, TaskDefinition>;
 export interface SelectionDefinition { model: string; tasks: TaskDefinitions }
-export interface TaskEvidence { description: string; [key: string]: unknown }
-export interface ResolvedTask { always?: boolean; force_paths?: string[]; evidence: TaskEvidence }
-export interface ResolvedSelection { model: string; tasks: Record<string, ResolvedTask> }
 
 const validateSchema = new Ajv({ allErrors: true, strict: true }).compile<TaskDefinitions>(schema);
 const reservedIds = new Set(schema.definitions.taskId.not.enum.map(id => id.toLowerCase()));
@@ -46,20 +39,6 @@ export function validateSelection(value: unknown): asserts value is SelectionDef
   validateTasks(value.tasks);
 }
 
-export function validateResolvedSelection(value: unknown): asserts value is ResolvedSelection {
-  if (!record(value) || !record(value.tasks) || Object.keys(value).some(key => !['model', 'tasks'].includes(key))) throw new InputError('tasks');
-  validateSettings(value);
-  validateIds(value.tasks);
-  const definitions: Record<string, unknown> = {};
-  for (const [id, task] of Object.entries(value.tasks)) {
-    if (!record(task) || Object.keys(task).some(key => !['always', 'force_paths', 'evidence'].includes(key)) || !record(task.evidence)) throw new InputError('tasks');
-    definitions[id] = { description: task.evidence.description,
-      ...(task.always === undefined ? {} : { always: task.always }),
-      ...(task.force_paths === undefined ? {} : { force_paths: task.force_paths }) };
-  }
-  validateTasks(definitions);
-}
-
 export function parseTasks(source: string): TaskDefinitions {
   try {
     if (!source.trim()) throw new InputError('tasks');
@@ -67,8 +46,7 @@ export function parseTasks(source: string): TaskDefinitions {
     if (document.errors.length || document.warnings.length) throw new InputError('tasks');
     const value: unknown = document.toJS({ maxAliasCount: 0 });
     validateTasks(value);
-    return Object.fromEntries(Object.entries(value).map(([id, task]) => [id, { ...task, always: task.always ?? false,
-      resolve_context_files: task.resolve_context_files ?? false }]));
+    return Object.fromEntries(Object.entries(value).map(([id, task]) => [id, { ...task, always: task.always ?? false }]));
   } catch { throw new InputError('tasks'); }
 }
 
@@ -86,7 +64,6 @@ function canonical(value: unknown): unknown {
 }
 
 export function selectionHash(selection: SelectionDefinition): string {
-  const tasks = Object.fromEntries(Object.entries(selection.tasks).map(([id, task]) => [id, { ...task, always: task.always ?? false,
-    resolve_context_files: task.resolve_context_files ?? false }]));
+  const tasks = Object.fromEntries(Object.entries(selection.tasks).map(([id, task]) => [id, { ...task, always: task.always ?? false }]));
   return createHash('sha256').update(JSON.stringify(canonical({ model: selection.model, tasks }))).digest('hex');
 }

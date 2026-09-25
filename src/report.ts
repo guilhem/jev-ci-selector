@@ -3,7 +3,6 @@ import schema from '../schemas/report.schema.json';
 import type { Observation } from './observations.js';
 import type { ExecutionPlan } from './policy.js';
 import type { Usage } from './jev.js';
-import type { ContextResolutionReport } from './context.js';
 import type { BudgetCounters } from './budget.js';
 import type { TaskState } from './observations.js';
 import type { WindowReport } from './window.js';
@@ -41,14 +40,11 @@ export interface ReportAnalysis extends BudgetCounters {
 }
 
 export interface Report {
-  version: 8;
-  metadata_sha: string;
+  version: 9;
   base_sha: string;
   head_sha: string;
   tested_sha: string;
   selection_hash: string;
-  diff_hash: string | null;
-  diff_bytes: number | null;
   changed_path_count: number | null;
   manifest: ReportManifest;
   analysis: ReportAnalysis;
@@ -59,11 +55,9 @@ export interface Report {
   tasks: ExecutionPlan['tasks'];
   tested_ref: 'head' | 'merge';
   diff_base_sha: string | null;
-  job_metadata: Record<string, unknown>;
   observation_error: string | null;
   model: { requested: string; expected: string; returned: string | null };
   observation: Observation | null;
-  context_resolution: ContextResolutionReport;
 }
 const validate = new Ajv({ strict: true }).compile(schema);
 export function validateReport(value: unknown): asserts value is Report {
@@ -96,8 +90,7 @@ function analysisSummary(report: Report): string[] {
       + ` over ${analysis.patches_read}/${analysis.patches_requested} patch unit(s);`
       + ` ${analysis.patch_bytes_read} byte(s) read, ${analysis.patch_bytes_delivered} delivered.`,
     '',
-    `Inference: ${analysis.jev_calls} call(s) and ${analysis.analysis_bytes} request byte(s)`
-      + ` (preparation ${analysis.preparation_calls}/${analysis.preparation_bytes}, observation ${analysis.observation_calls}/${analysis.observation_bytes}).`,
+    `Inference: ${analysis.jev_calls} call(s) and ${analysis.analysis_bytes} request byte(s).`,
     '',
     `Analysed: ${analysis.analysed_tasks.map(markdown).join(', ') || '—'};`
       + ` required without analysis: ${analysis.required_without_analysis.map(markdown).join(', ') || '—'}.`,
@@ -131,35 +124,6 @@ function observationSummary(observation: Observation | null): string[] {
   ];
 }
 
-function contextResolutionSummary(contextResolution: ContextResolutionReport): string[] {
-  const entries = Object.entries(contextResolution).sort(([left], [right]) => left.localeCompare(right));
-  if (!entries.length) return ['Context resolution: not-run (disabled or bypassed).'];
-  const rows = entries.map(([anchor, resolution]) => {
-    const visibleSources = resolution.sources.slice(0, 20).map(source => markdown(source.path));
-    const sourceSummary = `${resolution.sources.length} file(s): ${visibleSources.join(', ') || '—'}${resolution.sources.length > visibleSources.length ? ` (+${resolution.sources.length - visibleSources.length} more)` : ''}`;
-    const passSummary = resolution.passes.map(pass => {
-      const visibleCalls = pass.calls.slice(0, 12).map(call => {
-        const usage = call.usage ? ` ${call.usage.input_tokens}/${call.usage.output_tokens} tokens` : '';
-        const duration = call.duration_ms === null ? '' : ` ${call.duration_ms}ms`;
-        const error = call.error ? ` ${markdown(call.error)}` : '';
-        return `${markdown(call.status)}/${call.request_hash.slice(0, 12)}${error}${usage}${duration}`;
-      });
-      const omitted = pass.calls.length > visibleCalls.length ? ` (+${pass.calls.length - visibleCalls.length} more)` : '';
-      return `p${pass.index}: ${pass.calls.length} request(s) [${visibleCalls.join('; ') || '—'}]${omitted}`;
-    }).join('; ') || '—';
-    return `| ${markdown(anchor)} | ${markdown(resolution.status)} | ${sourceSummary} | ${passSummary} | ${markdown(resolution.error ?? '—')} |`;
-  });
-  return [
-    `Context resolution: ${entries.length} workflow/job group(s).`,
-    '',
-    '| Workflow/job | Status | Selected files | Preparation passes (requests, status/error, hash, usage, time) | Error |',
-    '| --- | --- | --- | --- | --- |',
-    ...rows,
-    '',
-    'Context evidence includes selected paths and request hashes only; file contents, diffs, judgments and probabilities are omitted.',
-  ];
-}
-
 export function summary(report: Report): string {
   const rows = Object.entries(report.tasks).sort(([a], [b]) => a.localeCompare(b)).map(([id, task]) =>
     `| ${markdown(id)} | ${task.run ? 'Run' : 'Skip'} | ${task.proposed_run === null ? '—' : task.proposed_run ? 'Run' : 'Skip'} | ${task.reasons.map(markdown).join(', ')} |`);
@@ -170,7 +134,6 @@ export function summary(report: Report): string {
     '<details>', '<summary>Selection details</summary>', '',
     `Tested commit: \`${markdown(report.tested_sha)}\``, '',
     ...analysisSummary(report), '',
-    ...contextResolutionSummary(report.context_resolution), '',
     ...observationSummary(report.observation), '',
     'Jev judgments guide selection; they do not guarantee test outcomes.', '',
     '</details>', '',
