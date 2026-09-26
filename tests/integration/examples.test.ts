@@ -54,7 +54,7 @@ function planEnv(tasks: string[], selected: string[], result: string = 'success'
   const needs: Record<string, { result: string; outputs?: Record<string, string> }> = {
     plan: { result, outputs: Object.fromEntries(tasks.map(task => [task, String(run[task])])) },
   };
-  for (const task of tasks) needs[task] = { result: selected.includes(task) ? 'success' : 'skipped' };
+  for (const task of tasks) needs[task] = { result: selected.includes(task) || ['build', 'lint', 'unit'].includes(task) ? 'success' : 'skipped' };
   return {
     EXPECTED_TASKS: tasks.join(','),
     EXPECTED_DEPENDENCIES: 'e2e_network=build;e2e_upgrade=build',
@@ -132,7 +132,7 @@ test('example tasks and workflow job IDs have one stable contract', () => {
     const selector = jobs.plan.steps.find((step: Record<string, unknown>) => step.id === 'select') as Record<string, any>;
     assert.equal(selector.if, undefined);
     assert.equal(selector.uses, 'guilhem/jev-ci-selector@main');
-    assert.equal(selector.with.mode, undefined, 'integrated examples use enforce by default');
+    assert.equal(selector.with.mode, undefined, 'the mode input has been removed');
     assert.equal(selector.with['api-key'], '${{ secrets.JEV_API_KEY }}');
     assert.equal(selector.with['allow-external-context'], 'true');
     assert.ok(typeof selector.with.tasks === 'string');
@@ -152,12 +152,12 @@ test('example tasks and workflow job IDs have one stable contract', () => {
         const needs = Array.isArray(jobs[task].needs) ? jobs[task].needs : [jobs[task].needs];
         assert.ok(needs.includes('plan'), `${task} must depend on plan`);
         assert.equal(jobs.plan.outputs[task], `\${{ steps.select.outputs.${task} }}`);
-        assert.match(String(jobs[task].if), new RegExp(`needs\\.plan\\.outputs\\.${task} == ['"]true['"]`));
+        if (['build', 'lint', 'unit'].includes(task)) assert.doesNotMatch(String(jobs[task].if), /outputs/);
+        else assert.match(String(jobs[task].if), new RegExp(`needs\\.plan\\.outputs\\.${task} == ['"]true['"]`));
         assert.doesNotMatch(String(jobs[task].if), /fromJSON\(needs\.plan\.outputs\.run\)/);
       }
       assert.match(jobs['ci-required'].env.NEEDS_JSON, /toJSON\(needs\)/);
-      assert.equal(definitions.lint!.always, true);
-      assert.equal(definitions.build!.always, true);
+      for (const definition of Object.values(definitions)) assert.deepEqual(Object.keys(definition), ['description']);
       for (const task of ['e2e_network', 'e2e_upgrade']) {
         assert.deepEqual(jobs[task].needs, ['plan', 'build']);
         assert.match(jobs[task].if, /needs.build.result == 'success'/);
@@ -214,13 +214,22 @@ test('static ci-required rejects planner, plan-shape, selected-job, and dependen
   assert.notEqual(runGate(workflow, selectedSkipped).status, 0, 'a selected skipped job must fail the gate');
 
   const dependency = planEnv(tasks, ['e2e_network']);
-  assert.notEqual(runGate(workflow, dependency).status, 0, 'a selected e2e job without its build must fail the gate');
+  assert.equal(runGate(workflow, dependency).status, 0, 'the caller runs a prerequisite even when the selector excludes it');
+  const failedDependency = JSON.parse(dependency.NEEDS_JSON);
+  failedDependency.build.result = 'failure';
+  dependency.NEEDS_JSON = JSON.stringify(failedDependency);
+  assert.notEqual(runGate(workflow, dependency).status, 0, 'a selected e2e job with a failed build must fail the gate');
 
-  assert.notEqual(runGate(workflow, planEnv(tasks, [])).status, 0, 'static mandatory tasks cannot all be skipped');
+  assert.equal(runGate(workflow, planEnv(tasks, [])).status, 0, 'the caller runs mandatory jobs even when all selector outputs are false');
+  const mandatorySkipped = planEnv(tasks, []);
+  const missingMandatory = JSON.parse(mandatorySkipped.NEEDS_JSON);
+  missingMandatory.lint.result = 'skipped';
+  mandatorySkipped.NEEDS_JSON = JSON.stringify(missingMandatory);
+  assert.notEqual(runGate(workflow, mandatorySkipped).status, 0, 'a skipped mandatory job must fail the gate');
 
   const fallbackSelective = planEnv(tasks, ['build', 'lint', 'unit']);
   fallbackSelective.PLAN_STATUS = 'fallback';
-  assert.notEqual(runGate(workflow, fallbackSelective).status, 0, 'fallback must select every task');
+  assert.equal(runGate(workflow, fallbackSelective).status, 0, 'task-level fallback preserves other complete exclusions');
 
   const invalidBoolean = planEnv(tasks, ['build', 'lint', 'unit']);
   invalidBoolean.PLAN_RUN = JSON.stringify({ ...JSON.parse(invalidBoolean.PLAN_RUN), helm: 'false' });
@@ -288,7 +297,7 @@ test('shadow observer is isolated from consumer CI jobs', () => {
   assert.equal(selector.id, 'select');
   assert.equal(selector.uses, 'guilhem/jev-ci-selector@main');
   assert.equal(selector.if, undefined);
-  assert.equal(selector.with.mode, 'shadow');
+  assert.equal(selector.with.mode, undefined);
   assert.equal(selector.with['allow-external-context'], 'true');
   assertReportUpload(workflow, job);
   assert.ok(job.steps.every((step: Record<string, any>) => !step.run && !String(step.uses).startsWith('actions/checkout@')));
@@ -327,10 +336,24 @@ test('README quickstart has two jobs and valid inline tasks', () => {
   const selection = workflow.jobs.selection;
   assert.equal(selection.steps.length, 1);
   assert.deepEqual(taskIds(parseTasks(selection.steps[0].with.tasks)), ['unit']);
-  assert.equal(selection.steps[0].with.mode, 'shadow');
+  assert.equal(selection.steps[0].with.mode, undefined);
+  assert.equal(selection.if, "${{ github.ref != 'refs/heads/main' }}");
   assert.equal(selection.outputs.unit, '${{ steps.select.outputs.unit }}');
   assert.equal(selection.outputs['tested-sha'], '${{ steps.select.outputs.tested-sha }}');
   assert.equal(workflow.jobs.unit.needs, 'selection');
-  assert.equal(workflow.jobs.unit.if, "${{ needs.selection.outputs.unit == 'true' }}");
-  assert.equal(workflow.jobs.unit.steps[0].with.ref, '${{ needs.selection.outputs.tested-sha }}');
+  assert.equal(workflow.jobs.unit.if, "${{ !cancelled() && (github.ref == 'refs/heads/main' || (needs.selection.result == 'success' && needs.selection.outputs.unit == 'true')) }}");
+  assert.equal(workflow.jobs.unit.steps[0].with.ref, "${{ github.ref == 'refs/heads/main' && github.sha || needs.selection.outputs.tested-sha }}");
+  // A status function prevents GitHub's implicit success() guard on skipped needs.
+  const expression = workflow.jobs.unit.if.slice(3, -2);
+  for (const [ref, result, output, cancelled, expected] of [
+    ['refs/heads/main', 'skipped', '', false, true],
+    ['refs/pull/1/merge', 'success', 'true', false, true],
+    ['refs/pull/1/merge', 'success', 'false', false, false],
+    ['refs/pull/1/merge', 'failure', 'true', false, false],
+    ['refs/pull/1/merge', 'skipped', '', false, false],
+    ['refs/heads/main', 'skipped', '', true, false],
+  ]) {
+    assert.equal(vm.runInNewContext(expression, { cancelled: () => cancelled, github: { ref },
+      needs: { selection: { result, outputs: { unit: output } } } }), expected);
+  }
 });

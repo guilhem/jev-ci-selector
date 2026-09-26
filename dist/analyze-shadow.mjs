@@ -6885,7 +6885,7 @@ import { pathToFileURL } from "node:url";
 // schemas/report.schema.json
 var report_schema_default = {
   $schema: "http://json-schema.org/draft-07/schema#",
-  title: "jev-ci-selector source-free report v9",
+  title: "jev-ci-selector source-free report v10",
   type: "object",
   additionalProperties: false,
   required: [
@@ -6895,7 +6895,6 @@ var report_schema_default = {
     "tested_sha",
     "selection_hash",
     "changed_path_count",
-    "mode",
     "status",
     "model",
     "durations_ms",
@@ -6910,7 +6909,7 @@ var report_schema_default = {
   ],
   properties: {
     version: {
-      const: 9
+      const: 10
     },
     base_sha: {
       $ref: "#/definitions/sha"
@@ -6927,12 +6926,6 @@ var report_schema_default = {
         "null"
       ],
       minimum: 0
-    },
-    mode: {
-      enum: [
-        "shadow",
-        "enforce"
-      ]
     },
     status: {
       enum: [
@@ -7025,17 +7018,11 @@ var report_schema_default = {
             uniqueItems: true,
             items: {
               enum: [
-                "always",
-                "path-match",
                 "jev-independent",
                 "jev-not-independent",
-                "shadow-mode",
-                "force-all",
-                "protected-path",
                 "fork",
                 "missing-api-key",
                 "external-context-disabled",
-                "non-pull-request",
                 "git-fetch-failed",
                 "git-read-failed",
                 "sha-incoherent",
@@ -7054,7 +7041,6 @@ var report_schema_default = {
                 "jev-payment-required",
                 "context-too-large",
                 "chunked-observation",
-                "observation-only",
                 "observation-incomplete"
               ]
             }
@@ -7075,7 +7061,8 @@ var report_schema_default = {
     tested_ref: {
       enum: [
         "head",
-        "merge"
+        "merge",
+        "push"
       ]
     },
     diff_base_sha: {
@@ -7629,7 +7616,7 @@ var report_schema_default = {
 var validate = new import_ajv.default({ strict: true }).compile(report_schema_default);
 var object = (value) => value !== null && typeof value === "object" && !Array.isArray(value);
 function analyzeShadow(report, results) {
-  if (!validate(report) || report.mode !== "shadow" || !object(results) || results.tested_sha !== report.tested_sha || !object(results.tasks)) {
+  if (!validate(report) || !object(results) || results.tested_sha !== report.tested_sha || !object(results.tasks)) {
     throw new Error("invalid-shadow-measurement");
   }
   const ids = Object.keys(report.tasks).sort();
@@ -7643,7 +7630,6 @@ function analyzeShadow(report, results) {
   for (const id of ids) {
     const actual = results.tasks[id];
     if (!object(actual) || !["success", "failure", "cancelled", "skipped"].includes(actual.result) || !Number.isFinite(actual.duration_ms) || actual.duration_ms < 0 || actual.classification !== void 0 && !Object.hasOwn(missed, actual.classification)) throw new Error("invalid-task-result");
-    if (report.tasks[id].run !== true) throw new Error("invalid-shadow-effective-selection");
     if (report.tasks[id].proposed_run === false) {
       avoided.push(id);
       avoidedDurationMs += actual.duration_ms;

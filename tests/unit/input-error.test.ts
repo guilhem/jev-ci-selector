@@ -35,12 +35,12 @@ test('API input errors use a safe code and distinguish URL and model', () => {
 });
 
 test('planner identifies invalid inputs before repository access', async () => {
-  const inputs: Inputs = { model: 'jev-1.13.0', tasks: {}, mode: 'shadow', githubToken: '', apiKey: '',
-    allowExternalContext: false, forceAll: false, timeoutMs: 1000,
+  const inputs: Inputs = { model: 'jev-1.13.0', tasks: {}, githubToken: '', apiKey: '',
+    allowExternalContext: false, timeoutMs: 1000,
     maxCollectedPatchBytes: 1024 * 1024, maxAnalysisBytes: 512 * 1024, maxJevCalls: 16 };
   for (const [override, field] of [
     [{ tasks: { invalid: {} } }, 'tasks'], [{ model: 'SECRET-SENTINEL' }, 'model'],
-    [{ mode: 'SECRET-SENTINEL' }, 'mode'], [{ testedRef: 'SECRET-SENTINEL' }, 'tested-ref'],
+    [{ mode: 'SECRET-SENTINEL' }, 'mode'], [{ forceAll: false }, 'force-all'], [{ testedRef: 'SECRET-SENTINEL' }, 'tested-ref'],
     [{ timeoutMs: 2147483648 }, 'timeout-ms'], [{ timeoutMs: -1 }, 'timeout-ms'],
     [{ maxCollectedPatchBytes: Number.MAX_SAFE_INTEGER + 1 }, 'max-collected-patch-bytes'],
     [{ maxCollectedPatchBytes: 1.5 }, 'max-collected-patch-bytes'],

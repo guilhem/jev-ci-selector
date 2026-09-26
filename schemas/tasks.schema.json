@@ -37,15 +37,6 @@
         ]
       }
     },
-    "paths": {
-      "type": "array",
-      "uniqueItems": true,
-      "items": {
-        "type": "string",
-        "minLength": 1,
-        "pattern": "^(?![!/])(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\u0000).+$"
-      }
-    },
     "task": {
       "type": "object",
       "additionalProperties": false,
@@ -57,13 +48,6 @@
           "type": "string",
           "minLength": 1,
           "pattern": "\\S"
-        },
-        "always": {
-          "type": "boolean"
-        },
-        "force_paths": {
-          "$ref": "#/definitions/paths",
-          "description": "A matching path forces this task to run."
         }
       }
     }

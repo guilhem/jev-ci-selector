@@ -24,7 +24,6 @@ interface MockChoiceCase {
   name: string;
   choices: Record<string, 'required' | 'independent' | 'unresolved'>;
   coverage: Record<string, boolean>;
-  changedPaths: string[];
   expectedRun: Record<string, boolean>;
 }
 
@@ -69,7 +68,7 @@ export async function replayMockChoices(root: string): Promise<{ checked: number
       assert.ok(['required', 'independent', 'unresolved'].includes(choice), item.name);
       return [id, choice === 'required' ? true : choice === 'independent' ? false : null];
     }));
-    const plan = selectTasks({ selection, changedPaths: item.changedPaths, decisions, coverage: item.coverage, mode: 'enforce' });
+    const plan = selectTasks({ selection, decisions, coverage: item.coverage });
     assert.deepEqual(plan.run, item.expectedRun, item.name);
     for (const [id, run] of Object.entries(plan.run)) {
       if (!run) {

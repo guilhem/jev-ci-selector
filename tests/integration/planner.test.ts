@@ -14,16 +14,16 @@ import { RateController } from '../../src/concurrency.js';
 const CONCURRENCY_CEILING = new RateController().ceiling;
 import { patch } from '../fixtures/diff.js';
 
-const inputs: Inputs = { ...routingSelection(), mode: 'enforce', githubToken: 'github-private', apiKey: 'typesafe-private',
-  allowExternalContext: true, forceAll: false, timeoutMs: 1000,
+const inputs: Inputs = { ...routingSelection(), githubToken: 'github-private', apiKey: 'typesafe-private',
+  allowExternalContext: true, timeoutMs: 1000,
   maxCollectedPatchBytes: 1024 * 1024, maxAnalysisBytes: 512 * 1024, maxJevCalls: 16 };
 const context: Context = { eventName: 'pull_request', repository: 'acme/example', serverUrl: 'https://github.com',
   baseSha: 'a'.repeat(40), headSha: 'b'.repeat(40), testedSha: 'c'.repeat(40), fork: false };
 const customApi = { apiBaseUrl: 'https://opencode.ai/zen/', apiModel: 'jev-1.13-free' };
 function routingSelection(): SelectionDefinition {
   const result: SelectionDefinition = { model: 'jev-1.13.0', tasks: {
-    unit: { description: 'Does this change affect unit checks?', always: true },
-    helm: { description: 'Does this change affect chart rendering?', force_paths: ['charts/**'] },
+    unit: { description: 'Does this change affect unit checks?' },
+    helm: { description: 'Does this change affect chart rendering?' },
     e2e: { description: 'Does this change affect network routing?' },
     build: { description: 'Does this change affect compilation?' },
     prepare: { description: 'Does this change affect generated files?' },
@@ -45,7 +45,7 @@ function fixture(options: {
     createRepository: async () => ({
       fetchCommit: async sha => { calls.fetch.push(sha); },
       verifyComparison: async params => {
-        calls.collect++; assert.equal(params.testedSha, context.testedSha);
+        calls.collect++; assert.equal(params.testedSha, params.testedRef === 'push' ? params.headSha : context.testedSha);
         if (options.failure) throw options.failure;
         return { baseSha: params.baseSha, headSha: params.headSha, diffBaseSha: params.baseSha,
           testedSha: params.testedSha, testedRef: params.testedRef ?? 'merge' } satisfies VerifiedComparison;
@@ -86,7 +86,7 @@ function fixture(options: {
     evaluate: async request => {
       calls.evaluate++; assert.equal(request.selection.model, 'jev-1.13.0');
       if (options.jevFailure) throw options.jevFailure;
-      return { answers: Object.fromEntries(request.taskIds.map(id => [id, judgment()])), model: 'jev-1.13.0', usage: { input_tokens: 100, output_tokens: 20 } };
+      return { answers: Object.fromEntries(request.taskIds.map(id => [id, judgment(id === 'unit' ? 'required' : 'independent')])), model: 'jev-1.13.0', usage: { input_tokens: 100, output_tokens: 20 } };
     },
   };
   return { calls, dependencies };
@@ -94,14 +94,14 @@ function fixture(options: {
 
 test('planner uses descriptions and the tested diff, with a source-free report and stable outputs', async () => {
   const { calls, dependencies } = fixture();
-  const { plan, report } = await planChange({ ...inputs, mode: 'shadow' }, context, dependencies);
-  // shadow keeps observing every task, so the coarse pass does not run there.
+  const { plan, report } = await planChange({ ...inputs }, context, dependencies);
+  // All tasks enter the regular inventory and content analysis.
   assert.deepEqual(calls, { fetch: [context.baseSha],
-    collect: 1, evaluate: 1, dispose: 1, patches: 1, coarse: 0 });
+    collect: 1, evaluate: 1, dispose: 1, patches: 1, coarse: 1 });
   assert.equal(report.tested_sha, context.testedSha);
-  assert.equal(report.version, 9); assert.ok(report.observation);
+  assert.equal(report.version, 10); assert.ok(report.observation);
   assert.deepEqual(report.model, { requested: 'jev-1.13.0', expected: 'jev-1.13.0', returned: 'jev-1.13.0' });
-  assert.equal(report.tasks.helm!.proposed_run, false); assert.equal(report.tasks.helm!.run, true);
+  assert.equal(report.tasks.helm!.proposed_run, false); assert.equal(report.tasks.helm!.run, false);
   assert.ok(!JSON.stringify(report).includes('SENTINEL'));
   assert.ok(!JSON.stringify(report).includes(inputs.apiKey));
   const outputs = actionOutputs(plan, context.testedSha, '/tmp/report.json');
@@ -109,19 +109,18 @@ test('planner uses descriptions and the tested diff, with a source-free report a
   assert.deepEqual(Object.keys(JSON.parse(outputs.run!)), ['build', 'e2e', 'helm', 'prepare', 'unit']);
 });
 
-test('Choice reaches the SDK with only the supplied descriptions and preserves enforce, shadow, protected paths and incomplete fallback', async () => {
-  for (const scenario of ['enforce', 'shadow', 'workflow', 'missing'] as const) {
+test('workflow-file changes receive regular Choice analysis and incomplete answers retain tasks', async () => {
+  for (const scenario of ['regular', 'workflow', 'missing'] as const) {
     const f = fixture({ paths: scenario === 'workflow' ? ['.github/workflows/ci.yml'] : ['source.txt'] });
-    const configured = { ...inputs, mode: scenario === 'shadow' ? 'shadow' as const : 'enforce' as const };
-    const { plan, report } = await planChange(configured, context, {
+    const { plan, report } = await planChange(inputs, context, {
       ...f.dependencies,
       evaluate: request => evaluateJev(request, async (_url, init) => {
         const body = JSON.parse(init!.body as string);
         const task = body.questions.helm.instructions.task;
         assert.equal(body.questions.helm.type, 'choice');
-        assert.deepEqual(task, { description: configured.tasks.helm!.description });
+        assert.deepEqual(task, { description: inputs.tasks.helm!.description });
         for (const [id, question] of Object.entries(body.questions)) {
-          assert.deepEqual((question as { instructions: { task: unknown } }).instructions.task, { description: configured.tasks[id]!.description });
+          assert.deepEqual((question as { instructions: { task: unknown } }).instructions.task, { description: inputs.tasks[id]!.description });
         }
         return Response.json({ model: 'jev-1.13.0', usage: { input_tokens: 10, output_tokens: 2 },
           answers: Object.fromEntries(Object.keys(body.questions).filter(id => scenario !== 'missing' || id !== 'prepare').map(id => {
@@ -132,23 +131,21 @@ test('Choice reaches the SDK with only the supplied descriptions and preserves e
       }),
     });
     for (const retired of ['metadata_sha', 'job_metadata', 'context_resolution', 'diff_hash', 'diff_bytes']) assert.ok(!Object.hasOwn(report, retired));
-    if (scenario === 'enforce') {
-      assert.deepEqual(plan.run, { build: true, e2e: true, helm: false, prepare: false, unit: true });
+    if (scenario !== 'missing') {
+      assert.deepEqual(plan.run, { build: true, e2e: true, helm: false, prepare: false, unit: false });
       assert.deepEqual(report.tasks.helm!.reasons, ['jev-independent']);
       assert.deepEqual(report.tasks.e2e!.reasons, ['jev-not-independent']);
       assert.equal(report.observation!.chunks[0]!.judgments!.e2e!.choice, 'unresolved');
       assert.match(summary(report), /e2e=unresolved/);
     } else assert.ok(Object.values(plan.run).every(Boolean), scenario);
     if (scenario === 'missing') assert.equal(plan.status, 'fallback');
-    if (scenario === 'workflow') assert.equal(plan.status, 'bypassed');
-    if (scenario === 'shadow') assert.equal(report.tasks.helm!.proposed_run, false);
   }
 });
 test('custom API selection reports the sent alias and pinned version and falls back on a version change', async () => {
-  for (const mode of ['shadow', 'enforce'] as const) for (const returnedModel of ['jev-1.13.0', 'jev-1.13.1']) {
+  for (const returnedModel of ['jev-1.13.0', 'jev-1.13.1']) {
     const f = fixture();
     let requests = 0;
-    const { plan, report } = await planChange({ ...inputs, ...customApi, mode }, context, {
+    const { plan, report } = await planChange({ ...inputs, ...customApi }, context, {
       ...f.dependencies,
       evaluate: request => evaluateJev(request, async (url, init) => {
         requests++;
@@ -161,15 +158,15 @@ test('custom API selection reports the sent alias and pinned version and falls b
       }),
     });
     assert.equal(requests, 1);
-    const mixedModels = mode === 'enforce' && returnedModel !== 'jev-1.13.0';
+    const mixedModels = returnedModel !== 'jev-1.13.0';
     assert.deepEqual(report.model, { requested: customApi.apiModel, expected: 'jev-1.13.0',
       returned: mixedModels ? null : returnedModel });
     assert.equal(report.observation!.chunks[0]!.model, returnedModel);
     assert.equal(plan.status, returnedModel === 'jev-1.13.0' ? 'planned' : 'fallback');
-    assert.equal(plan.tasks.helm!.run, mode === 'shadow' || returnedModel !== 'jev-1.13.0');
+    assert.equal(plan.tasks.helm!.run, returnedModel !== 'jev-1.13.0');
     if (returnedModel !== 'jev-1.13.0') {
       assert.ok(Object.values(plan.run).every(Boolean));
-      assert.deepEqual(plan.tasks.helm!.reasons, mode === 'shadow' ? ['invalid-response', 'shadow-mode'] : ['invalid-response']);
+      assert.deepEqual(plan.tasks.helm!.reasons, ['invalid-response']);
     }
   }
 });
@@ -182,30 +179,23 @@ test('invalid API configuration fails before repository or API access', async ()
     assert.equal(repositories, 0);
   }
 });
-test('explicit bypasses never collect diff or call Jev; invalid tasks still block', async () => {
+test('safety bypasses never collect diff or call Jev; invalid tasks still block', async () => {
   const cases: [Partial<Inputs>, Partial<Context>, string][] = [
-    [{ forceAll: true }, {}, 'force-all'], [{ apiKey: '' }, {}, 'missing-api-key'],
+    [{ apiKey: '' }, {}, 'missing-api-key'],
     [{ allowExternalContext: false }, {}, 'external-context-disabled'], [{}, { fork: true }, 'fork'],
-    [{}, { eventName: 'push' }, 'non-pull-request'], [{}, { eventName: 'schedule' }, 'non-pull-request'],
-    [{}, { eventName: 'merge_group' }, 'non-pull-request'],
   ];
-  for (const mode of ['shadow', 'enforce'] as const) for (const api of [{}, customApi]) for (const [inputOverride, contextOverride, reason] of cases) {
+  for (const api of [{}, customApi]) for (const [inputOverride, contextOverride, reason] of cases) {
     const { calls, dependencies } = fixture();
-    const { plan, report } = await planChange({ ...inputs, ...api, ...inputOverride, mode }, { ...context, ...contextOverride }, dependencies);
+    const { plan, report } = await planChange({ ...inputs, ...api, ...inputOverride }, { ...context, ...contextOverride }, dependencies);
     assert.ok(Object.values(plan.run).every(Boolean)); assert.ok(plan.tasks.helm!.reasons.includes(reason as never));
+    assert.equal(calls.collect, 0); assert.equal(calls.evaluate, 0); assert.equal(calls.fetch.length, 0);
     assert.equal(report.model.returned, null); assert.equal(report.usage, null); assert.equal(report.durations_ms.jev, null);
   }
   const invalid = fixture();
-  await assert.rejects(planChange({ ...inputs, tasks: { bad: {} } as never, forceAll: true }, context, invalid.dependencies));
+  await assert.rejects(planChange({ ...inputs, tasks: { bad: {} } as never }, context, invalid.dependencies));
   assert.equal(invalid.calls.dispose, 0); assert.equal(invalid.calls.evaluate, 0);
 });
-test('workflow edits retain protection even on binary changes', async () => {
-  for (const options of [{ paths: ['.github/workflows/ci.yml'] }, { failure: new ChangeError('binary-change', ['.github/workflows/ci.yml', 'asset.bin']) }]) {
-    const f = fixture(options);
-    const { plan } = await planChange(inputs, context, f.dependencies);
-    assert.equal(plan.status, 'bypassed');
-  }
-});
+
 test('collection and Jev failures globally fall back; internal failures block', async () => {
   for (const failure of [new ChangeError('diff-too-large'), new ChangeError('sha-incoherent'), new ChangeError('binary-change'), new ChangeError('git-fetch-failed')]) {
     const f = fixture({ failure });
@@ -221,32 +211,7 @@ test('collection and Jev failures globally fall back; internal failures block', 
   await assert.rejects(planChange(inputs, context, fixture({ failure: new Error('internal defect') }).dependencies));
   await assert.rejects(planChange(inputs, context, fixture({ jevFailure: new Error('internal defect') }).dependencies));
 });
-test('a fully deterministic selection costs nothing in enforce and is still observed in shadow', async () => {
-  const value = routingSelection(); value.tasks = { unit: { ...value.tasks.unit!, always: true } };
 
-  // Every task is already required, so enforce reads no patch and calls Jev
-  // zero times. Only the change manifest is built.
-  const enforce = fixture();
-  const enforced = await planChange({ ...inputs, ...value }, context, enforce.dependencies);
-  assert.equal(enforced.plan.status, 'planned');
-  assert.equal(enforced.plan.run.unit, true);
-  assert.equal(enforce.calls.evaluate, 0);
-  assert.equal(enforce.calls.patches, 0);
-  assert.equal(enforce.calls.collect, 1);
-  assert.equal(enforced.report.observation, null);
-  assert.equal(enforced.report.analysis.jev_calls, 0);
-  assert.equal(enforced.report.analysis.patch_bytes_read, 0);
-  assert.equal(enforced.report.analysis.changes_read, 0);
-  assert.deepEqual(enforced.report.analysis.analysed_tasks, []);
-  assert.deepEqual(enforced.report.analysis.required_without_analysis, ['unit']);
-  assert.equal(enforced.report.manifest.complete, true);
-
-  // Shadow keeps proposing, so evaluation campaigns still see a judgment.
-  const shadow = fixture();
-  const observed = await planChange({ ...inputs, ...value, mode: 'shadow' }, context, shadow.dependencies);
-  assert.equal(shadow.calls.evaluate, 1);
-  assert.equal(observed.report.tasks.unit!.proposed_run, true);
-});
 test('event snapshots are immutable, strict and conservatively identify forks', () => {
   const env = { GITHUB_EVENT_NAME: 'pull_request', GITHUB_REPOSITORY: context.repository, GITHUB_SHA: context.testedSha };
   const repo = { full_name: context.repository, id: 1 };
@@ -259,43 +224,46 @@ test('event snapshots are immutable, strict and conservatively identify forks', 
   assert.equal(nonPr.baseSha, context.testedSha);
 });
 
-test('shadow observes configured force paths, per-task force paths, and always tasks with questions', async () => {
-  const taskSelection = routingSelection();
-  taskSelection.tasks.helm!.force_paths = ['source.txt'];
-  const task = fixture();
-  const taskIds: string[] = [];
-  const taskEvaluate = task.dependencies.evaluate!;
-  const taskResult = await planChange({ ...inputs, ...taskSelection, mode: 'shadow' }, context, {
-    ...task.dependencies,
-    evaluate: async request => { taskIds.push(...request.taskIds); return taskEvaluate(request); },
-  });
-  assert.ok(taskIds.includes('helm'));
-  assert.equal(taskResult.plan.status, 'planned');
-  assert.ok(taskResult.plan.tasks.helm!.reasons.includes('path-match'));
-
-  const alwaysSelection = routingSelection();
-  alwaysSelection.tasks.unit = { ...alwaysSelection.tasks.unit!, always: true };
-  const always = fixture();
-  const alwaysTaskIds: string[] = [];
-  const alwaysEvaluate = always.dependencies.evaluate!;
-  const alwaysResult = await planChange({ ...inputs, ...alwaysSelection, mode: 'shadow' }, context, {
-    ...always.dependencies,
-    evaluate: async request => { alwaysTaskIds.push(...request.taskIds); return alwaysEvaluate(request); },
-  });
-  assert.ok(alwaysTaskIds.includes('unit'));
-  assert.equal(alwaysResult.plan.tasks.unit!.run, true);
+test('push uses event before and after, independently of PR tested-ref input', async () => {
+  const push = eventContext({ GITHUB_EVENT_NAME: 'push', GITHUB_REPOSITORY: context.repository, GITHUB_SHA: context.headSha },
+    { before: context.baseSha, after: context.headSha });
+  assert.equal(push.baseSha, context.baseSha);
+  assert.equal(push.headSha, context.headSha);
+  for (const testedRef of ['head', 'merge'] as const) {
+    const f = fixture();
+    const { plan, report } = await planChange({ ...inputs, testedRef }, push, f.dependencies);
+    assert.equal(plan.status, 'planned');
+    assert.equal(plan.run.helm, false);
+    assert.equal(f.calls.evaluate, 1);
+    assert.equal(report.tested_ref, 'push');
+    assert.equal(report.diff_base_sha, context.baseSha);
+    assert.equal(report.tested_sha, context.headSha);
+  }
 });
 
-test('enforce groups large observations', async () => {
-  const enforce = fixture({ diff: patch(1600) });
-  const enforced = await planChange(inputs, context, enforce.dependencies);
-  assert.ok(enforce.calls.evaluate > 1);
-  assert.equal(enforced.report.observation?.strategy, 'chunked-diff');
-  assert.ok(enforced.report.observation!.chunks.length > 1);
+test('events without usable comparison refs retain all tasks without treating the range as empty', async () => {
+  for (const eventName of ['push', 'schedule', 'merge_group', 'workflow_dispatch']) {
+    const f = fixture();
+    const snapshot = eventContext({ GITHUB_EVENT_NAME: eventName, GITHUB_REPOSITORY: context.repository, GITHUB_SHA: context.headSha }, {});
+    const { plan } = await planChange(inputs, snapshot, f.dependencies);
+    assert.equal(plan.status, 'fallback');
+    assert.ok(Object.values(plan.run).every(Boolean));
+    assert.deepEqual(plan.tasks.helm!.reasons, ['sha-incoherent']);
+    assert.equal(f.calls.collect, 0);
+    assert.equal(f.calls.evaluate, 0);
+  }
+});
+
+test('planner groups large observations', async () => {
+  const f = fixture({ diff: patch(1600) });
+  const { report } = await planChange(inputs, context, f.dependencies);
+  assert.ok(f.calls.evaluate > 1);
+  assert.equal(report.observation?.strategy, 'chunked-diff');
+  assert.ok(report.observation!.chunks.length > 1);
 
 });
 
-test('chunked shadow observation retains raw judgments and proposes a task when any chunk requires it', async () => {
+test('chunked observation retains raw judgments and proposes a task when any chunk requires it', async () => {
   const f = fixture({ diff: patch(1600) });
   const evaluate = async (request: Parameters<NonNullable<PlannerDependencies['evaluate']>>[0]) => {
     const state = request.state as { chunk?: { index: number } };
@@ -303,35 +271,11 @@ test('chunked shadow observation retains raw judgments and proposes a task when 
     return { answers: Object.fromEntries(request.taskIds.map(id => [id, answer])),
       model: 'jev-1.13.0', usage: { input_tokens: 5, output_tokens: 2 } };
   };
-  const { plan, report } = await planChange({ ...inputs, mode: 'shadow' }, context, { ...f.dependencies, evaluate });
+  const { plan, report } = await planChange({ ...inputs }, context, { ...f.dependencies, evaluate });
   assert.equal(report.observation?.strategy, 'chunked-diff');
   assert.ok(report.observation?.chunks.some(chunk => chunk.judgments?.prepare?.choice === 'required'));
   assert.equal(plan.tasks.prepare!.proposed_run, true);
 });
-
-test('a protected path costs nothing in enforce and still records its reasons', async () => {
-  const f = fixture({ paths: ['.github/workflows/ci.yml', 'charts/values.yml'], jevFailure: new JevError('jev-timeout') });
-  const { plan, report } = await planChange(inputs, context, f.dependencies);
-  assert.equal(plan.status, 'bypassed');
-  assert.equal(f.calls.evaluate, 0);
-  assert.equal(f.calls.patches, 0);
-  assert.equal(report.observation, null);
-  assert.equal(report.observation_error, null);
-  assert.ok(plan.tasks.helm!.reasons.includes('protected-path'));
-  assert.ok(plan.tasks.helm!.reasons.includes('path-match'));
-  assert.ok(plan.tasks.unit!.reasons.includes('always'));
-});
-
-test('a protected path is still observed in shadow, without changing effective outputs', async () => {
-  const f = fixture({ paths: ['.github/workflows/ci.yml', 'charts/values.yml'], jevFailure: new JevError('jev-timeout') });
-  const { plan, report } = await planChange({ ...inputs, mode: 'shadow' }, context, f.dependencies);
-  assert.equal(plan.status, 'bypassed');
-  assert.ok(Object.values(plan.run).every(Boolean));
-  assert.equal(report.observation_error, 'jev-timeout');
-  assert.equal(report.observation?.status, 'incomplete');
-  assert.ok(plan.tasks.helm!.reasons.includes('observation-only'));
-});
-
 
 test('description-only selection needs no metadata and can exclude a task', async () => {
   const f = fixture();

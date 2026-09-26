@@ -1,20 +1,17 @@
 name: jev-ci-selector
-description: Select CI tasks from their verification scope using deterministic rules and Jev.
+description: Select CI tasks from their verification scope using Jev.
 branding:
   icon: filter
   color: purple
 inputs:
   tasks:
-    description: YAML mapping of task IDs to objects with a required description and optional always and force_paths.
+    description: YAML mapping of task IDs to objects with a required description.
     required: true
   model:
     description: Canonical Jev model version expected in the response.
     default: jev-1.13.0
-  mode:
-    description: shadow preserves all effective tasks; enforce applies the proposal.
-    default: enforce
   tested-ref:
-    description: Commit tested by the consumer; merge uses the tested merge commit and head uses the PR head with a verified merge-base diff.
+    description: PR commit tested by the consumer; merge uses the tested merge commit and head uses the PR head with a verified merge-base diff. Pushes compare before to after.
     default: merge
   pull-request:
     description: For workflow_dispatch, evaluate this open PR using the selected workflow revision. Requires pull-requests read permission.
@@ -34,9 +31,6 @@ inputs:
   allow-external-context:
     description: Explicit permission to send the diff and task descriptions to the configured API.
     default: 'false'
-  force-all:
-    description: Bypass optimization immediately.
-    default: 'false'
   timeout-ms:
     description: Deadline for analysis after comparison and change inventory. 0 means none, leaving the job's own timeout-minutes to bound the run; a step killed that way publishes no report, so set this if you want a graceful fallback instead.
     default: '0'
@@ -50,7 +44,7 @@ inputs:
     description: Optional ceiling on analysis API calls dispatched for one run, failures included. 0 means none.
     default: '0'
 # Every task also publishes a dynamic output named after its ID.
-# Values are the effective 'true'/'false' strings (all true in shadow/bypass/fallback).
+# Values are the effective 'true'/'false' strings (safety failures retain affected tasks).
 outputs:
   run:
     description: JSON map from every task ID to its effective boolean.

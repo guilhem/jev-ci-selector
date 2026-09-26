@@ -5,35 +5,30 @@
       "name": "complete independent choices allow omission",
       "choices": { "unit": "independent", "ui": "independent", "schema": "independent", "api": "independent" },
       "coverage": { "unit": true, "ui": true, "schema": true, "api": true },
-      "changedPaths": ["library/src/normalize.mjs"],
       "expectedRun": { "unit": false, "ui": false, "schema": false, "api": false }
     },
     {
       "name": "required choice retains one task",
       "choices": { "unit": "required", "ui": "independent", "schema": "independent", "api": "independent" },
       "coverage": { "unit": true, "ui": true, "schema": true, "api": true },
-      "changedPaths": ["library/src/normalize.mjs"],
       "expectedRun": { "unit": true, "ui": false, "schema": false, "api": false }
     },
     {
       "name": "unresolved and absent choices retain tasks",
       "choices": { "unit": "independent", "ui": "unresolved", "schema": "independent" },
       "coverage": { "unit": true, "ui": true, "schema": true, "api": true },
-      "changedPaths": ["library/src/normalize.mjs"],
       "expectedRun": { "unit": false, "ui": true, "schema": false, "api": true }
     },
     {
       "name": "incomplete coverage retains independent choice",
       "choices": { "unit": "independent", "ui": "independent", "schema": "independent", "api": "independent" },
       "coverage": { "unit": false, "ui": true, "schema": true, "api": true },
-      "changedPaths": ["library/src/normalize.mjs"],
       "expectedRun": { "unit": true, "ui": false, "schema": false, "api": false }
     },
     {
-      "name": "protected workflow path retains all tasks",
+      "name": "incomplete coverage retains all tasks",
       "choices": { "unit": "independent", "ui": "independent", "schema": "independent", "api": "independent" },
-      "coverage": { "unit": true, "ui": true, "schema": true, "api": true },
-      "changedPaths": [".github/workflows/checks.yml"],
+      "coverage": { "unit": false, "ui": false, "schema": false, "api": false },
       "expectedRun": { "unit": true, "ui": true, "schema": true, "api": true }
     }
   ]

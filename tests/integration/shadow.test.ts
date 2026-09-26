@@ -10,11 +10,11 @@ test('shadow measurement joins by exact SHA and distinguishes regressions, flaky
   const directory = await mkdtemp(join(tmpdir(), 'jev-shadow-test-'));
   try {
     const tasks = Object.fromEntries(['build', 'e2e', 'helm', 'prepare', 'unit'].map(id => [id, {
-      proposed_run: id === 'unit', run: true, reasons: [id === 'unit' ? 'always' : 'jev-independent', 'shadow-mode'],
+      proposed_run: id === 'unit', run: id === 'unit', reasons: [id === 'unit' ? 'jev-not-independent' : 'jev-independent'],
     }]));
-    const report = { version: 9, base_sha: 'a'.repeat(40), head_sha: 'b'.repeat(40), tested_sha: 'c'.repeat(40),
+    const report = { version: 10, base_sha: 'a'.repeat(40), head_sha: 'b'.repeat(40), tested_sha: 'c'.repeat(40),
       tested_ref: 'merge', diff_base_sha: 'a'.repeat(40), observation: null, observation_error: null,
-      selection_hash: 'd'.repeat(64), changed_path_count: 1, mode: 'shadow', status: 'planned',
+      selection_hash: 'd'.repeat(64), changed_path_count: 1, status: 'planned',
       model: { requested: 'provider/alias', expected: 'jev-1.13.0', returned: 'jev-1.13.0' }, durations_ms: { collection: 1, jev: 1, total: 2 },
       usage: { input_tokens: 1, output_tokens: 1 }, tasks,
       manifest: { complete: true, hash: 'f'.repeat(64), change_count: 1 },
@@ -46,7 +46,7 @@ test('shadow measurement joins by exact SHA and distinguishes regressions, flaky
     assert.deepEqual(analysis.manually_relevant_would_skip, ['helm']);
     assert.equal(analysis.selection_hash, report.selection_hash);
     assert.equal(Object.hasOwn(analysis, 'catalog_hash'), false);
-    for (const version of [1, 2, 3, 4, 5, 6, 7, 8]) {
+    for (const version of [1, 2, 3, 4, 5, 6, 7, 8, 9]) {
       await writeFile(reportFile, JSON.stringify({ ...report, version }));
       assert.equal(spawnSync(process.execPath, args).status, 1);
       assert.equal(spawnSync(process.execPath, [standalone, reportFile, resultsFile]).status, 1);

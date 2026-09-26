@@ -1,6 +1,6 @@
-# Observe selection with shadow mode
+# Observe selection alongside full CI
 
-Add `mode: shadow` to any selector step. All effective task outputs remain true; the GitHub job summary shows the proposed exclusions and reasons. You do not need an artifact or another workflow to read the result.
+Run the selector alongside full CI without using its outputs to gate those jobs. The job summary shows decisions and reasons, while the caller continues running all checks independently. The removed `mode` input is rejected; observation is a workflow choice.
 
 To observe independently from your current CI, use the [observer example](../examples/shadow/README.md). It never controls CI jobs and should not be a required status check.
 
@@ -29,7 +29,7 @@ Prepare actual results manually from the CI run that executed the same tasks:
 }
 ```
 
-Use exactly the report's task IDs. The standalone Node.js 24 analyzer accepts report v9:
+Use exactly the report's task IDs. The standalone Node.js 24 analyzer accepts report v10:
 
 ```sh
 node dist/analyze-shadow.mjs shadow-report/report.json results.json
@@ -41,10 +41,10 @@ The analyzer checks SHA and task identity. You must independently verify the tas
 
 Inspect proposed skips, missed failures, manually relevant tasks and skipped/cancelled results. The sum of task durations is not necessarily elapsed time saved because jobs overlap, nor does it account for rounded billable minutes.
 
-## Choosing a mode
+## Applying selection
 
-Selection is applied by default. Explicit shadow mode is useful for evaluating suitability before consuming exclusions. Assess provider failures, flaky tests, infrastructure incidents and tasks known to be relevant. An independence judgment does not guarantee that a task cannot detect a regression. `force-all: 'true'` returns every task without a Jev request.
+The action always returns its conservative selection. An independent observer lets you evaluate suitability before consuming those outputs. Assess provider failures, flaky tests, infrastructure incidents and tasks known to be relevant. An independence judgment does not guarantee that a task cannot detect a regression. To run everything without a Jev request, skip the action and run jobs directly in your workflow.
 
 ## Manual PR observation
 
-A `workflow_dispatch` can pass an open PR number via `pull-request`, with `mode: shadow` and the same inline tasks. Grant `pull-requests: read` as well as `contents: read`. Descriptions come from the executed workflow inputs; the tested commit belongs to the requested PR. Continue matching results to `tested-sha` rather than the dispatch event SHA. The supplied automatic templates' final gates assume the event SHA and are not manual-PR templates.
+A `workflow_dispatch` can pass an open PR number via `pull-request`, with the same inline tasks and consumers independent of the outputs. Grant `pull-requests: read` as well as `contents: read`. Descriptions come from the executed workflow inputs; the tested commit belongs to the requested PR. Continue matching results to `tested-sha` rather than the dispatch event SHA. The supplied automatic templates' final gates assume the event SHA and are not manual-PR templates.

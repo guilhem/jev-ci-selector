@@ -7,7 +7,7 @@ const validate = new Ajv({ strict: true }).compile(schema);
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
 
 export function analyzeShadow(report, results) {
-  if (!validate(report) || report.mode !== 'shadow' || !object(results) || results.tested_sha !== report.tested_sha || !object(results.tasks)) {
+  if (!validate(report) || !object(results) || results.tested_sha !== report.tested_sha || !object(results.tasks)) {
     throw new Error('invalid-shadow-measurement');
   }
   const ids = Object.keys(report.tasks).sort();
@@ -23,7 +23,6 @@ export function analyzeShadow(report, results) {
     if (!object(actual) || !['success', 'failure', 'cancelled', 'skipped'].includes(actual.result) ||
       !Number.isFinite(actual.duration_ms) || actual.duration_ms < 0 ||
       (actual.classification !== undefined && !Object.hasOwn(missed, actual.classification))) throw new Error('invalid-task-result');
-    if (report.tasks[id].run !== true) throw new Error('invalid-shadow-effective-selection');
     if (report.tasks[id].proposed_run === false) {
       avoided.push(id);
       avoidedDurationMs += actual.duration_ms;

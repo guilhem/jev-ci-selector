@@ -26,7 +26,7 @@ function pullRequest(overrides: Record<string, unknown> = {}): Record<string, un
 test('resolves an open PR with immutable SHAs', async () => {
   let seenUrl = '';
   let seenInit: RequestInit | undefined;
-  const context = await manualContext(env, '42', 'shadow', 'github-token', async (url, init) => {
+  const context = await manualContext(env, '42', 'github-token', async (url, init) => {
     seenUrl = url.toString();
     seenInit = init;
     return Response.json(pullRequest());
@@ -43,40 +43,40 @@ test('resolves an open PR with immutable SHAs', async () => {
   });
 });
 
-test('supports enforce diagnostics and exact head testing without a merge commit', async () => {
-  const context = await manualContext(env, '42', 'enforce', 'github-token', async () => Response.json(pullRequest({
+test('supports diagnostics and exact head testing without a merge commit', async () => {
+  const context = await manualContext(env, '42', 'github-token', async () => Response.json(pullRequest({
     merge_commit_sha: undefined,
   })), 'head');
   assert.equal(context.testedSha, headSha);
   assert.equal(context.headSha, headSha);
 });
 
-test('rejects invalid event, mode, PR number, missing merge, and unavailable API responses', async () => {
+test('rejects invalid event, PR number, missing merge, and unavailable API responses', async () => {
   let calls = 0;
   const fetchImpl = async () => { calls += 1; return Response.json(pullRequest()); };
-  for (const [eventName, mode, number] of [
-    ['pull_request', 'shadow', '42'], ['workflow_dispatch', 'invalid', '42'], ['workflow_dispatch', 'shadow', '0'],
-    ['workflow_dispatch', 'shadow', '4.2'], ['workflow_dispatch', 'shadow', ''],
+  for (const [eventName, number] of [
+    ['pull_request', '42'], ['workflow_dispatch', '0'],
+    ['workflow_dispatch', '4.2'], ['workflow_dispatch', ''],
   ] as const) {
-    await assert.rejects(manualContext({ ...env, GITHUB_EVENT_NAME: eventName }, number, mode, 'token', fetchImpl), /invalid-manual-request/);
+    await assert.rejects(manualContext({ ...env, GITHUB_EVENT_NAME: eventName }, number, 'token', fetchImpl), /invalid-manual-request/);
   }
-  await assert.rejects(manualContext(env, '42', 'shadow', 'token', async () => Response.json({ state: 'open' })), /merge-unavailable/);
-  await assert.rejects(manualContext(env, '42', 'shadow', 'token', async () => new Response('nope', { status: 500 })), /pull-request-unavailable/);
+  await assert.rejects(manualContext(env, '42', 'token', async () => Response.json({ state: 'open' })), /merge-unavailable/);
+  await assert.rejects(manualContext(env, '42', 'token', async () => new Response('nope', { status: 500 })), /pull-request-unavailable/);
   assert.equal(calls, 0);
 });
 
 test('retains fork status and rejects closed pull requests', async () => {
-  const fork = await manualContext(env, '42', 'shadow', 'token', async () => Response.json(pullRequest({
+  const fork = await manualContext(env, '42', 'token', async () => Response.json(pullRequest({
     head: { sha: headSha, repo: { full_name: 'someone/example', id: 8 } },
   })));
   assert.equal(fork.fork, true);
   assert.equal(fork.baseSha, baseSha);
-  await assert.rejects(manualContext(env, '42', 'shadow', 'token', async () => Response.json(pullRequest({ state: 'closed' }))), /merge-unavailable/);
+  await assert.rejects(manualContext(env, '42', 'token', async () => Response.json(pullRequest({ state: 'closed' }))), /merge-unavailable/);
 });
 
 test('rejects redirects and does not retry the GitHub API request', async () => {
   let calls = 0;
-  await assert.rejects(manualContext(env, '42', 'shadow', 'token', async (_url, init) => {
+  await assert.rejects(manualContext(env, '42', 'token', async (_url, init) => {
     calls += 1;
     assert.equal(init?.redirect, 'error');
     throw new TypeError('redirect rejected');

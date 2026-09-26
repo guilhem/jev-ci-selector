@@ -107,7 +107,7 @@ test('retains raw group judgments and composes only a boolean decision', async (
   assert.ok(!Object.hasOwn(result, 'probabilities'));
 });
 
-test('uses the same grouped evaluation in enforce and does not retry calls', async () => {
+test('grouped evaluation does not retry failed calls', async () => {
   const diff = patch(1600);
   let calls = 0;
   const result = await observeChange(request(diff), async input => {
