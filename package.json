@@ -18,7 +18,6 @@
     "@actions/core": "2.0.3",
     "@typesafe-ai/sdk": "0.6.0",
     "ajv": "8.20.0",
-    "minimatch": "10.2.6",
     "yaml": "2.9.1"
   },
   "devDependencies": {

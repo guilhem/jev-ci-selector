@@ -11,15 +11,14 @@ Keep your existing jobs, dependencies and output conditions. Use the [describe-c
     tasks: |
       backend:
         description: Verifies HTTP routes, authentication and database persistence.
-        force_paths: [migrations/**]
       frontend:
         description: Verifies React rendering, navigation and browser interactions.
 ```
 
 Use `steps.changes.outputs.backend == 'true'`, or expose that value as a job output. Check out `tested-sha` in consumers and retain the existing workflow's failure handling.
 
-This is not pattern-language compatibility. Descriptions explain verification scope; positive `force_paths` globs only impose execution. A path that does not match can still be relevant. There are no negative filter rules, changed-file-list outputs or claim of identical event behavior. Events outside PR evaluation retain every task without calling Jev.
+Descriptions explain verification scope; this is not pattern-language compatibility. Keep any mandatory path rules in your workflow. The action has no positive/negative filter rules or changed-file-list outputs. Valid PR and push ranges go through analysis; events without usable refs retain tasks conservatively.
 
-`enforce` is the default. For an observational comparison, explicitly set `mode: shadow`: effective outputs remain true and proposals appear in the job summary. Model judgments do not guarantee an error rate. Keep essential tasks under `always: true` and execution prerequisites in `needs`.
+For an observational comparison, run the selector independently alongside full CI without consuming its outputs. Keep essential tasks unconditional in the caller and prerequisites in `needs`. The removed `mode`, `force-all`, `always` and `force_paths` options are rejected.
 
 See the [complete contract](reference.md) and [minimal integration](../README.md#quick-start). This example applies after the description-only change reaches `main`; pin the resulting commit SHA for reproducible CI.

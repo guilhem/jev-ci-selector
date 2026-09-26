@@ -5,7 +5,7 @@ import {
 } from './changes.js';
 import { validateSelection, selectionHash, type SelectionDefinition } from './tasks.js';
 import { evaluateJev, resolveJevApi, type JevMetadata, type JevApiOptions } from './jev.js';
-import { FALLBACK_REASONS, globalPathReason, preselectTasks, selectTasks, type ForceAllReason, type Mode, type Reason } from './policy.js';
+import { FALLBACK_REASONS, selectTasks, type SafetyReason, type Reason } from './policy.js';
 import { validateReport, MAX_REPORT_CHUNKS, type Report } from './report.js';
 import {
   analyseChange, ObservationSizeError, PATCH_UNIT_LIMIT_REASON,
@@ -18,8 +18,8 @@ import { TokenMeter, type WindowReport } from './window.js';
 
 export interface Inputs extends JevApiOptions, SelectionDefinition {
   testedRef?: 'head' | 'merge';
-  mode: Mode; githubToken: string; apiKey: string;
-  allowExternalContext: boolean; forceAll: boolean; timeoutMs: number;
+  githubToken: string; apiKey: string;
+  allowExternalContext: boolean; timeoutMs: number;
   /** Ceiling for the sum of patch units actually collected locally. */
   maxCollectedPatchBytes: number;
   /** Ceiling for the sum of complete request JSON sent to Jev. */
@@ -40,6 +40,11 @@ export function eventContext(env: NodeJS.ProcessEnv, event: unknown, testedRef: 
   const url = new URL(serverUrl);
   if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash || url.pathname !== '/' ||
     !eventName || !repository || !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository) || !sha(testedSha)) throw new Error('invalid-event');
+  if (eventName === 'push' && object(event) && sha(event.before) && sha(event.after)) {
+    return { eventName, repository, serverUrl: url.origin, testedSha, baseSha: event.before, headSha: event.after, fork: false };
+  }
+  // Events without a usable range retain an incoherent comparison for the
+  // planner's safety fallback; they must never masquerade as an empty diff.
   if (eventName !== 'pull_request') return { eventName, repository, serverUrl: url.origin, testedSha, baseSha: testedSha, headSha: testedSha, fork: false };
   if (!object(event) || !object(event.pull_request)) throw new Error('invalid-event');
   const { base, head } = event.pull_request;
@@ -60,14 +65,14 @@ export interface PlannerDependencies {
 export function validateInputs(inputs: Inputs): void {
   validateSelection({ model: inputs.model, tasks: inputs.tasks });
   if (!['head', 'merge'].includes(inputs.testedRef ?? 'merge')) throw new InputError('tested-ref');
-  if (!['shadow', 'enforce'].includes(inputs.mode)) throw new InputError('mode');
+  if (Object.hasOwn(inputs, 'mode')) throw new InputError('mode');
+  if (Object.hasOwn(inputs, 'forceAll')) throw new InputError('force-all');
   // 0 means unbounded for every ceiling, including the deadline.
   if (!Number.isSafeInteger(inputs.timeoutMs) || inputs.timeoutMs < 0 || inputs.timeoutMs > 2_147_483_647) throw new InputError('timeout-ms');
   if (!Number.isSafeInteger(inputs.maxCollectedPatchBytes) || inputs.maxCollectedPatchBytes < 0) throw new InputError('max-collected-patch-bytes');
   if (!Number.isSafeInteger(inputs.maxAnalysisBytes) || inputs.maxAnalysisBytes < 0) throw new InputError('max-analysis-bytes');
   if (!Number.isSafeInteger(inputs.maxJevCalls) || inputs.maxJevCalls < 0) throw new InputError('max-jev-calls');
   if (typeof inputs.allowExternalContext !== 'boolean') throw new InputError('allow-external-context');
-  if (typeof inputs.forceAll !== 'boolean') throw new InputError('force-all');
   resolveJevApi(inputs);
 }
 
@@ -186,6 +191,7 @@ function patchStream(
 export async function planChange(inputs: Inputs, context: Context, dependencies: PlannerDependencies = {}) {
   validateInputs(inputs);
   if (inputs.testedRef === 'head' && context.eventName === 'pull_request') context = { ...context, testedSha: context.headSha };
+  const testedRef = context.eventName === 'push' ? 'push' : inputs.testedRef ?? 'merge';
   const selection: SelectionDefinition = { model: inputs.model, tasks: inputs.tasks };
   const api = resolveJevApi(inputs);
   const started = performance.now();
@@ -193,12 +199,13 @@ export async function planChange(inputs: Inputs, context: Context, dependencies:
   // verified and the inventory is built, so a slow fetch cannot silently eat
   // the analysis allowance. Git commands keep their own separate timeouts.
   let budget: AnalysisBudget | undefined;
-  let forced: ForceAllReason | undefined;
-  if (context.eventName !== 'pull_request') forced = { status: 'bypassed', code: 'non-pull-request' };
-  else if (inputs.forceAll) forced = { status: 'bypassed', code: 'force-all' };
-  else if (context.fork) forced = { status: 'bypassed', code: 'fork' };
+  let forced: SafetyReason | undefined;
+  if (context.fork) forced = { status: 'bypassed', code: 'fork' };
   else if (!inputs.apiKey.trim()) forced = { status: 'bypassed', code: 'missing-api-key' };
   else if (!inputs.allowExternalContext) forced = { status: 'bypassed', code: 'external-context-disabled' };
+  else if (context.baseSha === context.headSha || [context.baseSha, context.headSha].includes('0'.repeat(40))) {
+    forced = { status: 'fallback', code: 'sha-incoherent' };
+  }
   let repository: Repository | undefined;
   try {
     let manifest: ChangeManifest | undefined;
@@ -210,7 +217,7 @@ export async function planChange(inputs: Inputs, context: Context, dependencies:
         });
         await repository.fetchCommit(context.baseSha);
         const comparison = await repository.verifyComparison({ baseSha: context.baseSha, headSha: context.headSha,
-          testedSha: context.testedSha, testedRef: inputs.testedRef ?? 'merge' });
+          testedSha: context.testedSha, testedRef });
         // Names, modes and object ids only. No numstat, no blob, no patch.
         manifest = await repository.collectManifest(comparison);
         budget = new AnalysisBudget({
@@ -220,26 +227,13 @@ export async function planChange(inputs: Inputs, context: Context, dependencies:
           deadline: inputs.timeoutMs === 0 ? Number.POSITIVE_INFINITY : performance.now() + inputs.timeoutMs,
         });
         budget.noteManifest(manifest.entries.length);
-        forced = globalPathReason(manifest.changedPaths);
         // A partial inventory can never justify a new exclusion.
         if (!manifest.complete) forced ??= { status: 'fallback', code: 'manifest-incomplete' };
       } catch (error) {
         if (!(error instanceof ChangeError)) throw error;
-        forced = (error.changedPaths ? globalPathReason(error.changedPaths) : undefined)
-          ?? { status: 'fallback', code: error.code };
+        forced = { status: 'fallback', code: error.code };
       }
-      if (manifest && repository) {
-        // The deterministic rules run before a single byte of content is read.
-        const preselection = preselectTasks(selection, manifest.changedPaths);
-        // `enforce` never spends anything on a task whose execution is already
-        // settled, nor anything at all once a global protection applies.
-        // `shadow` keeps observing every task so evaluation campaigns still see
-        // a proposal; the bypasses that precede repository access stay
-        // unaffected, since they never reach this point at all.
-        analysisTaskIds = inputs.mode === 'shadow'
-          ? [...preselection.required, ...preselection.candidates].sort()
-          : forced ? [] : preselection.candidates;
-      }
+      if (manifest && repository && !forced) analysisTaskIds = Object.keys(selection.tasks).sort();
     }
     const requestedModel = api.model ?? selection.model;
     const collectionMs = performance.now() - started;
@@ -272,7 +266,6 @@ export async function planChange(inputs: Inputs, context: Context, dependencies:
           evaluateInventory: dependencies.evaluateInventory ?? evaluateChoices,
           patches: patchStream(repository, manifest.comparison, manifest.entries, activeBudget, meter),
           budget: activeBudget, rate, meter, apiBaseUrl: api.baseURL, apiModel: requestedModel, apiKey: inputs.apiKey,
-          stopWhenSettled: inputs.mode !== 'shadow',
           state: { base_sha: manifest.comparison.diffBaseSha, head_sha: context.headSha, tested_sha: context.testedSha },
         }, dependencies.evaluate ?? evaluateJev);
         observation = outcome.observation;
@@ -293,14 +286,11 @@ export async function planChange(inputs: Inputs, context: Context, dependencies:
         jevMs = performance.now() - callStarted;
       }
     }
-    const plan = selectTasks({ selection, changedPaths: manifest?.changedPaths ?? [], ...(decisions ? { decisions } : {}),
+    const plan = selectTasks({ selection, ...(decisions ? { decisions } : {}),
       ...(coverage ? { coverage } : {}), ...(taskErrors ? { taskErrors } : {}),
-      ...(observationError ? { observationError } : {}), mode: inputs.mode, ...(forced ? { forceAllReason: forced } : {}) });
+      ...(observationError ? { observationError } : {}), ...(forced ? { safetyReason: forced } : {}) });
     if (observation?.strategy === 'chunked-diff') {
       for (const id of analysisTaskIds) plan.tasks[id]!.reasons.push('chunked-observation');
-    }
-    if (observation && plan.status === 'bypassed') {
-      for (const id of analysisTaskIds) plan.tasks[id]!.reasons.push('observation-only');
     }
     const counters: BudgetCounters = budget?.counters ?? EMPTY_COUNTERS;
     // A partial fallback names tasks kept because their evidence was incomplete.
@@ -311,8 +301,8 @@ export async function planChange(inputs: Inputs, context: Context, dependencies:
     const states: Record<string, TaskState> = Object.fromEntries(Object.keys(plan.tasks).sort().map(id => [id,
       taskStates[id] ?? (retained.includes(id) ? 'fallback-run' : plan.tasks[id]!.run ? 'settled-run' : 'settled-skip')]));
     const report: Report = {
-      version: 9, tested_ref: inputs.testedRef ?? 'merge',
-      diff_base_sha: manifest?.comparison.diffBaseSha ?? (inputs.testedRef === 'head' ? null : context.baseSha),
+      version: 10, tested_ref: testedRef,
+      diff_base_sha: manifest?.comparison.diffBaseSha ?? null,
       observation_error: observationError ?? null,
       base_sha: context.baseSha, head_sha: context.headSha, tested_sha: context.testedSha,
       selection_hash: selectionHash(selection),
@@ -337,7 +327,7 @@ export async function planChange(inputs: Inputs, context: Context, dependencies:
         fallback_tasks: plan.status !== 'fallback' ? [] : forced ? Object.keys(plan.tasks).sort() : retained,
 
       },
-      mode: plan.mode, status: plan.status, model: { requested: requestedModel, expected: selection.model, returned: metadata.model },
+      status: plan.status, model: { requested: requestedModel, expected: selection.model, returned: metadata.model },
       durations_ms: { collection: collectionMs, jev: jevMs, total: performance.now() - started },
       usage: metadata.usage, tasks: plan.tasks,
       observation: observation && observation.chunks.length > MAX_REPORT_CHUNKS

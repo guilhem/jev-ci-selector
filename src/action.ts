@@ -8,7 +8,7 @@ import { parseSelectionInputs } from './tasks.js';
 import { actionOutputs, summary } from './report.js';
 import { manualContext } from './manual.js';
 
-function booleanInput(name: 'allow-external-context' | 'force-all'): boolean {
+function booleanInput(name: 'allow-external-context'): boolean {
   const value = core.getInput(name) || 'false';
   if (value !== 'true' && value !== 'false') throw new InputError(name);
   return value === 'true';
@@ -24,15 +24,14 @@ async function main(): Promise<void> {
   // `max-diff-bytes` no longer has a meaning: the action never builds a complete
   // diff. Rather than silently reinterpreting it, say so and fail.
   if (core.getInput('max-diff-bytes')) throw new InputError('max-diff-bytes');
-  const mode = core.getInput('mode') || 'enforce';
-  if (mode !== 'shadow' && mode !== 'enforce') throw new InputError('mode');
+  for (const name of ['mode', 'force-all'] as const) if (core.getInput(name)) throw new InputError(name);
   const testedRef = core.getInput('tested-ref') || 'merge';
   if (testedRef !== 'head' && testedRef !== 'merge') throw new InputError('tested-ref');
   const inputs: Inputs = {
-    ...parseSelectionInputs(core.getInput), mode, testedRef,
+    ...parseSelectionInputs(core.getInput), testedRef,
     githubToken: core.getInput('github-token'), apiKey: core.getInput('api-key'),
     apiBaseUrl: core.getInput('api-base-url'), apiModel: core.getInput('api-model'),
-    allowExternalContext: booleanInput('allow-external-context'), forceAll: booleanInput('force-all'),
+    allowExternalContext: booleanInput('allow-external-context'),
     timeoutMs: integerInput('timeout-ms', 0),
     maxCollectedPatchBytes: integerInput('max-collected-patch-bytes', 0),
     maxAnalysisBytes: integerInput('max-analysis-bytes', 0),
@@ -42,7 +41,7 @@ async function main(): Promise<void> {
   const event: unknown = JSON.parse(await readFile(process.env.GITHUB_EVENT_PATH!, 'utf8'));
   const pullRequest = core.getInput('pull-request');
   const context = pullRequest
-    ? await manualContext(process.env, pullRequest, mode, inputs.githubToken, globalThis.fetch, testedRef)
+    ? await manualContext(process.env, pullRequest, inputs.githubToken, globalThis.fetch, testedRef)
     : eventContext(process.env, event, testedRef);
   if (pullRequest && testedRef === 'head') context.testedSha = context.headSha;
   const { plan, report } = await planChange(inputs, context);
@@ -56,9 +55,9 @@ async function main(): Promise<void> {
   } catch {
     core.warning('summary-unavailable');
   }
-  core.info(`jev-ci-selector: ${plan.status}, ${plan.selected.length}/${Object.keys(plan.tasks).length} tasks (${plan.mode})`);
+  core.info(`jev-ci-selector: ${plan.status}, ${plan.selected.length}/${Object.keys(plan.tasks).length} tasks`);
   const { analysis } = report;
-  core.info(`analysis: ${analysis.required_without_analysis.length} forced, ${analysis.analysed_tasks.length} analysed;`
+  core.info(`analysis: ${analysis.required_without_analysis.length} retained without analysis, ${analysis.analysed_tasks.length} analysed;`
     + ` ${analysis.changes_read}/${analysis.changes_total ?? 0} changes read;`
     + ` ${analysis.patch_bytes_read} patch bytes; ${analysis.jev_calls} Jev calls`);
   if (analysis.fallback_scope !== 'none') {

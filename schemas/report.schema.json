@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "jev-ci-selector source-free report v9",
+  "title": "jev-ci-selector source-free report v10",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -10,7 +10,6 @@
     "tested_sha",
     "selection_hash",
     "changed_path_count",
-    "mode",
     "status",
     "model",
     "durations_ms",
@@ -25,7 +24,7 @@
   ],
   "properties": {
     "version": {
-      "const": 9
+      "const": 10
     },
     "base_sha": {
       "$ref": "#/definitions/sha"
@@ -42,12 +41,6 @@
         "null"
       ],
       "minimum": 0
-    },
-    "mode": {
-      "enum": [
-        "shadow",
-        "enforce"
-      ]
     },
     "status": {
       "enum": [
@@ -140,17 +133,11 @@
             "uniqueItems": true,
             "items": {
               "enum": [
-                "always",
-                "path-match",
                 "jev-independent",
                 "jev-not-independent",
-                "shadow-mode",
-                "force-all",
-                "protected-path",
                 "fork",
                 "missing-api-key",
                 "external-context-disabled",
-                "non-pull-request",
                 "git-fetch-failed",
                 "git-read-failed",
                 "sha-incoherent",
@@ -169,7 +156,6 @@
                 "jev-payment-required",
                 "context-too-large",
                 "chunked-observation",
-                "observation-only",
                 "observation-incomplete"
               ]
             }
@@ -190,7 +176,8 @@
     "tested_ref": {
       "enum": [
         "head",
-        "merge"
+        "merge",
+        "push"
       ]
     },
     "diff_base_sha": {

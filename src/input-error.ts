@@ -1,10 +1,10 @@
 const constraints = {
-  tasks: 'a YAML mapping of task objects containing only description (nonempty string), always (boolean) and force_paths (positive repository-relative globs); jobs, context_files and resolve_context_files are no longer supported',
+  tasks: 'a YAML mapping of task objects containing only description (nonempty string); move always and force_paths rules into the caller workflow; jobs, context_files and resolve_context_files are no longer supported',
   model: 'a canonical Jev version in the form jev-X.Y.Z',
-  mode: 'one of "shadow" or "enforce"',
+  mode: 'no value; mode was removed, so observe selection by running caller jobs independently of the action outputs',
   'tested-ref': 'one of "head" or "merge"',
   'allow-external-context': '"true" or "false"',
-  'force-all': '"true" or "false"',
+  'force-all': 'no value; force-all was removed, so bypass the action and run jobs in the caller workflow',
   'timeout-ms': 'an integer from 1 to 2147483647',
   'max-diff-bytes': 'no value; it was replaced by "max-collected-patch-bytes", which bounds the patch text actually collected rather than the size of a complete diff',
   'max-collected-patch-bytes': 'a positive safe integer',

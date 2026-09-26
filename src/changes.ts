@@ -122,7 +122,7 @@ export interface ReadPatchLimits {
   timeoutMs?: number;
 }
 
-export type TestedRef = 'head' | 'merge';
+export type TestedRef = 'head' | 'merge' | 'push';
 
 export interface GitRepositoryOptions {
   remoteUrl: string;
@@ -420,8 +420,9 @@ export class GitRepository {
   /**
    * Check the supplied commit relationship before anything is read.
    *
-   * Keeps the existing merge-base, merge-parent and immutable-reference rules:
-   * a comparison that cannot be verified never becomes a usable manifest.
+   * PRs verify the merge base or merge parents; pushes compare their exact
+   * before and after commits, including a push that rewrites history.
+   * A comparison that cannot be verified never becomes a usable manifest.
    */
   async verifyComparison({ baseSha, headSha, testedSha, testedRef = 'merge' }: VerifyComparisonOptions): Promise<VerifiedComparison> {
     this.ensureOpen();
@@ -429,8 +430,9 @@ export class GitRepository {
       !validSha(baseSha) ||
       !validSha(headSha) ||
       !validSha(testedSha) ||
-      (testedRef !== 'head' && testedRef !== 'merge') ||
-      (testedRef === 'head' && testedSha !== headSha)
+      (testedRef !== 'head' && testedRef !== 'merge' && testedRef !== 'push') ||
+      (testedRef !== 'merge' && testedSha !== headSha) ||
+      (testedRef === 'push' && (baseSha === headSha || [baseSha, headSha].includes('0'.repeat(40))))
     ) {
       throw new ChangeError('sha-incoherent');
     }
@@ -471,7 +473,7 @@ export class GitRepository {
    * This is names, modes and object ids from `diff --raw`; no `numstat`, no
    * similarity search, no blob read and no patch. Rename detection is off by
    * default: a rename then appears as a deletion plus an addition, which keeps
-   * both paths visible to the path-based safety rules. Renames can be enriched
+   * both paths visible to the analysis. Renames can be enriched
    * later, at a bounded cost, only where they help an actual observation.
    */
   async collectManifest(comparison: VerifiedComparison, options: { renames?: boolean } = {}): Promise<ChangeManifest> {
@@ -633,7 +635,7 @@ export class GitRepository {
       diff: unit.diff,
       diffHash: createHash('sha256').update(unit.diff, 'utf8').digest('hex'),
       diffBytes: unit.bytes,
-      ...(testedRef === 'head' ? { diffBaseSha: comparison.diffBaseSha } : {}),
+      ...(testedRef !== 'merge' ? { diffBaseSha: comparison.diffBaseSha } : {}),
     };
   }
 

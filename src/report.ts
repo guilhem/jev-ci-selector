@@ -30,7 +30,7 @@ export interface ReportAnalysis extends BudgetCounters {
    */
   bytes_per_token: WindowReport | null;
   analysed_tasks: string[];
-  /** Tasks settled by the deterministic rules, for which nothing was read. */
+  /** Tasks retained by a safety bypass or fallback before analysis. */
   required_without_analysis: string[];
   task_states: Record<string, TaskState>;
   /** Per task: whether every obligation was actually discharged. */
@@ -40,7 +40,7 @@ export interface ReportAnalysis extends BudgetCounters {
 }
 
 export interface Report {
-  version: 9;
+  version: 10;
   base_sha: string;
   head_sha: string;
   tested_sha: string;
@@ -48,12 +48,11 @@ export interface Report {
   changed_path_count: number | null;
   manifest: ReportManifest;
   analysis: ReportAnalysis;
-  mode: ExecutionPlan['mode'];
   status: ExecutionPlan['status'];
   durations_ms: { collection: number; jev: number | null; total: number };
   usage: Usage | null;
   tasks: ExecutionPlan['tasks'];
-  tested_ref: 'head' | 'merge';
+  tested_ref: 'head' | 'merge' | 'push';
   diff_base_sha: string | null;
   observation_error: string | null;
   model: { requested: string; expected: string; returned: string | null };
@@ -128,7 +127,7 @@ export function summary(report: Report): string {
   const rows = Object.entries(report.tasks).sort(([a], [b]) => a.localeCompare(b)).map(([id, task]) =>
     `| ${markdown(id)} | ${task.run ? 'Run' : 'Skip'} | ${task.proposed_run === null ? '—' : task.proposed_run ? 'Run' : 'Skip'} | ${task.reasons.map(markdown).join(', ')} |`);
   return [
-    `### jev-ci-selector: ${markdown(report.status)} (${markdown(report.mode)})`,
+    `### jev-ci-selector: ${markdown(report.status)}`,
     '', '| Task | Effective | Proposed | Reasons |',
     '| --- | --- | --- | --- |', ...rows, '',
     '<details>', '<summary>Selection details</summary>', '',

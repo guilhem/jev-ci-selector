@@ -4,7 +4,7 @@ import { selectTasks } from '../../src/policy.js';
 import { selection } from '../fixtures/selection.js';
 
 test('missing group judgments cannot justify omission; known positives remain visible', () => {
-  const plan = selectTasks({ selection: selection(), changedPaths: [], mode: 'enforce',
+  const plan = selectTasks({ selection: selection(),
     decisions: { helm: false, e2e: true, build: false, prepare: null }, observationError: 'jev-timeout' });
   // The failure is scoped to the task it concerns: `prepare` is retained and the
   // root status stays fallback, while tasks with a complete decision keep it.
@@ -20,7 +20,7 @@ test('missing group judgments cannot justify omission; known positives remain vi
 });
 
 test('an exclusion never survives a missing coverage obligation', () => {
-  const plan = selectTasks({ selection: selection(), changedPaths: [], mode: 'enforce',
+  const plan = selectTasks({ selection: selection(),
     decisions: { helm: false, e2e: false, build: false, prepare: false },
     coverage: { helm: true, e2e: false, build: true, prepare: true },
     taskErrors: { e2e: 'patch-unavailable' } });
@@ -32,19 +32,10 @@ test('an exclusion never survives a missing coverage obligation', () => {
 });
 
 test('a per-task error does not erase another task complete decision', () => {
-  const plan = selectTasks({ selection: selection(), changedPaths: [], mode: 'enforce',
+  const plan = selectTasks({ selection: selection(),
     decisions: { helm: false, e2e: null, build: false, prepare: false },
     coverage: { helm: true, e2e: false, build: true, prepare: true },
     taskErrors: { e2e: 'jev-error' } });
   assert.deepEqual(plan.selected, ['e2e', 'unit']);
   assert.deepEqual(plan.tasks.helm!.reasons, ['jev-independent']);
-});
-
-test('deterministic reasons survive a separate observation failure', () => {
-  const plan = selectTasks({ selection: selection(), changedPaths: ['charts/a.yml'], mode: 'shadow',
-    decisions: { helm: null }, observationError: 'jev-timeout',
-    forceAllReason: { status: 'bypassed', code: 'protected-path' } });
-  assert.equal(plan.status, 'bypassed');
-  assert.deepEqual(plan.tasks.helm!.reasons, ['path-match', 'protected-path', 'shadow-mode']);
-  assert.ok(plan.tasks.unit!.reasons.includes('always'));
 });

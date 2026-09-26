@@ -36,56 +36,21 @@ jobs:
           tasks: |
             build:
               description: Builds all Go packages with go build ./...; Go source, imported packages, go.mod and go.sum are inputs. It does not run tests.
-              always: true
-              force_paths:
-                - .github/**
-                - ci/**
-                - go.mod
-                - go.sum
             e2e_network:
               description: Runs ci/e2e-network.sh after a successful build to check application network behavior. The script, services it invokes, and application code on that path are inputs; exact coverage depends on the consuming repository's script.
-              force_paths:
-                - .github/**
-                - ci/**
-                - go.mod
-                - go.sum
             e2e_upgrade:
               description: Runs ci/e2e-upgrade.sh after a successful build to check application upgrades. The script, migration inputs, and application code on that path are inputs; exact coverage depends on the consuming repository's script.
-              force_paths:
-                - .github/**
-                - ci/**
-                - go.mod
-                - go.sum
             helm:
               description: Runs helm lint charts/* to validate chart templates, values and schema files; it does not execute application code.
-              force_paths:
-                - .github/**
-                - ci/**
-                - go.mod
-                - go.sum
-                - charts/**/values.schema.json
             lint:
               description: Runs go vet ./... over Go packages; Go source, imports and tool configuration are inputs. It does not run tests.
-              always: true
-              force_paths:
-                - .github/**
-                - ci/**
-                - go.mod
-                - go.sum
             unit:
               description: Runs go test ./... over Go package tests and the production code they exercise; Go dependencies and test configuration are inputs.
-              always: true
-              force_paths:
-                - .github/**
-                - ci/**
-                - go.mod
-                - go.sum
           github-token: ${{ secrets.GITHUB_TOKEN }}
           api-key: ${{ secrets.JEV_API_KEY }}
           # This authorizes sending the diff, paths, and task questions to
           # TypeSafe. Remove it when that authorization is not acceptable.
           allow-external-context: 'true'
-          force-all: 'false'
       - name: Upload plan report
         if: ${{ always() && steps.select.outcome == 'success' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -96,9 +61,10 @@ jobs:
           retention-days: 14
           if-no-files-found: error
 
+  # These mandatory jobs are caller policy, independent of selection outputs.
   build:
     needs: plan
-    if: ${{ always() && needs.plan.result == 'success' && needs.plan.outputs.build == 'true' }}
+    if: ${{ always() && needs.plan.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
@@ -147,7 +113,7 @@ jobs:
 
   lint:
     needs: plan
-    if: ${{ always() && needs.plan.result == 'success' && needs.plan.outputs.lint == 'true' }}
+    if: ${{ always() && needs.plan.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
@@ -159,7 +125,7 @@ jobs:
 
   unit:
     needs: plan
-    if: ${{ always() && needs.plan.result == 'success' && needs.plan.outputs.unit == 'true' }}
+    if: ${{ always() && needs.plan.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
@@ -220,11 +186,11 @@ jobs:
           const matrixShapeValid = JSON.stringify(Object.keys(matrix).sort()) === '["include"]' && Array.isArray(matrix.include) && matrixItems.every((item) => item && typeof item === 'object' && !Array.isArray(item) && JSON.stringify(Object.keys(item).sort()) === '["task"]' && typeof item.task === 'string' && expected.includes(item.task)) && new Set(matrixItems.map((item) => item.task)).size === matrixItems.length;
           if (!matrixShapeValid || JSON.stringify(matrixItems.map((item) => item.task)) !== JSON.stringify(selected)) fail('matrix is inconsistent with selected');
           const alwaysTasks = process.env.EXPECTED_ALWAYS.split(',').filter(Boolean);
-          if (alwaysTasks.some((task) => run[task] !== true)) fail('mandatory task was rejected');
-          if (['bypassed', 'fallback'].includes(process.env.PLAN_STATUS ?? '') && expected.some((task) => run[task] !== true)) fail('bypassed or fallback plan must select every task');
+          if (alwaysTasks.some((task) => needs[task]?.result !== 'success')) fail('mandatory job did not succeed');
+          if (process.env.PLAN_STATUS === 'bypassed' && expected.some((task) => run[task] !== true)) fail('bypassed plan must select every task');
           for (const edge of process.env.EXPECTED_DEPENDENCIES.split(';').filter(Boolean)) {
             const [task, dependency] = edge.split('=');
-            if (run[task] === true && run[dependency] !== true) fail(`${task} is selected without dependency ${dependency}`);
+            if (run[task] === true && needs[dependency]?.result !== 'success') fail(`${task} dependency ${dependency} did not succeed`);
           }
           if (JSON.stringify(expectedNeeds) !== JSON.stringify(Object.keys(needs ?? {}).sort())) fail('final needs IDs diverge from declared jobs');
           for (const task of expected) {

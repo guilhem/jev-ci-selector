@@ -28,53 +28,21 @@ jobs:
           tasks: |
             build:
               description: Builds all Go packages with go build ./...; Go source, imported packages, go.mod and go.sum are inputs. It does not run tests.
-              force_paths:
-                - .github/**
-                - ci/**
-                - go.mod
-                - go.sum
             e2e_network:
               description: Runs ci/e2e-network.sh to check application network behavior. The script, services it invokes, and application code on that path are inputs; exact coverage depends on the consuming repository's script.
-              force_paths:
-                - .github/**
-                - ci/**
-                - go.mod
-                - go.sum
             e2e_upgrade:
               description: Runs ci/e2e-upgrade.sh to check application upgrades. The script, migration inputs, and application code on that path are inputs; exact coverage depends on the consuming repository's script.
-              force_paths:
-                - .github/**
-                - ci/**
-                - go.mod
-                - go.sum
             helm:
               description: Runs helm lint charts/* to validate chart templates, values and schema files; it does not execute application code.
-              force_paths:
-                - .github/**
-                - ci/**
-                - go.mod
-                - go.sum
-                - charts/**/values.schema.json
             lint:
               description: Runs go vet ./... over Go packages; Go source, imports and tool configuration are inputs. It does not run tests.
-              force_paths:
-                - .github/**
-                - ci/**
-                - go.mod
-                - go.sum
             unit:
               description: Runs go test ./... over Go package tests and the production code they exercise; Go dependencies and test configuration are inputs.
-              force_paths:
-                - .github/**
-                - ci/**
-                - go.mod
-                - go.sum
           github-token: ${{ secrets.GITHUB_TOKEN }}
           api-key: ${{ secrets.JEV_API_KEY }}
           # Explicit authorization to send the diff, paths, and task questions
           # to TypeSafe.
           allow-external-context: 'true'
-          force-all: 'false'
       - name: Upload plan report
         if: ${{ always() && steps.select.outcome == 'success' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
@@ -161,7 +129,7 @@ jobs:
           const matrixItems = Array.isArray(matrix.include) ? matrix.include : [];
           const matrixShapeValid = JSON.stringify(Object.keys(matrix).sort()) === '["include"]' && Array.isArray(matrix.include) && matrixItems.every((item) => item && typeof item === 'object' && !Array.isArray(item) && JSON.stringify(Object.keys(item).sort()) === '["task"]' && typeof item.task === 'string' && expected.includes(item.task)) && new Set(matrixItems.map((item) => item.task)).size === matrixItems.length;
           if (!matrixShapeValid || JSON.stringify(matrixItems.map((item) => item.task)) !== JSON.stringify(selected)) fail('matrix is inconsistent with selected');
-          if (['bypassed', 'fallback'].includes(process.env.PLAN_STATUS ?? '') && expected.some((task) => run[task] !== true)) fail('bypassed or fallback plan must select every task');
+          if (process.env.PLAN_STATUS === 'bypassed' && expected.some((task) => run[task] !== true)) fail('bypassed plan must select every task');
           if (JSON.stringify(Object.keys(needs ?? {}).sort()) !== JSON.stringify(['plan', 'tasks'])) fail('final needs IDs diverge from declared jobs');
           const matrixResult = needs.tasks?.result;
           if (selected.length === 0) {

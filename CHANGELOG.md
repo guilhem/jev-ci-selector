@@ -9,19 +9,26 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Breaking.** Voluntary execution rules now belong to the caller workflow.
+  Remove `mode` and `force-all` inputs and task `always` / `force_paths` keys;
+  retired options are rejected with migration diagnostics. Workflow-file changes
+  receive normal analysis. Observation means running CI independently of the
+  selection outputs, and full execution on main means bypassing the action in
+  the caller. Safety fallbacks for missing or unusable evidence remain.
+- Push selection compares the exact event `before` and `after` commits, including
+  multi-commit pushes and rewritten history. Zero, equal or unavailable refs
+  retain tasks conservatively instead of producing an empty successful analysis.
 - **Breaking.** The action no longer builds a complete diff before deciding.
-  It inventories the change set from `diff --raw`, applies the deterministic
-  rules first, and then collects patch text one bounded unit at a time, only
-  while a task is still undecided. A selection whose tasks are all already
-  required reads no patch and dispatches no API call in `enforce`.
+  It inventories the change set from `diff --raw` and collects patch text one
+  bounded unit at a time, only while a task is still undecided.
 - **Breaking.** `max-diff-bytes` is removed. It bounded the size of a complete
   diff, which is no longer built, so it is not reinterpreted: supplying it now
   fails with a migration diagnostic. Use `max-collected-patch-bytes`, which
   bounds the patch text actually collected.
-- **Breaking.** Report version 8. `diff_hash` and `diff_bytes` stay `null`
-  unless a complete diff was built; the inventory is identified by
-  `manifest.hash`, and observation groups carry `change_ids` and `unit_index`
-  instead of offsets into a global diff.
+- **Breaking.** Report version 10 removes `mode` and voluntary forcing reasons,
+  and adds `push` to `tested_ref`. `diff_base_sha` is the verified comparison
+  base (null before verification). Root `diff_hash` / `diff_bytes` and runtime
+  metadata/context fields remain absent; use `manifest.hash` and per-group data.
 - A task retained because its job metadata could not be read now reports
   `fallback` like one retained for an incomplete context. Both are degraded
   outcomes; reporting one as `planned` announced a fallback scope of `none`
@@ -86,10 +93,9 @@ uses [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - `npm run eval:replay` exercises the whole-diff path, so it qualifies the
   recorded request contract, not the progressive collection path. A campaign
   over multi-unit and cross-boundary cases is still owed before promoting the
-  new grouping to `enforce` on real repositories.
+  new grouping to selection on real repositories.
 - Rename detection is off in the inventory, so a rename appears as a deletion
-  plus an addition. Both paths therefore stay visible to `force_paths` and the
-  protected-path rule.
+  plus an addition. Both paths therefore stay visible to ordinary analysis.
 - The budgets' starting values are defaults to qualify against a corpus, not
   guaranteed performance figures.
 

@@ -6,8 +6,6 @@ import { InputError } from './input-error.js';
 
 export interface TaskDefinition {
   description: string;
-  always?: boolean;
-  force_paths?: string[];
 }
 export type TaskDefinitions = Record<string, TaskDefinition>;
 export interface SelectionDefinition { model: string; tasks: TaskDefinitions }
@@ -46,7 +44,7 @@ export function parseTasks(source: string): TaskDefinitions {
     if (document.errors.length || document.warnings.length) throw new InputError('tasks');
     const value: unknown = document.toJS({ maxAliasCount: 0 });
     validateTasks(value);
-    return Object.fromEntries(Object.entries(value).map(([id, task]) => [id, { ...task, always: task.always ?? false }]));
+    return value;
   } catch { throw new InputError('tasks'); }
 }
 
@@ -64,6 +62,5 @@ function canonical(value: unknown): unknown {
 }
 
 export function selectionHash(selection: SelectionDefinition): string {
-  const tasks = Object.fromEntries(Object.entries(selection.tasks).map(([id, task]) => [id, { ...task, always: task.always ?? false }]));
-  return createHash('sha256').update(JSON.stringify(canonical({ model: selection.model, tasks }))).digest('hex');
+  return createHash('sha256').update(JSON.stringify(canonical(selection))).digest('hex');
 }

@@ -208,6 +208,48 @@ test('requires the exact immutable SHAs and merge parent ordering', async () => 
   });
 });
 
+test('push compares the exact before and after trees across multiple commits and rewritten history', async () => {
+  const value = await fixture(async () => {});
+  const work = join(value.root, 'work');
+  git(work, 'switch', '--quiet', 'feature');
+  await writeFile(join(work, 'second.txt'), 'second pushed commit\n');
+  git(work, 'add', '.'); git(work, 'commit', '--quiet', '-m', 'second');
+  const after = git(work, 'rev-parse', 'HEAD');
+  git(work, 'push', '--quiet', value.remote, 'HEAD:refs/heads/feature');
+  git(work, 'switch', '--quiet', '-c', 'rewritten', value.base);
+  await writeFile(join(work, 'rewritten.txt'), 'replacement history\n');
+  git(work, 'add', '.'); git(work, 'commit', '--quiet', '-m', 'rewrite');
+  const rewritten = git(work, 'rev-parse', 'HEAD');
+  git(work, 'push', '--quiet', value.remote, 'HEAD:refs/heads/rewritten');
+  await withRepository(value, async repository => {
+    for (const [before, head, expected] of [
+      [value.base, after, ['feature marker.txt', 'second.txt']],
+      [after, rewritten, ['feature marker.txt', 'rewritten.txt', 'second.txt']],
+    ] as const) {
+      await repository.fetchCommit(before);
+      const comparison = await repository.verifyComparison({ baseSha: before, headSha: head, testedSha: head, testedRef: 'push' });
+      assert.equal(comparison.diffBaseSha, before);
+      assert.equal(comparison.testedSha, head);
+      const manifest = await repository.collectManifest(comparison);
+      assert.deepEqual(manifest.changedPaths, expected);
+      assert.equal(manifest.complete, true);
+      const patch = await repository.readPatch(comparison, manifest.entries, { maxUnitBytes: 100_000 });
+      assert.equal(patch.issue, null);
+      if (head === rewritten) assert.match(patch.diff, /-second pushed commit/);
+      else assert.match(patch.diff, /\+second pushed commit/);
+    }
+    for (const range of [
+      { baseSha: after, headSha: after, testedSha: after },
+      { baseSha: '0'.repeat(40), headSha: after, testedSha: after },
+      { baseSha: after, headSha: '0'.repeat(40), testedSha: '0'.repeat(40) },
+      { baseSha: value.base, headSha: after, testedSha: rewritten },
+    ]) {
+      await assert.rejects(repository.verifyComparison({ ...range, testedRef: 'push' }),
+        (error: unknown) => error instanceof ChangeError && error.code === 'sha-incoherent');
+    }
+  });
+});
+
 test('empty merge diff is complete, with an empty hashable patch and no paths', async () => {
   const value = await fixture(async () => {});
   const work = join(value.root, 'work');

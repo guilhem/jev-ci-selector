@@ -2,9 +2,9 @@ import { eventContext, type Context } from './planner.js';
 import type { TestedRef } from './changes.js';
 
 /** Resolve an operator-selected PR without checking out or executing its code. */
-export async function manualContext(env: NodeJS.ProcessEnv, number: string, mode: string, token: string,
+export async function manualContext(env: NodeJS.ProcessEnv, number: string, token: string,
   fetchImpl: typeof fetch = globalThis.fetch, testedRef: TestedRef = 'merge'): Promise<Context> {
-  if (env.GITHUB_EVENT_NAME !== 'workflow_dispatch' || (mode !== 'shadow' && mode !== 'enforce') ||
+  if (env.GITHUB_EVENT_NAME !== 'workflow_dispatch' ||
     (testedRef !== 'head' && testedRef !== 'merge') || !/^[1-9][0-9]*$/.test(number) ||
     !Number.isSafeInteger(Number(number))) throw new Error('invalid-manual-request');
   const workflow = eventContext(env, {});
